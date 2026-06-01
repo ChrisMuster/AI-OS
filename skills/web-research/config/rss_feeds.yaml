@@ -1,0 +1,37 @@
+# RSS feeds by category.
+# Used by rss_source.py when --rss-category is specified.
+# If no category is given, all feeds are pooled and scored for relevance.
+# Add, remove, or reorganise feeds freely.
+# Note: RSS URLs can go stale — check periodically if a feed stops returning results.
+
+ai-news:
+  - https://techcrunch.com/category/artificial-intelligence/feed/
+  - https://feeds.arstechnica.com/arstechnica/technology-lab
+  - https://www.wired.com/feed/tag/artificial-intelligence/rss
+  - https://www.technologyreview.com/feed/
+  - https://feeds.feedburner.com/TheHackersNews
+
+tech-general:
+  - https://feeds.arstechnica.com/arstechnica/index
+  - https://techcrunch.com/feed/
+  - https://www.theverge.com/rss/index.xml
+  - https://www.wired.com/feed/rss
+
+uk-news:
+  - https://feeds.bbci.co.uk/news/rss.xml
+  - https://www.theguardian.com/uk/rss
+  - https://feeds.skynews.com/feeds/rss/home.xml
+
+science:
+  - https://www.newscientist.com/feed/home/
+  - https://www.sciencedaily.com/rss/all.xml
+  - https://feeds.nature.com/nature/rss/current
+
+business:
+  - https://feeds.a.dj.com/rss/RSSWorldNews.xml
+  - https://www.economist.com/finance-and-economics/rss.xml
+
+developer:
+  - https://dev.to/feed
+  - https://css-tricks.com/feed/
+  - https://www.smashingmagazine.com/feed/

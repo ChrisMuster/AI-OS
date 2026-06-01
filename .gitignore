@@ -1,0 +1,46 @@
+# Environment variables — never commit real keys
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Log files — may contain research topics or personal data; local only
+**/LOG.md
+
+# Web-research output files — local only; CONTEXT.md is tracked
+workflows/web-research/outputs/*.json
+workflows/web-research/outputs/*.md
+!workflows/web-research/outputs/CONTEXT.md
+
+# Audit report — generated output, local only
+workflows/audit/last-report.md
+
+# Personal content — never commit
+# USER.md contains the user's name and personal context — excluded so cloners start fresh
+USER.md
+# Root LOG.md contains personal wiki ingest history and family data (also caught by **/LOG.md above)
+/LOG.md
+# wikis/ holds personal knowledge base content; directory skeleton kept via .gitkeep
+wikis/*
+!wikis/.gitkeep
+# journal/entries/ holds private journal entries; directory skeleton kept via .gitkeep
+# CONTEXT.md is structural documentation (no personal data) and is tracked
+journal/entries/*
+!journal/entries/.gitkeep
+!journal/entries/CONTEXT.md
+
+# Tool settings — machine-specific, never commit
+# .claude/settings.local.json contains granted command permissions for this machine
+.claude/
+# .obsidian/ contains Obsidian vault settings; workspace.json changes on every use
+.obsidian/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,61 @@
+# Source configuration for the web-research workflow.
+# Controls default source priority and per-source settings.
+# Override per-run with --include and --exclude flags.
+#
+# Source names must match keys in skills/web-research/scripts/research.py SOURCE_REGISTRY.
+
+# Default query order (sources are queried in this order; Tier 1/2 results float to the top after compile)
+priority:
+  - tavily              # tier 1 — best general search, clean content extraction (requires TAVILY_API_KEY)
+  - guardian            # tier 1 — quality long-form journalism, full article text (requires GUARDIAN_API_KEY)
+  - brave               # tier 2 — broad web search, good complement to Tavily (requires BRAVE_API_KEY)
+  - wikipedia           # tier 2 — encyclopaedic background
+  - arxiv               # tier 1 — academic papers (science/AI/CS topics)
+  - semantic_scholar    # tier 1 — broad academic search
+  - stackexchange       # tier 2 — technical Q&A
+  - hackernews          # tier 3 — tech community discussion
+  - rss                 # tier 2 — curated news feeds
+  - devto               # tier 3 — developer community articles
+  - reddit              # tier 3 — community opinions and experience
+  - scraper             # tier 4 — fallback / specific URLs only
+  # brave added in Step 3
+  # guardian added in Step 4
+
+# Per-source settings
+sources:
+  wikipedia:
+    enabled: true
+    default_results: 3
+  arxiv:
+    enabled: true
+    default_results: 3
+  semantic_scholar:
+    enabled: true
+    default_results: 3
+  stackexchange:
+    enabled: true
+    default_results: 3
+  hackernews:
+    enabled: true
+    default_results: 3
+  rss:
+    enabled: true
+    default_results: 5
+  devto:
+    enabled: true
+    default_results: 3
+  reddit:
+    enabled: true
+    default_results: 3
+  tavily:
+    enabled: true        # auto-disabled if TAVILY_API_KEY is absent
+    default_results: 5
+  guardian:
+    enabled: true        # auto-disabled if GUARDIAN_API_KEY is absent
+    default_results: 5
+  brave:
+    enabled: true        # auto-disabled if BRAVE_API_KEY is absent
+    default_results: 5
+  scraper:
+    enabled: false       # only activates when --urls is provided
+    default_results: 5

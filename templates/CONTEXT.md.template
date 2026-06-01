@@ -1,0 +1,27 @@
+# {{DIRECTORY_NAME}}
+
+**Last modified:** {{DATE}}
+
+## Purpose
+{{ONE_LINE_PURPOSE}}
+
+## Contents
+{{CONTENTS_LIST}}
+
+## Inputs
+{{INPUTS}}
+
+## Outputs
+{{OUTPUTS}}
+
+## Steps
+{{STEPS}}
+
+## Dependencies
+{{DEPENDENCIES}}
+
+## Known Issues
+{{KNOWN_ISSUES}}
+
+## Revision History
+- {{DATE}} — Initial creation.

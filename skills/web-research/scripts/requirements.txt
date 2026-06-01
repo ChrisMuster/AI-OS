@@ -1,0 +1,12 @@
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+trafilatura>=1.6.0
+feedparser>=6.0.0
+textstat>=0.7.3
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+lxml>=4.9.0
+# Step 2: Tavily
+tavily-python>=0.3.0
+# Added in Step 3:
+# (Brave uses plain requests — no extra package)
