@@ -289,7 +289,7 @@ Four rules, no exceptions:
 
 4. **Commit messages describe structure, not personal context.** Git history is visible to anyone who clones the repository. Commit messages must describe the structural or technical change made, not the personal work behind it. Wrong: "add wiki for Chris's Facebook data". Right: "add Facebook archive wiki scaffold".
 
-5. **CONTEXT.md Contents sections never list individual personal files.** In directories that hold personal content — `wikis/`, `conversations/`, `journal/entries/`, or any future personal archive — the Contents section must describe the file naming convention and format only. Never list individual filenames or their descriptions. Wrong: listing `2026-06-03-biblio-ui-planning.md` with a description. Right: "Saved conversation files, named `YYYY-MM-DD-topic-slug.md`. Individual files are not listed here as they are personal content."
+5. **CONTEXT.md Contents sections never list individual personal files.** In directories that hold personal content — `wikis/`, `conversations/`, `journal/entries/`, or any future personal archive — the Contents section must describe the file naming convention and format only. Never list individual filenames or their descriptions. Wrong: listing `2026-06-03-biblio-ui-planning.md` with a description. Right: "Saved conversation files, named `YYYY-MM-DD-topic-slug.md`. Individual files are not listed here as they are personal content." When Biblio needs to know what files exist in such a directory, it reads the directory directly rather than relying on CONTEXT.md. The filesystem is always the authoritative source; CONTEXT.md describes structure and conventions only.
 
 ### Keeping README.md up to date
 
