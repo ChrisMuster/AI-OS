@@ -6,7 +6,7 @@
 Configuration files for the web research skill. Holds the RSS feed registry used by rss_source.py. API keys for keyed sources (Tavily, Brave, Guardian) are stored in `.env` at the project root, not here.
 
 ## Contents
-- rss_feeds.yaml — `skills/web-research/config/rss_feeds.yaml` — RSS feed URLs organised by topic category; consumed by sources/rss_source.py.
+- rss_feeds.yaml — `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] — RSS feed URLs organised by topic category; consumed by sources/rss_source.py.
 
 ## Inputs
 None. These are static config files read by the skill scripts.

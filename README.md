@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 29 May 2026
+**Last updated:** 3 June 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. The current default is Claude by Anthropic. Book Dragon is intended to become AI-agnostic in future, so the underlying model can eventually be swapped while Biblio's identity and rules remain the same.
 
@@ -21,6 +21,7 @@ This project is version-controlled. `LOG.md` files are excluded from the reposit
 - **Create Wiki** — Scaffolds a new LLM Wiki directory with the full structure ready to use. `workflows/create-wiki/` `[active]`
 - **Audit** — Checks all project directories for structural compliance and reports issues. `workflows/audit/` `[active]`
 - **Web Research** — Researches any topic from multiple sources and produces a report. `workflows/web-research/` `[active]`
+- **Link Check** — Inserts Obsidian `[[links]]` into CONTEXT.md files and audits for dead targets. `workflows/link-check/` `[active]`
 
 ## Skills
 

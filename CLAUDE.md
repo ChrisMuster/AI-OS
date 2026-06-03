@@ -1,6 +1,6 @@
 # AI-OS — Claude Instructions
 
-**Last updated:** 2026-05-29
+**Last updated:** 2026-06-03
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose.
 
@@ -12,10 +12,14 @@ At the start of every new session, before doing anything else:
 2. Read `USER.md` — this tells you who you are assisting. If `USER.md` does not exist or still contains `[YOUR_NAME]`, follow the **First-run initialisation** rule immediately before doing anything else.
 3. Read `README.md` — this is the living index of everything in the project. Individual wikis are not listed in README.md (they are personal content); if `wikis/CONTEXT.md` exists, read it too — it is the authoritative list of what wikis have been created.
 4. Read the last 15 entries of the root `LOG.md` — this tells you what has happened recently. If `LOG.md` does not exist at the root, this is a fresh clone — follow the **First-run initialisation** rule immediately before doing anything else.
-5. Wait for the user to say what they want to work on.
-6. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
+5. Check journal files silently — run `python journal/scripts/new-month.py --month YYYY-MM` for any missing file, substituting the real year and month. Two checks:
+   - Current month: if `journal/entries/YYYY-MM.md` for this month does not exist, create it now.
+   - Next month: if today is within the last 7 days of the current month and next month's file does not exist, create it now.
+   Do not mention this to the user unless a file was actually just created, in which case note it briefly.
+6. Wait for the user to say what they want to work on.
+7. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
 
-Do not skip steps 1–4. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–4, greet the user by name (from `USER.md`) and ask what they want to work on today.
+Do not skip steps 1–5. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–5, greet the user by name (from `USER.md`) and ask what they want to work on today.
 
 ## Directory structure
 
@@ -312,7 +316,12 @@ The close-out pass covers every `CONTEXT.md` that was created or modified during
 3. **Revision History completeness** — does the Revision History have an entry for every meaningful change made during this build, including changes to child directories that are significant at the parent level?
 4. **Path format** — are all paths project-root-relative? No `../` references anywhere in the file.
 
-After the close-out pass, run the structural audit (`python workflows/audit/scripts/run.py`) to confirm nothing structural was missed. A clean audit after a clean close-out pass is the definition of "done".
+After the close-out pass:
+
+1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run — it is idempotent and only adds links that are not already present.
+2. Run the structural audit (`python workflows/audit/scripts/run.py`) to confirm nothing structural was missed.
+
+A clean audit after a clean close-out pass is the definition of "done".
 
 This pass is separate from reading context before working. Reading context is what you do before you start; the close-out pass is what you do before you finish.
 

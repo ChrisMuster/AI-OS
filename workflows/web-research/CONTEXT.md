@@ -3,12 +3,12 @@
 **Last modified:** 2026-05-29
 
 ## Purpose
-User-facing CLI workflow for researching a topic and saving a research package ready for Biblio to turn into a report. Thin wrapper around the shared `skills/web-research/` engine — all source logic lives in the skill; this workflow provides the command-line interface, output management, and report brief.
+User-facing CLI workflow for researching a topic and saving a research package ready for Biblio to turn into a report. Thin wrapper around the shared `skills/web-research/` [[skills/web-research/CONTEXT]] engine — all source logic lives in the skill; this workflow provides the command-line interface, output management, and report brief.
 
 ## Contents
-- scripts/run.py — `workflows/web-research/scripts/run.py` — CLI entry point. Parses flags, calls the skill, saves the research package to outputs/, and prints the report brief for Biblio.
-- config/sources.yaml — `workflows/web-research/config/sources.yaml` — Default source priority order and per-source settings for this workflow.
-- outputs/ — `workflows/web-research/outputs/` — Where research packages (JSON) and reports (Markdown) are saved.
+- scripts/run.py — `workflows/web-research/scripts/run.py` [[workflows/web-research/scripts/CONTEXT]] — CLI entry point. Parses flags, calls the skill, saves the research package to outputs/, and prints the report brief for Biblio.
+- config/sources.yaml — `workflows/web-research/config/sources.yaml` [[workflows/web-research/config/CONTEXT]] — Default source priority order and per-source settings for this workflow.
+- outputs/ — `workflows/web-research/outputs/` [[workflows/web-research/outputs/CONTEXT]] — Where research packages (JSON) and reports (Markdown) are saved.
 
 ## Inputs
 All inputs are passed as CLI flags. Only `--topic` is required; everything else has sensible defaults.
@@ -54,10 +54,10 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 5. Append LOG.md with a completion or failure entry.
 
 ## Dependencies
-- `skills/web-research/` — Core research engine; all source adapters and compile logic.
-- `skills/web-research/scripts/requirements.txt` — Python dependencies (install once).
-- `skills/web-research/config/rss_feeds.yaml` — RSS feed list used by the rss source.
-- `skills/image-prompt/` — Image prompt skill; invoked when `--image-prompt` flag is passed.
+- `skills/web-research/` [[skills/web-research/CONTEXT]] — Core research engine; all source adapters and compile logic.
+- `skills/web-research/scripts/requirements.txt` [[skills/web-research/scripts/CONTEXT]] — Python dependencies (install once).
+- `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] — RSS feed list used by the rss source.
+- `skills/image-prompt/` [[skills/image-prompt/CONTEXT]] — Image prompt skill; invoked when `--image-prompt` flag is passed.
 - Python 3.8+ on the host machine.
 
 ## Known Issues

@@ -3,14 +3,14 @@
 **Last modified:** 2026-05-27
 
 ## Purpose
-Scaffolds a new LLM Wiki directory inside `wikis/`. Creates the full wiki structure (raw/, wiki/, CONTEXT.md, index.md, operations-log.md) in one pass so every wiki starts consistent and ready to use.
+Scaffolds a new LLM Wiki directory inside `wikis/` [[wikis/CONTEXT]]. Creates the full wiki structure (raw/, wiki/, CONTEXT.md, index.md, operations-log.md) in one pass so every wiki starts consistent and ready to use.
 
 ## Contents
-- wiki-context.md.template — `workflows/create-wiki/wiki-context.md.template` — The CONTEXT.md template for new wikis, with a `{{WIKI_TOPIC}}` placeholder that gets replaced with the wiki's topic description.
-- scripts/ — `workflows/create-wiki/scripts/` — Automation scripts for this workflow; run.py is the main scaffold entry point.
+- wiki-context.md.template — `workflows/create-wiki/wiki-context.md.template` [[workflows/create-wiki/CONTEXT]] — The CONTEXT.md template for new wikis, with a `{{WIKI_TOPIC}}` placeholder that gets replaced with the wiki's topic description.
+- scripts/ — `workflows/create-wiki/scripts/` [[workflows/create-wiki/scripts/CONTEXT]] — Automation scripts for this workflow; run.py is the main scaffold entry point.
 
 ## Inputs
-- A wiki name from the user (e.g. "ai-fundamentals", "react-patterns"). Used as the directory name under `wikis/`.
+- A wiki name from the user (e.g. "ai-fundamentals", "react-patterns"). Used as the directory name under `wikis/` [[wikis/CONTEXT]].
 - A topic description from the user (e.g. "AI and machine learning fundamentals"). Replaces `{{WIKI_TOPIC}}` in the wiki's CONTEXT.md.
 
 ## Outputs
@@ -30,11 +30,11 @@ A fully scaffolded wiki directory at `wikis/<wiki-name>/` containing:
 4. The script handles everything: directory and file creation, updates to wikis/CONTEXT.md and README.md, all LOG entries, and a final structural audit to verify nothing is broken.
 
 ## Dependencies
-- `CLAUDE.md` (root) — Defines the CONTEXT.md schema, LOG.md format, and verification checklist that this workflow follows.
-- `templates/` — The general CONTEXT.md and LOG.md templates inform the structure for subdirectories (raw/, wiki/), though the wiki's own CONTEXT.md uses a wiki-specific template stored in this workflow directory.
-- `wikis/CONTEXT.md` — Updated automatically by run.py on each run.
-- `README.md` (root) — Updated automatically by run.py on each run.
-- `workflows/create-wiki/scripts/run.py` — The main automation script that handles all file creation and updates.
+- `CLAUDE.md` [[CLAUDE]] (root) — Defines the CONTEXT.md schema, LOG.md format, and verification checklist that this workflow follows.
+- `templates/` [[templates/CONTEXT]] — The general CONTEXT.md and LOG.md templates inform the structure for subdirectories (raw/, wiki/), though the wiki's own CONTEXT.md uses a wiki-specific template stored in this workflow directory.
+- `wikis/CONTEXT.md` [[wikis/CONTEXT]] — Updated automatically by run.py on each run.
+- `README.md` [[README]] (root) — Updated automatically by run.py on each run.
+- `workflows/create-wiki/scripts/run.py` [[workflows/create-wiki/scripts/CONTEXT]] — The main automation script that handles all file creation and updates.
 
 ## Known Issues
 - The wiki CONTEXT.md template uses its own structure (based on Andrej Karpathy's LLM Wiki pattern) rather than the standard CONTEXT.md schema. This is intentional — the wiki CONTEXT.md serves as an operational instruction set for how to use the wiki, not a generic directory description.

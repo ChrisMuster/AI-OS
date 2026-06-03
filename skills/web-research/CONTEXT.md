@@ -6,13 +6,13 @@
 Shared research engine for Book Dragon. Fetches content from multiple free and paid web sources, deduplicates and tiers the results by credibility, and returns a structured research package. Any workflow that needs to research a topic before acting imports this skill rather than building its own search logic.
 
 ## Contents
-- SKILL.md — `skills/web-research/SKILL.md` — Full API reference and usage guide for calling this skill from other workflows.
-- scripts/research.py — `skills/web-research/scripts/research.py` — Main importable entry point: `from research import research`.
-- scripts/compile.py — `skills/web-research/scripts/compile.py` — Deduplication, tier assignment, corroboration scoring, and package assembly.
-- scripts/exceptions.py — `skills/web-research/scripts/exceptions.py` — Typed exception classes (QuotaExceededError, AuthError, SourceUnavailableError) and the shared check_response() helper used by all source adapters.
-- scripts/sources/ — `skills/web-research/scripts/sources/` — One adapter per source (tavily, brave, guardian, wikipedia, hackernews, reddit, arxiv, semantic_scholar, stackexchange, devto, rss, scraper).
-- scripts/requirements.txt — `skills/web-research/scripts/requirements.txt` — Python dependencies for the skill.
-- config/rss_feeds.yaml — `skills/web-research/config/rss_feeds.yaml` — RSS feed URLs organised by category.
+- SKILL.md — `skills/web-research/SKILL.md` [[skills/web-research/SKILL]] — Full API reference and usage guide for calling this skill from other workflows.
+- scripts/research.py — `skills/web-research/scripts/research.py` [[skills/web-research/scripts/CONTEXT]] — Main importable entry point: `from research import research`.
+- scripts/compile.py — `skills/web-research/scripts/compile.py` [[skills/web-research/scripts/CONTEXT]] — Deduplication, tier assignment, corroboration scoring, and package assembly.
+- scripts/exceptions.py — `skills/web-research/scripts/exceptions.py` [[skills/web-research/scripts/CONTEXT]] — Typed exception classes (QuotaExceededError, AuthError, SourceUnavailableError) and the shared check_response() helper used by all source adapters.
+- scripts/sources/ — `skills/web-research/scripts/sources/` [[skills/web-research/scripts/sources/CONTEXT]] — One adapter per source (tavily, brave, guardian, wikipedia, hackernews, reddit, arxiv, semantic_scholar, stackexchange, devto, rss, scraper).
+- scripts/requirements.txt — `skills/web-research/scripts/requirements.txt` [[skills/web-research/scripts/CONTEXT]] — Python dependencies for the skill.
+- config/rss_feeds.yaml — `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] — RSS feed URLs organised by category.
 
 ## Inputs
 - `topic` (str, required) — The research question or subject.
@@ -29,16 +29,16 @@ A research package dict with the following structure:
 - `source_count`, `tier_summary`, `corroboration`
 - `sources[]` — Each entry: url, title, content (≤3000 chars), source_type, tier (1–4), tier_label, fetched_at, metadata.
 
-When called via the workflow CLI, the package is also saved as a JSON file in `workflows/web-research/outputs/`.
+When called via the workflow CLI, the package is also saved as a JSON file in `workflows/web-research/outputs/` [[workflows/web-research/outputs/CONTEXT]].
 
 ## Steps
-N/A. This is a shared skill module, not a standalone workflow. See `workflows/web-research/` for the user-facing CLI wrapper that orchestrates the full research-to-report flow.
+N/A. This is a shared skill module, not a standalone workflow. See `workflows/web-research/` [[workflows/web-research/CONTEXT]] for the user-facing CLI wrapper that orchestrates the full research-to-report flow.
 
 ## Dependencies
-- Python 3.8+ with packages listed in `skills/web-research/scripts/requirements.txt`.
+- Python 3.8+ with packages listed in `skills/web-research/scripts/requirements.txt` [[skills/web-research/scripts/CONTEXT]].
 - Free sources (no keys required): wikipedia, hackernews, reddit, arxiv, semantic_scholar, stackexchange, devto, rss, scraper.
 - Keyed sources (API keys in `.env` at project root): tavily (TAVILY_API_KEY), brave (BRAVE_API_KEY), guardian (GUARDIAN_API_KEY). All three are active.
-- `workflows/web-research/config/rss_feeds.yaml` is not used by this skill directly — RSS config lives at `skills/web-research/config/rss_feeds.yaml`.
+- `workflows/web-research/config/rss_feeds.yaml` is not used by this skill directly — RSS config lives at `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]].
 
 ## Known Issues
 - Semantic Scholar rate-limits unauthenticated requests. If it 429s frequently, either add an API key (free) or exclude it via `--exclude semantic_scholar`.

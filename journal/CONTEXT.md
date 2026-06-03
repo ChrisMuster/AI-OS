@@ -6,8 +6,8 @@
 Personal daily journal for the user. Used to note small things done each day — tasks completed, thoughts, ideas, observations. Reviewed by Biblio on request to surface patterns, recurring themes, and insights.
 
 ## Contents
-- entries/ — `journal/entries/` — Monthly markdown files containing daily journal entries. One file per month.
-- scripts/ — `journal/scripts/` — Helper scripts; new-month.py creates the next month's entry file.
+- entries/ — `journal/entries/` [[journal/entries/CONTEXT]] — Monthly markdown files containing daily journal entries. One file per month.
+- scripts/ — `journal/scripts/` [[journal/scripts/CONTEXT]] — Helper scripts; new-month.py creates the next month's entry file.
 
 ## Inputs
 - The user's daily notes, written directly into the relevant monthly file in entries/.
@@ -23,7 +23,7 @@ Personal daily journal for the user. Used to note small things done each day —
 3. To get a review, ask Biblio: "Review my journal for [month / last N days / this year]." Biblio reads the relevant files and reports on themes, patterns, and recurring ideas.
 
 ## Dependencies
-- `journal/scripts/new-month.py` — Used to scaffold each new month's file.
+- `journal/scripts/new-month.py` [[journal/scripts/CONTEXT]] — Used to scaffold each new month's file.
 
 ## Known Issues
 - Pattern analysis quality improves with regular entries. Sparse months will yield thinner insights.

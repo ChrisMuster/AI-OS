@@ -6,8 +6,8 @@
 Holds reusable boilerplate templates for standard files used across Book Dragon. Biblio uses these as the starting point when scaffolding any new directory, ensuring every directory in the project has a consistent structure without freehanding.
 
 ## Contents
-- CONTEXT.md.template — `templates/CONTEXT.md.template` — Boilerplate for new CONTEXT.md files with placeholder variables.
-- LOG.md.template — `templates/LOG.md.template` — Boilerplate for new LOG.md files with placeholder variables.
+- CONTEXT.md.template — `templates/CONTEXT.md.template` [[templates/CONTEXT]] — Boilerplate for new CONTEXT.md files with placeholder variables.
+- LOG.md.template — `templates/LOG.md.template` [[templates/CONTEXT]] — Boilerplate for new LOG.md files with placeholder variables.
 
 ## Inputs
 - The name of the new directory (e.g. daily-standup, product-catalogue, ai-glossary).
@@ -42,7 +42,7 @@ Available placeholders:
 - `{{CREATION_NOTE}}` — Short note for the initial log entry.
 
 ## Dependencies
-- `CLAUDE.md` (root) — Defines the CONTEXT.md schema and LOG.md format that these templates implement. The templates must match the rules in CLAUDE.md at all times.
+- `CLAUDE.md` [[CLAUDE]] (root) — Defines the CONTEXT.md schema and LOG.md format that these templates implement. The templates must match the rules in CLAUDE.md at all times.
 
 ## Known Issues
 - If the CONTEXT.md schema or LOG.md format in root CLAUDE.md changes, the templates here must be updated to match. Drift between the rules and the templates is the fastest way to corrupt the system.

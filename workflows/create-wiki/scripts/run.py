@@ -72,6 +72,30 @@ def append_log(path: Path, ts: str, action: str, note: str) -> None:
         f.write(entry)
 
 
+def run_post_link() -> None:
+    """
+    Run the link-check --link pass after scaffolding so the new wiki's
+    CONTEXT.md files are wired into the Obsidian knowledge graph immediately.
+    Calls add_links_to_file() directly for each CONTEXT.md in the project.
+    Prints a one-line summary.
+    """
+    link_path = PROJECT_ROOT / "workflows" / "link-check" / "scripts" / "run.py"
+    spec   = importlib.util.spec_from_file_location("link_check", link_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+
+    files = module.collect_context_files()
+    total_links = 0
+    files_changed = 0
+    for f in files:
+        changes = module.add_links_to_file(f, dry_run=False)
+        if changes:
+            files_changed += 1
+            total_links += len(changes)
+
+    print(f"  [links] {total_links} link(s) added across {files_changed} file(s)")
+
+
 def run_post_audit() -> None:
     """
     Run the structural audit as a final verification step after scaffolding.
@@ -405,8 +429,9 @@ def scaffold_wiki(wiki_name: str, wiki_topic: str, dry_run: bool) -> None:
         print(f"  [~] workflows/create-wiki/LOG.md updated")
         print(f"  [~] LOG.md (root) updated")
 
-        # --- Post-scaffold audit ---
+        # --- Post-scaffold link pass then audit ---
         print()
+        run_post_link()
         run_post_audit()
 
     print()

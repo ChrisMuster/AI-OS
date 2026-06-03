@@ -127,6 +127,11 @@ STALE_PHRASES = [
     (r'\bTODO\b',        'TODO marker — unresolved item'),
 ]
 
+# Top-level directory names used to identify project [[links]] vs wiki-internal ones
+_LINK_TOP_LEVEL = {"workflows", "wikis", "skills", "templates", "journal"}
+# Root file stems we link (LOG excluded)
+_LINK_ROOT_STEMS = {"CLAUDE", "README", "USER", "SOUL"}
+
 
 def strip_code_blocks(content: str) -> str:
     """Remove fenced code blocks (``` ... ```) so checks ignore example code."""
@@ -150,6 +155,32 @@ def get_checkable_content(content: str) -> str:
     legitimate sources of pattern matches that are not actually problems.
     """
     return strip_revision_history(strip_code_blocks(content))
+
+
+def check_dead_links(content: str) -> list[str]:
+    """
+    Return a warning message for each [[link]] in the file that points to a
+    non-existent .md file. Only checks project-path links (those starting with
+    a known top-level directory or matching a root file stem) — wiki-internal
+    links such as [[page-name]] are ignored.
+    """
+    warnings = []
+    for match in re.finditer(r"\[\[([^\]]+)\]\]", content):
+        raw = match.group(1)
+        target = raw.split("|")[0].strip()  # strip display alias if present
+
+        # Determine if this is a project link worth checking
+        if "/" in target:
+            if target.split("/")[0] not in _LINK_TOP_LEVEL:
+                continue
+        elif target not in _LINK_ROOT_STEMS:
+            continue
+
+        full = PROJECT_ROOT / (target + ".md")
+        if not full.exists():
+            warnings.append(f"dead [[link]] — [[{target}]] points to a non-existent file")
+
+    return warnings
 
 
 def check_stale_phrases(content: str) -> list[str]:
@@ -247,6 +278,10 @@ def audit_directory(directory: Path) -> list[Finding]:
 
             # Stale build-phase language outside code blocks
             for msg in check_stale_phrases(content):
+                findings.append(("WARN", label, f"CONTEXT.md — {msg}"))
+
+            # Dead [[links]]
+            for msg in check_dead_links(content):
                 findings.append(("WARN", label, f"CONTEXT.md — {msg}"))
 
             # Unlisted subdirectories

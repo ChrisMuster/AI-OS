@@ -19,7 +19,7 @@ None directly. Files arrive here when run.py runs and when Biblio writes a repor
 N/A. This is an output directory, not a workflow itself.
 
 ## Dependencies
-- `workflows/web-research/scripts/run.py` — Saves research packages here.
+- `workflows/web-research/scripts/run.py` [[workflows/web-research/scripts/CONTEXT]] — Saves research packages here.
 
 ## Known Issues
 - Output files accumulate over time and are not automatically cleaned up. Remove old packages and reports manually as needed.

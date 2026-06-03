@@ -1,14 +1,15 @@
 # Workflows
 
-**Last modified:** 2026-05-27
+**Last modified:** 2026-06-03
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
 
 ## Contents
-- Create Wiki — `workflows/create-wiki/` — Scaffolds a new LLM Wiki directory inside `wikis/` with the full structure ready to use.
-- Audit — `workflows/audit/` — Walks all project directories and reports structural compliance issues (missing files, sections, paths).
-- Web Research — `workflows/web-research/` — CLI workflow for researching a topic; saves a research package for Biblio to turn into a report.
+- Create Wiki — `workflows/create-wiki/` [[workflows/create-wiki/CONTEXT]] — Scaffolds a new LLM Wiki directory inside `wikis/` [[wikis/CONTEXT]] with the full structure ready to use.
+- Audit — `workflows/audit/` [[workflows/audit/CONTEXT]] — Walks all project directories and reports structural compliance issues (missing files, sections, paths).
+- Web Research — `workflows/web-research/` [[workflows/web-research/CONTEXT]] — CLI workflow for researching a topic; saves a research package for Biblio to turn into a report.
+- Link Check — `workflows/link-check/` [[workflows/link-check/CONTEXT]] — Inserts Obsidian [[links]] into CONTEXT.md files and audits them for dead targets.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -20,8 +21,8 @@ None. Individual workflow subdirectories define their own outputs.
 N/A. This is a container directory, not a workflow itself.
 
 ## Dependencies
-- `CLAUDE.md` (root) — Defines the rules for workflow structure, the skills convention, the CONTEXT.md schema, and the requirement to use templates when scaffolding new workflows.
-- `templates/` — Biblio uses these templates when creating new workflow subdirectories.
+- `CLAUDE.md` [[CLAUDE]] (root) — Defines the rules for workflow structure, the skills convention, the CONTEXT.md schema, and the requirement to use templates when scaffolding new workflows.
+- `templates/` [[templates/CONTEXT]] — Biblio uses these templates when creating new workflow subdirectories.
 
 ## Known Issues
 - The Contents section of this file must be updated every time a new workflow is added or removed. Container directories are easy to forget when the focus is on the new subdirectory itself.
@@ -35,3 +36,4 @@ N/A. This is a container directory, not a workflow itself.
 - 2026-05-13 — Added create-wiki workflow to Contents.
 - 2026-05-27 — Added audit workflow to Contents. Removed long-standing TODO (audit workflow now built).
 - 2026-05-29 — Added web-research workflow to Contents.
+- 2026-06-03 — Added link-check workflow to Contents.

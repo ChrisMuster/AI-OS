@@ -6,7 +6,7 @@
 Given a piece of written content (article, LinkedIn post, blog post, etc.), this skill analyses the content and recommends the most suitable type of accompanying image — real/personal photo, stock photo, or AI-generated — then delivers the appropriate output for the chosen path. For AI-generated images, it produces a fully structured prompt ready to paste into any image generator (ArtSpace.ai, Canva AI, Midjourney, Adobe Firefly, etc.).
 
 ## Contents
-- SKILL.md — `skills/image-prompt/SKILL.md` — Full skill specification: decision criteria, conversation flow, output formats, platform specs, and prompt construction guidelines.
+- SKILL.md — `skills/image-prompt/SKILL.md` [[skills/image-prompt/SKILL]] — Full skill specification: decision criteria, conversation flow, output formats, platform specs, and prompt construction guidelines.
 
 ## Inputs
 - Content to analyse (file path or inline text)
@@ -23,8 +23,8 @@ One of three outputs depending on the recommendation and user choice:
 N/A. This is a skill invoked by Biblio directly, not a standalone workflow with a script.
 
 ## Dependencies
-- `CLAUDE.md` (root) — Governs UK English, CONTEXT.md schema, and shared skill conventions.
-- Invoked by `workflows/web-research/` via the `--image-prompt` flag in `scripts/run.py`, or directly by Biblio on request.
+- `CLAUDE.md` [[CLAUDE]] (root) — Governs UK English, CONTEXT.md schema, and shared skill conventions.
+- Invoked by `workflows/web-research/` [[workflows/web-research/CONTEXT]] via the `--image-prompt` flag in `scripts/run.py`, or directly by Biblio on request.
 
 ## Known Issues
 - None.

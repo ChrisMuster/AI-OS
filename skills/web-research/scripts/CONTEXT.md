@@ -6,11 +6,11 @@
 Python scripts that implement the web research skill. `research.py` is the main importable entry point; `compile.py` assembles raw results into a research package; the `sources/` subdirectory contains one adapter per data source.
 
 ## Contents
-- research.py — `skills/web-research/scripts/research.py` — Main importable function: `from research import research`.
-- compile.py — `skills/web-research/scripts/compile.py` — Deduplication, tier assignment, corroboration scoring, and package assembly.
-- exceptions.py — `skills/web-research/scripts/exceptions.py` — Typed exception classes (QuotaExceededError, AuthError, SourceUnavailableError) and the shared check_response() helper used by all source adapters.
-- requirements.txt — `skills/web-research/scripts/requirements.txt` — Python dependencies for the skill.
-- sources/ — `skills/web-research/scripts/sources/` — Source adapter modules; one per data source.
+- research.py — `skills/web-research/scripts/research.py` [[skills/web-research/scripts/CONTEXT]] — Main importable function: `from research import research`.
+- compile.py — `skills/web-research/scripts/compile.py` [[skills/web-research/scripts/CONTEXT]] — Deduplication, tier assignment, corroboration scoring, and package assembly.
+- exceptions.py — `skills/web-research/scripts/exceptions.py` [[skills/web-research/scripts/CONTEXT]] — Typed exception classes (QuotaExceededError, AuthError, SourceUnavailableError) and the shared check_response() helper used by all source adapters.
+- requirements.txt — `skills/web-research/scripts/requirements.txt` [[skills/web-research/scripts/CONTEXT]] — Python dependencies for the skill.
+- sources/ — `skills/web-research/scripts/sources/` [[skills/web-research/scripts/sources/CONTEXT]] — Source adapter modules; one per data source.
 
 ## Inputs
 None directly. Called via `research.py`.
@@ -22,7 +22,7 @@ None directly. `research.py` returns a research package dict.
 N/A. This is a scripts container, not a workflow itself.
 
 ## Dependencies
-- `skills/web-research/config/rss_feeds.yaml` — Used by `sources/rss_source.py`.
+- `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] — Used by `sources/rss_source.py`.
 - Python packages listed in `requirements.txt`.
 
 ## Known Issues
