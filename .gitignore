@@ -37,6 +37,11 @@ wikis/*
 journal/entries/*
 !journal/entries/.gitkeep
 !journal/entries/CONTEXT.md
+# conversations/ holds personal saved conversation summaries; directory skeleton kept via .gitkeep
+# CONTEXT.md and LOG.md are structural (caught by **/LOG.md above) — only conversation files are personal
+conversations/*
+!conversations/.gitkeep
+!conversations/CONTEXT.md
 
 # Tool settings — machine-specific, never commit
 # settings.local.json contains granted command permissions for this machine; settings.json is project config and IS tracked

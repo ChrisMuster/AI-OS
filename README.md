@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 3 June 2026
+**Last updated:** 3 June 2026 (conversations/ added)
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. The current default is Claude by Anthropic. Book Dragon is intended to become AI-agnostic in future, so the underlying model can eventually be swapped while Biblio's identity and rules remain the same.
 
@@ -32,6 +32,10 @@ This project is version-controlled. `LOG.md` files are excluded from the reposit
 ## Wikis
 
 Your personal wikis appear here once created — use the Create Wiki workflow to add them. Individual wikis are not listed in this file as they are personal content.
+
+## Conversations
+
+- **Conversations** — Saved summaries of notable sessions with Biblio — ideas explored, decisions made, threads left open. Saved by choice, not automatically. `conversations/` `[active]`
 
 ## Journal
 
