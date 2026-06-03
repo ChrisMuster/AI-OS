@@ -22,6 +22,7 @@ This project is version-controlled. `LOG.md` files are excluded from the reposit
 - **Audit** — Checks all project directories for structural compliance and reports issues. `workflows/audit/` `[active]`
 - **Web Research** — Researches any topic from multiple sources and produces a report. `workflows/web-research/` `[active]`
 - **Link Check** — Inserts Obsidian `[[links]]` into CONTEXT.md files and audits for dead targets. `workflows/link-check/` `[active]`
+- **Weather** — Fetches current conditions and forecasts for any location worldwide. No API keys required. `workflows/weather/` `[active]`
 
 ## Skills
 

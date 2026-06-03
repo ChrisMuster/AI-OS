@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python workflows/audit/scripts/run.py *)",
+      "Bash(python workflows/create-wiki/scripts/run.py *)",
+      "Bash(python workflows/link-check/scripts/run.py *)",
+      "Bash(python workflows/web-research/scripts/run.py *)",
+      "Bash(python workflows/weather/scripts/run.py *)",
+      "Bash(python journal/scripts/new-month.py *)"
+    ]
+  }
+}

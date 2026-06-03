@@ -21,6 +21,9 @@ workflows/web-research/outputs/*.md
 # Audit report — generated output, local only
 workflows/audit/last-report.md
 
+# Weather workflow — saved locations contain personal place data; local only
+workflows/weather/locations.json
+
 # Personal content — never commit
 # USER.md contains the user's name and personal context — excluded so cloners start fresh
 USER.md
@@ -36,8 +39,8 @@ journal/entries/*
 !journal/entries/CONTEXT.md
 
 # Tool settings — machine-specific, never commit
-# .claude/settings.local.json contains granted command permissions for this machine
-.claude/
+# settings.local.json contains granted command permissions for this machine; settings.json is project config and IS tracked
+.claude/settings.local.json
 # .obsidian/ contains Obsidian vault settings; workspace.json changes on every use
 .obsidian/
 
