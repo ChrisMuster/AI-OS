@@ -1,11 +1,12 @@
 # Web Research (Workflow)
 
-**Last modified:** 2026-05-29
+**Last modified:** 2026-06-05
 
 ## Purpose
 User-facing CLI workflow for researching a topic and saving a research package ready for Biblio to turn into a report. Thin wrapper around the shared `skills/web-research/` [[skills/web-research/CONTEXT]] engine — all source logic lives in the skill; this workflow provides the command-line interface, output management, and report brief.
 
 ## Contents
+- SETUP.md — `workflows/web-research/SETUP.md` [[workflows/web-research/SETUP]] — Step-by-step guide to prerequisites, free-tier sources, API key acquisition, configuration via .env, and verification.
 - scripts/run.py — `workflows/web-research/scripts/run.py` [[workflows/web-research/scripts/CONTEXT]] — CLI entry point. Parses flags, calls the skill, saves the research package to outputs/, and prints the report brief for Biblio.
 - config/sources.yaml — `workflows/web-research/config/sources.yaml` [[workflows/web-research/config/CONTEXT]] — Default source priority order and per-source settings for this workflow.
 - outputs/ — `workflows/web-research/outputs/` [[workflows/web-research/outputs/CONTEXT]] — Where research packages (JSON) and reports (Markdown) are saved.
@@ -58,7 +59,7 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 - `skills/web-research/scripts/requirements.txt` [[skills/web-research/scripts/CONTEXT]] — Python dependencies (install once).
 - `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] — RSS feed list used by the rss source.
 - `skills/image-prompt/` [[skills/image-prompt/CONTEXT]] — Image prompt skill; invoked when `--image-prompt` flag is passed.
-- Python 3.8+ on the host machine.
+- Python 3.9+ on the host machine (project minimum; see `REQUIREMENTS.md`).
 
 ## Known Issues
 - Some sources (Semantic Scholar, Stack Exchange) have rate limits on unauthenticated requests. Exclude them if you hit 429 errors.
@@ -68,3 +69,5 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 ## Revision History
 - 2026-05-29 — Initial creation. Step 1: free sources, CLI wrapper, research package output. Report step is Biblio-driven.
 - 2026-05-29 — Added --image-prompt and --platform flags to run.py. Image prompt brief appended to Biblio brief when flag is present. Dependency on skills/image-prompt/ added.
+- 2026-06-05 — Added SETUP.md: full setup guide covering free-tier sources, API key acquisition for Tavily, Brave Search, and The Guardian, .env configuration, and verification.
+- 2026-06-05 — Added --check flag to scripts/run.py: static pre-flight check covering Python version, required packages, .env presence, and API key status. No network calls or credits used.

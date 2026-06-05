@@ -33,11 +33,12 @@ Examples:
   python run.py --topic "quantum computing" --include arxiv,wikipedia --words 2000 --type article
   python run.py --topic "AI news this week" --rss-category ai-news --sources 10
   python run.py --topic "example" --dry-run
+  python run.py --check
         """,
     )
 
     # Research
-    parser.add_argument('--topic', required=True, help='Research topic or question')
+    parser.add_argument('--topic', default=None, help='Research topic or question')
     parser.add_argument('--sources', type=int, default=8, metavar='N',
                         help='Max number of sources to gather (default: 8)')
     parser.add_argument('--include', metavar='SOURCES',
@@ -91,8 +92,16 @@ Examples:
                         help='Custom filename for the research package (default: auto-generated)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Preview what would happen without making any changes')
+    parser.add_argument('--check', action='store_true',
+                        help='Run a static pre-flight check (no network calls, no API credits) and exit')
 
     args = parser.parse_args()
+
+    if args.check:
+        sys.exit(0 if _run_check() else 1)
+
+    if not args.topic:
+        parser.error('--topic is required (or use --check to verify your setup)')
 
     # Parse list args
     include = [s.strip() for s in args.include.split(',')] if args.include else None
@@ -230,6 +239,100 @@ Examples:
     print('-' * 60)
 
     _append_log(args.topic, package['source_count'], str(package_path))
+
+
+def _run_check():
+    """Static pre-flight check. No network calls, no API credits used."""
+    import importlib.util
+
+    all_ok = True
+
+    # ── Python version ────────────────────────────────────────────────────
+    print('Python:')
+    major, minor, micro = sys.version_info[:3]
+    version_str = f'{major}.{minor}.{micro}'
+    if (major, minor) >= (3, 9):
+        print(f'  [OK]      Python {version_str}')
+    else:
+        print(f'  [FAIL]    Python {version_str} — 3.9 or later required')
+        all_ok = False
+
+    # ── Required packages ─────────────────────────────────────────────────
+    print('\nRequired packages:')
+    packages = [
+        ('requests',      'requests'),
+        ('beautifulsoup4','bs4'),
+        ('trafilatura',   'trafilatura'),
+        ('feedparser',    'feedparser'),
+        ('textstat',      'textstat'),
+        ('pyyaml',        'yaml'),
+        ('python-dotenv', 'dotenv'),
+        ('lxml',          'lxml'),
+        ('tavily-python', 'tavily'),
+    ]
+    dotenv_available = False
+    for pkg_name, import_name in packages:
+        if importlib.util.find_spec(import_name) is not None:
+            print(f'  [OK]      {pkg_name}')
+            if import_name == 'dotenv':
+                dotenv_available = True
+        else:
+            print(f'  [MISSING] {pkg_name}')
+            all_ok = False
+    if not all_ok:
+        print('\n  Fix: pip install -r skills/web-research/scripts/requirements.txt')
+
+    # ── .env file ─────────────────────────────────────────────────────────
+    print('\n.env file:')
+    env_path = _PROJECT_ROOT / '.env'
+    if not env_path.exists():
+        print('  [--]      .env not found — web research will use free sources only.')
+        print('            Copy .env.example to .env and add API keys to enable extended sources.')
+        print('            See workflows/web-research/SETUP.md for instructions.')
+    else:
+        print('  [OK]      .env found')
+
+        # ── API keys ──────────────────────────────────────────────────────
+        print('\nAPI keys:')
+        env_vars = {}
+        if dotenv_available:
+            from dotenv import dotenv_values
+            env_vars = dotenv_values(env_path)
+
+        api_keys = [
+            ('TAVILY_API_KEY',   'Tavily'),
+            ('BRAVE_API_KEY',    'Brave Search'),
+            ('GUARDIAN_API_KEY', 'The Guardian'),
+        ]
+        any_configured = False
+        for key, label in api_keys:
+            val = env_vars.get(key, '').strip()
+            if val and not val.startswith('your-'):
+                print(f'  [OK]      {label} ({key})')
+                any_configured = True
+            else:
+                print(f'  [--]      {label} ({key}) — not configured (optional)')
+
+        if not any_configured:
+            print('\n  No API keys configured — web research will run on free sources only.')
+            print('  See workflows/web-research/SETUP.md to add optional keys.')
+
+        # ── Other settings ────────────────────────────────────────────────
+        print('\nOther settings:')
+        user_email = env_vars.get('USER_EMAIL', '').strip()
+        if user_email and user_email != 'your.email@example.com':
+            print('  [OK]      USER_EMAIL set')
+        else:
+            print('  [--]      USER_EMAIL not set — API requests will use a generic User-Agent header')
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    print()
+    if all_ok:
+        print('Pre-flight check passed. Web research is ready to run.')
+    else:
+        print('Pre-flight check found issues — fix items marked [FAIL] or [MISSING] before running.')
+
+    return all_ok
 
 
 def _slugify(text):

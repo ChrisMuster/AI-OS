@@ -3,7 +3,7 @@
 **Last modified:** 2026-06-03
 
 ## Purpose
-Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, broken Contents paths, unlisted subdirectories, and dead Obsidian [[links]]. Produces a report of failures and warnings for review.
+Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, broken Contents paths, unlisted subdirectories, and dead Obsidian [[links]]. Also checks that CLAUDE.md has not exceeded its line-count threshold (600 lines). Produces a report of failures and warnings for review.
 
 ## Contents
 - scripts/ — `workflows/audit/scripts/` [[workflows/audit/scripts/CONTEXT]] — Automation scripts for this workflow; run.py is the main audit entry point.
@@ -34,3 +34,4 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 - 2026-05-27 — Initial creation. Resolves the long-standing TODO in workflows/CONTEXT.md Known Issues.
 - 2026-05-29 — scripts/run.py updated with two new warning checks: parent-relative path detection and stale build-phrase detection. Both skip fenced code blocks and Revision History sections to reduce false positives.
 - 2026-06-03 — Added dead [[link]] check. Audit now warns on any project [[links]] that point to non-existent .md files. Wiki-internal links are ignored.
+- 2026-06-05 — Added CLAUDE.md line-count check. Warns when CLAUDE.md exceeds 600 lines, prompting a review and reorganisation into a rules/ directory.

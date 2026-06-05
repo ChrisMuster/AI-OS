@@ -39,6 +39,9 @@ SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".claude"}
 # Top-level directory names that indicate a project-root-relative path
 TOP_LEVEL_DIRS = {"workflows", "wikis", "skills", "templates"}
 
+# Line-count threshold for CLAUDE.md — warn when exceeded
+CLAUDE_MD_LINE_THRESHOLD = 600
+
 # Required sections in every standard-format CONTEXT.md
 REQUIRED_SECTIONS = [
     "Purpose",
@@ -342,6 +345,18 @@ def collect_dirs() -> list[Path]:
 def run_audit() -> tuple[list[Finding], int]:
     dirs = collect_dirs()
     findings: list[Finding] = []
+
+    # Check CLAUDE.md line count
+    claude_md = PROJECT_ROOT / "CLAUDE.md"
+    if claude_md.exists():
+        line_count = len(claude_md.read_text(encoding="utf-8").splitlines())
+        if line_count > CLAUDE_MD_LINE_THRESHOLD:
+            findings.append((
+                "WARN", "CLAUDE.md",
+                f"CLAUDE.md has {line_count} lines (threshold: {CLAUDE_MD_LINE_THRESHOLD})"
+                " — review and reorganise: extract rarely-used detail into rules/ and replace with pointers"
+            ))
+
     for d in dirs:
         findings.extend(audit_directory(d))
     return findings, len(dirs)

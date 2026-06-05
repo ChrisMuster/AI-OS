@@ -24,6 +24,11 @@ workflows/audit/last-report.md
 # Weather workflow — saved locations contain personal place data; local only
 workflows/weather/locations.json
 
+# memory/ holds personal memory files (user context, feedback, project decisions); CONTEXT.md is structural and tracked
+memory/*
+!memory/.gitkeep
+!memory/CONTEXT.md
+
 # Personal content — never commit
 # USER.md contains the user's name and personal context — excluded so cloners start fresh
 USER.md
