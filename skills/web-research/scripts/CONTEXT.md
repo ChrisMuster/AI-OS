@@ -1,6 +1,6 @@
 # Web Research — scripts/
 
-**Last modified:** 2026-05-29
+**Last modified:** 2026-06-06
 
 ## Purpose
 Python scripts that implement the web research skill. `research.py` is the main importable entry point; `compile.py` assembles raw results into a research package; the `sources/` subdirectory contains one adapter per data source.
@@ -31,3 +31,4 @@ N/A. This is a scripts container, not a workflow itself.
 ## Revision History
 - 2026-05-29 — Initial creation.
 - 2026-05-29 — Step 5: exceptions.py added. All source adapters updated to raise typed exceptions. research.py now tracks source_status and quality_flags per run.
+- 2026-06-06 — research.py updated: loads SUBSCRIBED_DOMAINS from .env; passes subscribed_domains to scraper; separates paywalled_subscribed entries from raw results; adds paywalled_urls list to the research package.

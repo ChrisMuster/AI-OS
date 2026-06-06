@@ -1,6 +1,6 @@
 # Web Research — Setup Guide
 
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-06
 
 ## What is web research?
 
@@ -87,6 +87,31 @@ The Guardian Open Platform gives free access to Guardian and Observer articles. 
        GUARDIAN_API_KEY=your-key-here
 
 Leave any entry blank if you do not have that key — the workflow automatically skips sources with no key configured. You do not need all three.
+
+## Subscription sites — paywalled content
+
+Some sites require a paid subscription to read articles in full. The web research pipeline cannot bypass paywalls, but it can detect when a URL from a site you subscribe to could not be read, and flag it for you to retrieve manually.
+
+### How it works
+
+When the scraper encounters a URL from a subscribed domain and cannot extract content (paywall response), it records the URL rather than silently discarding it. At the end of a research run, any such URLs are printed under a **PAYWALLED CONTENT** section. You can then visit those URLs yourself, copy the article text, and paste it into the chat — Biblio will include it as a source in the report.
+
+This only applies to the direct scraper (when you pass `--urls` to the workflow). URLs appearing in search results from Tavily or Brave are already in the research package as snippets; flagging is most useful when you pass a specific article URL you want fully read.
+
+### Configuration
+
+In your `.env`, add `SUBSCRIBED_DOMAINS` as a comma-separated list of the domains you have subscriptions to:
+
+    SUBSCRIBED_DOMAINS=medium.com,ground.news,name.substack.com
+
+Rules:
+- List only domains you actually subscribe to — flagging is per-subscription, not site-wide.
+- For Substack newsletters, add each one by its specific subdomain (e.g. `name.substack.com`). Do not add `substack.com` as a blanket entry — you may have subscriptions to some newsletters but not others.
+- Ask Biblio to update this list whenever you add a new subscription.
+
+The `--check` flag shows which domains are currently configured.
+
+---
 
 ## Verification
 

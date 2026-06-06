@@ -1,6 +1,6 @@
 # Web Research Workflow — scripts/
 
-**Last modified:** 2026-06-05
+**Last modified:** 2026-06-06
 
 ## Purpose
 CLI entry point for the web-research workflow. `run.py` is the only script here — it parses command-line flags, calls the shared skill, saves the research package, and prints the report brief for Biblio.
@@ -27,3 +27,4 @@ N/A. This is a scripts container, not a workflow itself.
 - 2026-05-29 — Initial creation. run.py added.
 - 2026-05-29 — run.py updated: added --image-prompt and --platform flags; image prompt brief section appended to Biblio report brief when flag is present.
 - 2026-06-05 — run.py updated: added --check flag for static pre-flight check (Python version, required packages, .env presence, API key status). --topic changed from required to optional when --check is used.
+- 2026-06-06 — run.py updated: paywalled content sections added to results summary and Biblio brief; --check extended to show SUBSCRIBED_DOMAINS configuration.

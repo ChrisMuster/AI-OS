@@ -199,6 +199,27 @@ Examples:
             print('  Check the quality_flags field in the JSON for full detail.')
         print('!' * 60)
 
+    # Surface any paywalled URLs from subscribed domains
+    paywalled_urls = package.get('paywalled_urls', [])
+    if paywalled_urls:
+        print('\n' + '~' * 60)
+        print('[~] PAYWALLED CONTENT — YOU HAVE A SUBSCRIPTION')
+        print('~' * 60)
+        print('  The following URLs were found but could not be read.')
+        print('  You have a subscription to these sites. Visit each URL,')
+        print('  copy the article content, and paste it into the chat so')
+        print('  Biblio can include it in the research.')
+        print()
+        for item in paywalled_urls:
+            label = f'[{item["domain"]}]' if item.get('domain') else ''
+            title = item.get('title', '')
+            if title and title != item['url']:
+                print(f'  {label} {title}')
+                print(f'        {item["url"]}')
+            else:
+                print(f'  {label} {item["url"]}')
+        print('~' * 60)
+
     # Print Biblio brief
     print('\n' + '-' * 60)
     print('BIBLIO REPORT BRIEF')
@@ -224,6 +245,16 @@ Examples:
         print('Please acknowledge this in the report and adjust confidence')
         print('markers accordingly. Do not assert claims as well-sourced if')
         print('key Tier 1 sources were absent.')
+
+    if paywalled_urls:
+        print()
+        print('[~] PAYWALLED SOURCES — the user has subscriptions to these sites.')
+        print('    The URLs below were found but could not be read automatically.')
+        print('    If the user provides content from any of them, include it as')
+        print('    a source in the report. Do not speculate about their content.')
+        for item in paywalled_urls:
+            print(f'    {item["url"]}')
+
     print(f'\nSave the report to: {report_path}')
 
     if args.image_prompt:
@@ -324,6 +355,19 @@ def _run_check():
             print('  [OK]      USER_EMAIL set')
         else:
             print('  [--]      USER_EMAIL not set — API requests will use a generic User-Agent header')
+
+        # ── Subscribed domains ────────────────────────────────────────────
+        print('\nSubscribed domains (paywalled content detection):')
+        subscribed_raw = env_vars.get('SUBSCRIBED_DOMAINS', '').strip()
+        if subscribed_raw:
+            domains = [d.strip() for d in subscribed_raw.split(',') if d.strip()]
+            print(f'  [OK]      {len(domains)} domain(s) configured:')
+            for d in domains:
+                print(f'            {d}')
+        else:
+            print('  [--]      SUBSCRIBED_DOMAINS not set — paywalled content from')
+            print('            subscription sites will not be flagged automatically.')
+            print('            See workflows/web-research/SETUP.md to configure.')
 
     # ── Summary ───────────────────────────────────────────────────────────
     print()

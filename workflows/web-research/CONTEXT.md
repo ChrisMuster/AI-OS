@@ -1,6 +1,6 @@
 # Web Research (Workflow)
 
-**Last modified:** 2026-06-05
+**Last modified:** 2026-06-06
 
 ## Purpose
 User-facing CLI workflow for researching a topic and saving a research package ready for Biblio to turn into a report. Thin wrapper around the shared `skills/web-research/` [[skills/web-research/CONTEXT]] engine — all source logic lives in the skill; this workflow provides the command-line interface, output management, and report brief.
@@ -9,7 +9,7 @@ User-facing CLI workflow for researching a topic and saving a research package r
 - SETUP.md — `workflows/web-research/SETUP.md` [[workflows/web-research/SETUP]] — Step-by-step guide to prerequisites, free-tier sources, API key acquisition, configuration via .env, and verification.
 - scripts/run.py — `workflows/web-research/scripts/run.py` [[workflows/web-research/scripts/CONTEXT]] — CLI entry point. Parses flags, calls the skill, saves the research package to outputs/, and prints the report brief for Biblio.
 - config/sources.yaml — `workflows/web-research/config/sources.yaml` [[workflows/web-research/config/CONTEXT]] — Default source priority order and per-source settings for this workflow.
-- outputs/ — `workflows/web-research/outputs/` [[workflows/web-research/outputs/CONTEXT]] — Where research packages (JSON) and reports (Markdown) are saved.
+- outputs/ — `workflows/web-research/outputs/` [[workflows/web-research/outputs/CONTEXT]] — Where research packages (JSON) and reports (Markdown) are saved. Research packages include a `paywalled_urls` field listing any subscribed-domain URLs that could not be read.
 
 ## Inputs
 All inputs are passed as CLI flags. Only `--topic` is required; everything else has sensible defaults.
@@ -42,6 +42,7 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 **Other:**
 - `--output` — Custom output filename.
 - `--dry-run` — Preview without making changes.
+- `SUBSCRIBED_DOMAINS` (.env) — Comma-separated domains the user subscribes to; paywalled content from these sites is flagged rather than discarded.
 
 ## Outputs
 - `outputs/research-[slug]-[date].json` — Research package with sources, tiers, and corroboration data.
@@ -71,3 +72,4 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 - 2026-05-29 — Added --image-prompt and --platform flags to run.py. Image prompt brief appended to Biblio brief when flag is present. Dependency on skills/image-prompt/ added.
 - 2026-06-05 — Added SETUP.md: full setup guide covering free-tier sources, API key acquisition for Tavily, Brave Search, and The Guardian, .env configuration, and verification.
 - 2026-06-05 — Added --check flag to scripts/run.py: static pre-flight check covering Python version, required packages, .env presence, and API key status. No network calls or credits used.
+- 2026-06-06 — Added subscription sites / paywalled content support. SUBSCRIBED_DOMAINS added to .env; scraper detects paywalled responses from subscribed domains and flags them; run.py surfaces flagged URLs in the summary and Biblio brief; --check shows configured domains. SETUP.md updated with configuration guide.

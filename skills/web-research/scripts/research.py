@@ -39,6 +39,16 @@ from sources.scraper_source import fetch as fetch_scraper
 from compile import compile_research_package
 from exceptions import QuotaExceededError, AuthError, SourceUnavailableError
 
+# Domains the user has paid subscriptions to.
+# Loaded from SUBSCRIBED_DOMAINS in .env (comma-separated list).
+# When the scraper encounters paywalled content from these domains, it returns
+# a flagged entry rather than silently discarding the URL.
+_subscribed_domains = set(
+    d.strip().lower()
+    for d in os.environ.get('SUBSCRIBED_DOMAINS', '').split(',')
+    if d.strip()
+)
+
 # Registry: source name -> (fetch_function, enabled_by_default)
 # Keyed sources auto-enable when their environment variable is present.
 SOURCE_REGISTRY = {
@@ -109,7 +119,8 @@ def research(
             if source_name == 'rss':
                 results = fetch_fn(topic, max_results=per_source_limit, category=rss_category)
             elif source_name == 'scraper':
-                results = fetch_fn(topic, max_results=per_source_limit, urls=scrape_urls or [])
+                results = fetch_fn(topic, max_results=per_source_limit, urls=scrape_urls or [],
+                                   subscribed_domains=_subscribed_domains)
             else:
                 results = fetch_fn(topic, max_results=per_source_limit)
             raw_results.extend(results)
@@ -140,6 +151,12 @@ def research(
             source_status['failed'].append(source_name)
             print(f'  [WARNING] {source_name} failed: {exc}')
 
+    # Separate paywalled entries from regular results before compiling.
+    # These are subscribed-domain URLs the scraper could not read; they are
+    # preserved for the user to fetch manually rather than silently discarded.
+    paywalled_raw = [r for r in raw_results if r.get('source_type') == 'paywalled_subscribed']
+    raw_results    = [r for r in raw_results if r.get('source_type') != 'paywalled_subscribed']
+
     package = compile_research_package(
         topic=topic,
         raw_results=raw_results,
@@ -150,6 +167,16 @@ def research(
     # Attach full source audit to the package
     package['source_status'] = source_status
     package['quality_flags'] = quality_flags
+
+    # Paywalled URLs from subscribed domains — flagged for manual retrieval
+    package['paywalled_urls'] = [
+        {
+            'url':    r['url'],
+            'title':  r.get('title', r['url']),
+            'domain': r.get('domain', ''),
+        }
+        for r in paywalled_raw
+    ]
 
     return package
 
