@@ -6,7 +6,8 @@
       "Bash(python workflows/link-check/scripts/run.py *)",
       "Bash(python workflows/web-research/scripts/run.py *)",
       "Bash(python workflows/weather/scripts/run.py *)",
-      "Bash(python journal/scripts/new-month.py *)"
+      "Bash(python journal/scripts/new-month.py *)",
+      "Bash(date *)"
     ]
   }
 }

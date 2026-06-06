@@ -1,6 +1,6 @@
 # Journal
 
-**Last modified:** 2026-05-29
+**Last modified:** 2026-06-05
 
 ## Purpose
 Personal daily journal for the user. Used to note small things done each day — tasks completed, thoughts, ideas, observations. Reviewed by Biblio on request to surface patterns, recurring themes, and insights.
@@ -22,6 +22,27 @@ Personal daily journal for the user. Used to note small things done each day —
 2. Open `journal/entries/YYYY-MM.md` in any text editor. Find today's heading and write freely beneath it. Save when done.
 3. To get a review, ask Biblio: "Review my journal for [month / last N days / this year]." Biblio reads the relevant files and reports on themes, patterns, and recurring ideas.
 
+## USER.md sync
+
+At session startup, Biblio reads the current month's journal entries (and the
+previous month's if today is within the first 7 days of the month) and scans
+for any information matching USER.md tracked categories that is not already
+recorded there.
+
+Tracked categories:
+- Household: family members (new people mentioned, relationships clarified),
+  living situation changes, pet situation.
+- Work: employer or role changes, new tech stack items, shifts in career goals.
+- Projects and commitments: new projects started, commitments added or dropped.
+- Background: new locations, education, hobbies or interests mentioned.
+- Preferences: communication preferences expressed or corrected.
+- Financial and economic context: framing shifts, new areas of interest mentioned.
+
+If new information is found, Biblio flags it specifically:
+"I noticed [X] in your journal — should I add that to USER.md?"
+Biblio waits for confirmation before making any change. It never silently
+updates USER.md from journal content.
+
 ## Dependencies
 - `journal/scripts/new-month.py` [[journal/scripts/CONTEXT]] — Used to scaffold each new month's file.
 
@@ -31,3 +52,4 @@ Personal daily journal for the user. Used to note small things done each day —
 
 ## Revision History
 - 2026-05-29 — Initial creation.
+- 2026-06-05 — Added USER.md sync section. Biblio now scans recent journal entries at session startup and flags new information matching USER.md tracked categories for confirmation.

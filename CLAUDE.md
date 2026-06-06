@@ -1,6 +1,6 @@
 # AI-OS — Claude Instructions
 
-**Last updated:** 2026-06-05 (memory system, permission rules, and rule reorganisation)
+**Last updated:** 2026-06-06 (memory system, permission rules, rule reorganisation, USER.md expansion and journal sync, first-run onboarding Q&A)
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose.
 
@@ -17,10 +17,11 @@ At the start of every new session, before doing anything else:
    - Current month: if `journal/entries/YYYY-MM.md` for this month does not exist, create it now.
    - Next month: if today is within the last 7 days of the current month and next month's file does not exist, create it now.
    Do not mention this to the user unless a file was actually just created, in which case note it briefly.
-7. Wait for the user to say what they want to work on.
-8. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
+7. Scan journal entries for USER.md updates — read the current month's journal file (and the previous month's if today is within the first 7 days of the month). Check for any information matching USER.md tracked categories that is not already recorded there. Tracked categories are listed in `journal/CONTEXT.md`. If anything new is found, hold the finding and surface it after greeting the user: "I noticed [X] in your journal — should I add that to USER.md?" Wait for confirmation before making any change. If nothing new is found, say nothing.
+8. Wait for the user to say what they want to work on.
+9. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
 
-Do not skip steps 1–6. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–6, greet the user by name (from `USER.md`) and ask what they want to work on today.
+Do not skip steps 1–7. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–7, greet the user by name (from `USER.md`) and ask what they want to work on today.
 
 Once the task is known and context is read (steps 7–8), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
 
@@ -45,7 +46,7 @@ The correct sequence is: read and understand the task, summarise your understand
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
-**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the journal check (step 6) and the first-run initialisation procedure when triggered. These are housekeeping operations defined by this file, not user-directed work. They run once on a fresh clone and on each session for the journal check; they do not require explicit permission.
+**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the journal check (step 6), the journal USER.md scan (step 7), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by this file, not user-directed work. They run once on a fresh clone and on each session for the journal steps; they do not require explicit permission.
 
 ### Reading context before working
 
@@ -399,6 +400,14 @@ Either condition means the system has not been set up on this machine yet. Perfo
    a. Ask the user for their name, location, and preferred writing style.
    b. Ask for a brief description of who they are and what they want help with.
    c. Create `USER.md` from `USER.md.template`, filling in the answers provided.
+   d. Note that USER.md has been created with several detailed sections currently
+      marked `[not yet recorded]` — household and family, work, career goals,
+      active projects, background, preferences, and financial context. These help
+      Biblio assist far more effectively. Offer to run the USER.md onboarding Q&A
+      now or later. If the user chooses now, go through each section in order:
+      ask the relevant questions, confirm the answers, and write them directly
+      into USER.md. If they prefer later, they can trigger it at any time by
+      saying "run USER.md onboarding Q&A."
 3. Walk every auditable directory in the project (the same tree the audit script covers).
 4. For each directory missing a `LOG.md`, create one using the standard `LOG.md` template. Fetch the real timestamp first (PowerShell: `Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"`, Bash: `date +"%Y-%m-%dT%H:%M:%S%z"`), then write the entry:
    `[YYYY-MM-DDTHH:MM:SS±HH:MM] | Actor: Biblio | Action: created | Note: First-run initialisation — LOG.md created on fresh clone.`
@@ -409,7 +418,10 @@ Either condition means the system has not been set up on this machine yet. Perfo
    - Workflows that depend on web research may produce less thorough or less accurate results without extended source coverage.
    - To obtain and configure API keys, follow `workflows/web-research/SETUP.md`.
 8. Append a line to the `## Getting started` section of `README.md` recording the date the system was initialised on this machine.
-9. Greet the user by name, confirm the system has been initialised, and ask what they want to work on.
+9. Greet the user by name, confirm the system has been initialised, and ask what
+   they want to work on. If the USER.md onboarding Q&A was deferred in step 2d,
+   mention it briefly: "When you're ready, we can run the USER.md onboarding Q&A
+   to fill in the remaining sections."
 
 This pass runs only once. On every subsequent session, `USER.md` and all `LOG.md` files already exist locally, so steps 2 and 5 of session startup proceed normally.
 

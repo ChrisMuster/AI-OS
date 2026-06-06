@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 5 June 2026 (memory/ added; requirements documented; Claude plan and access options documented; web research setup guide added)
+**Last updated:** 6 June 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. The current default is Claude by Anthropic. Book Dragon is intended to become AI-agnostic in future, so the underlying model can eventually be swapped while Biblio's identity and rules remain the same.
 
@@ -55,6 +55,10 @@ Your personal wikis appear here once created — use the Create Wiki workflow to
 ## Memory
 
 - **Memory** — Project-scoped persistent memory that syncs with the project. Overrides the per-user Claude cache. `memory/` `[active]`
+
+## User profile
+
+- **User inputs** — Raw files for Biblio to ingest into USER.md (e.g. a CV, a skills summary). Drop a file here; Biblio reads it and flags relevant information for addition to USER.md. `user-inputs/` `[active]`
 
 ## Other
 

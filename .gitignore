@@ -30,6 +30,10 @@ memory/*
 !memory/CONTEXT.md
 
 # Personal content — never commit
+# user-inputs/ holds personal documents (CVs, health notes, etc.) for USER.md ingestion
+user-inputs/*
+!user-inputs/.gitkeep
+!user-inputs/CONTEXT.md
 # USER.md contains the user's name and personal context — excluded so cloners start fresh
 USER.md
 # Root LOG.md contains personal wiki ingest history and family data (also caught by **/LOG.md above)
