@@ -158,7 +158,7 @@ None. This directory is read-only.
 N/A. This is a storage directory, not a runnable workflow.
 
 ## Dependencies
-- `../CONTEXT.md` — The parent wiki's operational instructions, which define how these source files are used.
+- `wikis/{wiki_name}/CONTEXT.md` — The parent wiki's operational instructions, which define how these source files are used.
 
 ## Known Issues
 None.
@@ -198,8 +198,8 @@ Markdown wiki pages covering concepts from the source material.
 N/A. Individual pages are created and updated by Biblio during ingest and editing sessions.
 
 ## Dependencies
-- `../CONTEXT.md` — The wiki's operational instructions and rules.
-- `../raw/` — Source documents that wiki pages are built from.
+- `wikis/{wiki_name}/CONTEXT.md` — The wiki's operational instructions and rules.
+- `wikis/{wiki_name}/raw/` — Source documents that wiki pages are built from.
 
 ## Known Issues
 None.

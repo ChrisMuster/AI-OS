@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-05-27
+**Last modified:** 2026-06-06
 
 ## Purpose
 Contains the automation script for the create-wiki workflow. Handles all deterministic file creation when scaffolding a new wiki — the 90% that does not need an AI.
@@ -42,3 +42,4 @@ python workflows/create-wiki/scripts/run.py <wiki-name> "<topic description>"
 
 ## Revision History
 - 2026-05-27 — Initial creation. Implements the 90-10 protocol for the create-wiki workflow.
+- 2026-06-06 — Fixed generated Dependencies paths in raw_context() and wiki_subdir_context(): replaced `../CONTEXT.md` and `../raw/` with project-root-relative paths (`wikis/{wiki_name}/CONTEXT.md`, etc.).

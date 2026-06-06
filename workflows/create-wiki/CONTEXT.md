@@ -1,6 +1,6 @@
 # Create Wiki
 
-**Last modified:** 2026-05-27
+**Last modified:** 2026-06-06
 
 ## Purpose
 Scaffolds a new LLM Wiki directory inside `wikis/` [[wikis/CONTEXT]]. Creates the full wiki structure (raw/, wiki/, CONTEXT.md, index.md, operations-log.md) in one pass so every wiki starts consistent and ready to use.
@@ -47,3 +47,4 @@ A fully scaffolded wiki directory at `wikis/<wiki-name>/` containing:
 - 2026-05-14 — Renamed wiki/log.md to wiki/operations-log.md across all references to avoid case-insensitive filename collision with system LOG.md on Windows.
 - 2026-05-27 — Converted to 90-10 protocol. Added scripts/ subdirectory with run.py scaffold script. Steps reduced from 11 AI-driven steps to 4. Script now handles all file creation, wikis/CONTEXT.md and README.md updates, and log entries. Also adds LOG.md to wiki root (previously missing).
 - 2026-05-27 — Added idempotency and --dry-run flag to run.py. Added post-scaffold audit step: script now runs the structural audit automatically on completion and reports any failures or warnings.
+- 2026-06-06 — Fixed bug in run.py: generated CONTEXT.md files used `../` relative paths in Dependencies sections instead of project-root-relative paths. Both raw_context() and wiki_subdir_context() corrected.
