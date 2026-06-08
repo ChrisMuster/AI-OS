@@ -6,7 +6,7 @@
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
 
 ## Contents
-- PROPOSAL.md — `workflows/session-search/PROPOSAL.md` [[workflows/session-search/PROPOSAL]] — Full design proposal including all architectural decisions and design decision record.
+- PROPOSAL.md — `workflows/session-search/PROPOSAL.md` [[workflows/session-search/PROPOSAL]] — Completed design document; approved and implemented. Kept for historical reference.
 - scripts/ — `workflows/session-search/scripts/` [[workflows/session-search/scripts/CONTEXT]] — Python scripts implementing the archive, indexing, search, and discovery functionality.
 - data/ — `workflows/session-search/data/` [[workflows/session-search/data/CONTEXT]] — Archive JSONL files (source of truth) and SQLite database shards. Gitignored; Google Drive-synced automatically.
 - skills/session-search/ — `workflows/session-search/skills/session-search/` [[workflows/session-search/skills/session-search/CONTEXT]] — Biblio-invocable skill for searching session history.
