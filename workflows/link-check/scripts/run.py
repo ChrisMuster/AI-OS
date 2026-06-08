@@ -57,7 +57,7 @@ ROOT_LINK_FILES = {"CLAUDE.md", "README.md", "USER.md", "SOUL.md"}
 # Helpers
 # ---------------------------------------------------------------------------
 def now_ts() -> str:
-    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now().astimezone().isoformat(timespec='seconds')
 
 
 def rel(path: Path) -> str:

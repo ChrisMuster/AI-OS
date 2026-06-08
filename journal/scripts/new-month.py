@@ -40,7 +40,7 @@ JOURNAL_LOG = JOURNAL_DIR / "LOG.md"
 # Helpers
 # ---------------------------------------------------------------------------
 def now_ts() -> str:
-    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now().astimezone().isoformat(timespec='seconds')
 
 
 def append_log(path: Path, ts: str, action: str, note: str) -> None:

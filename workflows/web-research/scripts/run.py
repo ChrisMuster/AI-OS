@@ -388,7 +388,7 @@ def _slugify(text):
 
 def _append_log(topic, source_count, package_path):
     log_path = _WORKFLOW_DIR / 'LOG.md'
-    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+    timestamp = datetime.now().astimezone().isoformat(timespec='seconds')
     entry = (
         f'\n[{timestamp}] | Actor: Biblio | Action: ran | '
         f'Note: Researched "{topic}". '

@@ -59,7 +59,7 @@ REQUIRED_SECTIONS = [
 # Helpers
 # ---------------------------------------------------------------------------
 def now_ts() -> str:
-    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now().astimezone().isoformat(timespec='seconds')
 
 
 def now_date() -> str:

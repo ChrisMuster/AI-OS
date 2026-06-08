@@ -46,8 +46,7 @@ ROOT_LOG      = PROJECT_ROOT / "LOG.md"
 # Helpers
 # ---------------------------------------------------------------------------
 def now_ts() -> str:
-    """ISO 8601 timestamp, e.g. 2026-05-27T14:32:01"""
-    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now().astimezone().isoformat(timespec='seconds')
 
 
 def now_date() -> str:
