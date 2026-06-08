@@ -437,15 +437,9 @@ def archive_from_hook(dry_run: bool = False) -> int:
     if not dry_run:
         save_state(state)
 
-    # Return a valid hook response so Claude Code does not treat this as an error.
-    result = {
-        'continue': True,
-        'hookSpecificOutput': {
-            'hookEventName': hook_data.get('hook_event_name', 'unknown'),
-            'archived': total,
-        },
-    }
-    print(json.dumps(result))
+    # Return a minimal valid hook response. hookSpecificOutput is not supported
+    # for PreCompact or Notification events and causes schema validation errors.
+    print(json.dumps({'continue': True}))
     return total
 
 

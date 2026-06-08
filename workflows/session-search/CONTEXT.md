@@ -33,7 +33,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 ## Dependencies
 - `.claude/settings.json` — Stop, PreCompact, and Notification (idle_prompt) hooks configured here call `archive.py --hook`.
 - `scheduled-tasks` MCP — Hourly scheduled task runs `archive.py --all` while the Claude desktop app is open.
-- `CLAUDE.md` [[CLAUDE]] — Session startup step 6 calls `index.py` automatically. First-run init step 6 creates the hourly scheduled task.
+- `CLAUDE.md` [[CLAUDE]] — Session startup step 6b calls `index.py` automatically; step 6a checks for and creates the hourly scheduled task on any machine where it is missing. First-run init step 6 also creates it on a fresh clone.
 - Python 3.9+ with standard library only (sqlite3 with FTS5 is included in CPython builds on Windows).
 - `templates/` [[templates/CONTEXT]] — Standard CONTEXT.md and LOG.md templates used during scaffolding.
 
@@ -41,9 +41,10 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - **Cowork hooks not supported** — Platform limitation (GitHub Issue #40495). Cowork sessions are captured by the scheduled task (hourly) and `index.py` at startup. Claude Code is recommended over Cowork for reliable real-time archiving.
 - **`transcript_path` stale bug in Claude Code Stop hook** — GitHub Issue #8564. Workaround: `archive.py` ignores the hook-provided path and finds the latest `.jsonl` by modification time instead.
 - **FTS5 is keyword-based** — Not semantic. Conceptual or fuzzy queries will not match unless the exact words appear in the transcript.
-- **First-run scheduled task creation** — On a fresh clone the `session-search-archive` scheduled task does not exist until Biblio's first-run initialisation procedure creates it (CLAUDE.md first-run step 6). On the current machine it was created during the initial build.
+- **Scheduled task creation** — The `session-search-archive` scheduled task is created automatically in two places: by first-run initialisation (CLAUDE.md first-run step 6) on a fresh clone, and by regular session startup step 6a on any machine where it is not yet present (e.g. a Google Drive transfer where first-run init does not trigger).
 - **`data/` contents are personal data** — Archive files and database shards are not listed in this CONTEXT.md. The filesystem is the authoritative source; read `data/archive/<hostname>/` directly when needed.
 
 ## Revision History
 - 2026-06-08 — Initial creation.
 - 2026-06-08 — Wired index.py into CLAUDE.md session startup (step 6) and scheduled task creation into first-run init (step 6). Updated Steps, Dependencies, and Known Issues accordingly.
+- 2026-06-08 — Updated Dependencies and Known Issues to reflect scheduled task check in regular startup (step 6a) as well as first-run init. Fixed personal-data language in Known Issues.

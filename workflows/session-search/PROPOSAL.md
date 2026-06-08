@@ -219,7 +219,7 @@ Added to `.claude/settings.json`:
       "hooks": [
         {
           "type": "command",
-          "command": "python \"%CLAUDE_PROJECT_DIR%\\workflows\\session-search\\scripts\\archive.py\" --hook"
+          "command": "python workflows/session-search/scripts/archive.py --hook"
         }
       ]
     }
@@ -230,7 +230,7 @@ Added to `.claude/settings.json`:
       "hooks": [
         {
           "type": "command",
-          "command": "python \"%CLAUDE_PROJECT_DIR%\\workflows\\session-search\\scripts\\archive.py\" --hook"
+          "command": "python workflows/session-search/scripts/archive.py --hook"
         }
       ]
     }
@@ -241,7 +241,7 @@ Added to `.claude/settings.json`:
       "hooks": [
         {
           "type": "command",
-          "command": "python \"%CLAUDE_PROJECT_DIR%\\workflows\\session-search\\scripts\\archive.py\" --hook"
+          "command": "python workflows/session-search/scripts/archive.py --hook"
         }
       ]
     }

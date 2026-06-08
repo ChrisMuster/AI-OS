@@ -1,6 +1,6 @@
 # AI-OS — Claude Instructions
 
-**Last updated:** 2026-06-08 (session-search startup step and first-run scheduled task creation)
+**Last updated:** 2026-06-08 (Python pre-flight check, scheduled task check moved to regular startup)
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose.
 
@@ -8,12 +8,18 @@ This is the AI Operating System project. It is a modular workspace organised int
 
 At the start of every new session, before doing anything else:
 
+0. **Verify Python** — before running any step that depends on scripts, confirm Python 3.9 or later is available on this machine:
+   - **Windows (PowerShell):** Run `python --version`. If that fails or returns Python 2, try `py --version`.
+   - **macOS / Linux (Bash):** Run `python3 --version`. If that fails, try `python --version`.
+   If no working Python 3.9+ command is found, stop immediately and tell the user: Python 3.9 or later is required to run Book Dragon — install it from python.org or ask an AI assistant to walk through installation for their operating system. Do not proceed with any further steps until Python is confirmed. This check runs on every session and every machine, not just on a fresh clone.
 1. Read `SOUL.md` — this tells you who you are (name, personality, behavioural rules).
 2. Read `USER.md` — this tells you who you are assisting. If `USER.md` does not exist or still contains `[YOUR_NAME]`, follow the **First-run initialisation** rule immediately before doing anything else.
 3. Read `README.md` — this is the living index of everything in the project. Individual wikis are not listed in README.md (they are personal content); if `wikis/CONTEXT.md` exists, read it too — it is the authoritative list of what wikis have been created.
 4. Read `memory/MEMORY.md` — this is the index of all persistent memory for this project. Pull individual memory files as their topics become relevant during the session.
 5. Read the last 15 entries of the root `LOG.md` — this tells you what has happened recently. If `LOG.md` does not exist at the root, this is a fresh clone — follow the **First-run initialisation** rule immediately before doing anything else.
-6. Update session search index — if `workflows/session-search/scripts/index.py` exists, run it silently: `python workflows/session-search/scripts/index.py`. This archives any sessions completed since the last run and refreshes the search index. Do not report results to the user unless there is an error.
+6. Run session maintenance tasks — if `workflows/session-search/scripts/index.py` exists, do both of the following silently:
+   a. **Scheduled task check** — call `list_scheduled_tasks` and check whether `session-search-archive` exists on this machine. If it does not, create it (same parameters as first-run initialisation step 6b). Note briefly to the user that it has been set up.
+   b. **Index update** — run `python workflows/session-search/scripts/index.py` to archive any sessions completed since the last run and refresh the search index. Do not report results unless there is an error.
 7. Check journal files silently — run `python journal/scripts/new-month.py --month YYYY-MM` for any missing file, substituting the real year and month. Two checks:
    - Current month: if `journal/entries/YYYY-MM.md` for this month does not exist, create it now.
    - Next month: if today is within the last 7 days of the current month and next month's file does not exist, create it now.
@@ -22,7 +28,7 @@ At the start of every new session, before doing anything else:
 9. Wait for the user to say what they want to work on.
 10. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
 
-Do not skip steps 1–8. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–8, greet the user by name (from `USER.md`) and ask what they want to work on today.
+Do not skip step 0 or steps 1–8. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–8, greet the user by name (from `USER.md`) and ask what they want to work on today.
 
 Once the task is known and context is read (steps 9–10), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
 
@@ -47,7 +53,7 @@ The correct sequence is: read and understand the task, summarise your understand
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
-**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the session search index update (step 6), the journal check (step 7), the journal USER.md scan (step 8), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by this file, not user-directed work. They run once on a fresh clone and on each session for the maintenance steps; they do not require explicit permission.
+**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), the session search maintenance tasks (step 6), the journal check (step 7), the journal USER.md scan (step 8), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by this file, not user-directed work. They run on every session on every machine and do not require explicit permission.
 
 ### Reading context before working
 
