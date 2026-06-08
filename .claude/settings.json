@@ -7,6 +7,7 @@
       "Bash(python workflows/web-research/scripts/run.py *)",
       "Bash(python workflows/weather/scripts/run.py *)",
       "Bash(python *workflows/session-search/scripts/archive.py*)",
+      "Bash(python workflows/settings-check/scripts/run.py *)",
       "Bash(python workflows/session-search/scripts/index.py *)",
       "Bash(python workflows/session-search/scripts/search.py *)",
       "Bash(python workflows/session-search/scripts/discover.py *)",

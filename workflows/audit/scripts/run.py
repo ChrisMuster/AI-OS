@@ -9,6 +9,9 @@ Checks every directory (excluding the project root and system dirs) for:
   - Contents entries pointing to non-existent paths
   - Subdirectories that exist but are not listed in Contents
 
+Also runs code hygiene checks across all Python scripts in the project:
+  - strftime calls with time components but no timezone offset
+
 Usage (run from anywhere):
     python workflows/audit/scripts/run.py [--save]
 
@@ -238,9 +241,58 @@ def get_immediate_subdirs(directory: Path) -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
+# Shared type
+# ---------------------------------------------------------------------------
+Finding = tuple[str, str, str]  # (level, path_or_label, message)
+
+
+# ---------------------------------------------------------------------------
+# Code hygiene checks
+# ---------------------------------------------------------------------------
+
+def check_python_scripts() -> list[Finding]:
+    """
+    Check all Python scripts in the project for known code hygiene issues.
+
+    Current checks:
+      - strftime with time components (%H/%M/%S) but no timezone (%z/%Z).
+        These produce log timestamps that violate the project log format standard.
+        Fix: use datetime.now().astimezone().isoformat(timespec='seconds').
+    """
+    findings: list[Finding] = []
+
+    for py_file in sorted(PROJECT_ROOT.rglob('*.py')):
+        parts = py_file.relative_to(PROJECT_ROOT).parts
+        if any(part in SKIP_DIRS or part.startswith('.') for part in parts):
+            continue
+
+        try:
+            lines = py_file.read_text(encoding='utf-8', errors='ignore').splitlines()
+        except Exception:
+            continue
+
+        file_label = rel(py_file)
+
+        for lineno, line in enumerate(lines, 1):
+            if '.strftime(' not in line:
+                continue
+            has_time = any(spec in line for spec in ('%H', '%M', '%S'))
+            has_tz   = any(spec in line for spec in ('%z', '%Z'))
+            if has_time and not has_tz:
+                findings.append((
+                    'WARN',
+                    f'{file_label}:{lineno}',
+                    'code hygiene — strftime with time but no timezone; '
+                    'use datetime.now().astimezone().isoformat(timespec="seconds") '
+                    'for log timestamps',
+                ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Per-directory audit
 # ---------------------------------------------------------------------------
-Finding = tuple[str, str, str]  # (level, dir_rel, message)
 
 
 def audit_directory(directory: Path) -> list[Finding]:
@@ -307,7 +359,7 @@ def audit_directory(directory: Path) -> list[Finding]:
 
 # Directories that are checked themselves but whose contents are not recursed into.
 # 'raw' directories hold immutable source data, not Book Dragon directories.
-NO_RECURSE_DIRS = {"raw"}
+NO_RECURSE_DIRS = {"raw", "data"}
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +411,10 @@ def run_audit() -> tuple[list[Finding], int]:
 
     for d in dirs:
         findings.extend(audit_directory(d))
+
+    # Code hygiene checks across all Python scripts
+    findings.extend(check_python_scripts())
+
     return findings, len(dirs)
 
 
@@ -366,7 +422,7 @@ def run_audit() -> tuple[list[Finding], int]:
 # Report formatting
 # ---------------------------------------------------------------------------
 def format_report(findings: list[Finding], dir_count: int) -> str:
-    run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_at = datetime.now().astimezone().isoformat(timespec='seconds')
 
     fails = [f for f in findings if f[0] == "FAIL"]
     warns = [f for f in findings if f[0] == "WARN"]

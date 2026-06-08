@@ -20,6 +20,7 @@ At the start of every new session, before doing anything else:
 6. Run session maintenance tasks — if `workflows/session-search/scripts/index.py` exists, do both of the following silently:
    a. **Scheduled task check** — call `list_scheduled_tasks` and check whether `session-search-archive` exists on this machine. If it does not, create it with the same parameters as first-run initialisation step 6b (using forward slashes in the path). Note briefly to the user that it has been set up.
    b. **Index update** — run `python workflows/session-search/scripts/index.py` to archive any sessions completed since the last run and refresh the search index. Do not report results unless there is an error.
+   c. **Settings coverage check** — run `python workflows/settings-check/scripts/run.py` silently. Do not report results unless there are FAIL findings. If failures are found, note them briefly after greeting the user: "Settings coverage check found uncovered commands — [list]. These will prompt for permission when they fire."
 7. Check journal files silently — run `python journal/scripts/new-month.py --month YYYY-MM` for any missing file, substituting the real year and month. Two checks:
    - Current month: if `journal/entries/YYYY-MM.md` for this month does not exist, create it now.
    - Next month: if today is within the last 7 days of the current month and next month's file does not exist, create it now.

@@ -236,7 +236,7 @@ def run_link_mode(dry_run: bool) -> tuple[str, int, int]:
     report_lines = [
         "# Book Dragon — Link Check: Link Mode",
         "",
-        f"**Run at:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**Run at:** {datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"**Mode:** {'dry run' if dry_run else 'live'}",
         "",
         summary,
@@ -351,7 +351,7 @@ def run_audit_mode(fix: bool, dry_run: bool) -> tuple[str, int, int]:
     report_lines = [
         "# Book Dragon — Link Check: Audit",
         "",
-        f"**Run at:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**Run at:** {datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"**Mode:** {'fix (dry run)' if fix and dry_run else 'fix' if fix else 'audit'}",
         f"**Links checked:** {len(findings)}",
         f"**OK:** {ok_count}",

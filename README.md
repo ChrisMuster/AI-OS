@@ -35,6 +35,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Link Check** — Inserts Obsidian `[[links]]` into CONTEXT.md files and audits for dead targets. `workflows/link-check/` `[active]`
 - **Weather** — Fetches current conditions and forecasts for any location worldwide. No API keys required. `workflows/weather/` `[active]`
 - **Session Search** — Indexes all conversation transcripts into a local SQLite FTS5 database and provides a searchable session history skill. `workflows/session-search/` `[active]`
+- **Settings Check** — Validates that all automated commands (hooks and scheduled tasks) are covered by allowlist entries; catches permission-prompt bugs before they occur. `workflows/settings-check/` `[active]`
 
 ## Skills
 
