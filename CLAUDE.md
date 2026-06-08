@@ -1,6 +1,6 @@
 # AI-OS — Claude Instructions
 
-**Last updated:** 2026-06-06 (memory system, permission rules, rule reorganisation, USER.md expansion and journal sync, first-run onboarding Q&A)
+**Last updated:** 2026-06-08 (session-search startup step and first-run scheduled task creation)
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose.
 
@@ -13,17 +13,18 @@ At the start of every new session, before doing anything else:
 3. Read `README.md` — this is the living index of everything in the project. Individual wikis are not listed in README.md (they are personal content); if `wikis/CONTEXT.md` exists, read it too — it is the authoritative list of what wikis have been created.
 4. Read `memory/MEMORY.md` — this is the index of all persistent memory for this project. Pull individual memory files as their topics become relevant during the session.
 5. Read the last 15 entries of the root `LOG.md` — this tells you what has happened recently. If `LOG.md` does not exist at the root, this is a fresh clone — follow the **First-run initialisation** rule immediately before doing anything else.
-6. Check journal files silently — run `python journal/scripts/new-month.py --month YYYY-MM` for any missing file, substituting the real year and month. Two checks:
+6. Update session search index — if `workflows/session-search/scripts/index.py` exists, run it silently: `python workflows/session-search/scripts/index.py`. This archives any sessions completed since the last run and refreshes the search index. Do not report results to the user unless there is an error.
+7. Check journal files silently — run `python journal/scripts/new-month.py --month YYYY-MM` for any missing file, substituting the real year and month. Two checks:
    - Current month: if `journal/entries/YYYY-MM.md` for this month does not exist, create it now.
    - Next month: if today is within the last 7 days of the current month and next month's file does not exist, create it now.
    Do not mention this to the user unless a file was actually just created, in which case note it briefly.
-7. Scan journal entries for USER.md updates — read the current month's journal file (and the previous month's if today is within the first 7 days of the month). Check for any information matching USER.md tracked categories that is not already recorded there. Tracked categories are listed in `journal/CONTEXT.md`. If anything new is found, hold the finding and surface it after greeting the user: "I noticed [X] in your journal — should I add that to USER.md?" Wait for confirmation before making any change. If nothing new is found, say nothing.
-8. Wait for the user to say what they want to work on.
-9. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
+8. Scan journal entries for USER.md updates — read the current month's journal file (and the previous month's if today is within the first 7 days of the month). Check for any information matching USER.md tracked categories that is not already recorded there. Tracked categories are listed in `journal/CONTEXT.md`. If anything new is found, hold the finding and surface it after greeting the user: "I noticed [X] in your journal — should I add that to USER.md?" Wait for confirmation before making any change. If nothing new is found, say nothing.
+9. Wait for the user to say what they want to work on.
+10. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
 
-Do not skip steps 1–7. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–7, greet the user by name (from `USER.md`) and ask what they want to work on today.
+Do not skip steps 1–8. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–8, greet the user by name (from `USER.md`) and ask what they want to work on today.
 
-Once the task is known and context is read (steps 7–8), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
+Once the task is known and context is read (steps 9–10), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
 
 ## Directory structure
 
@@ -46,7 +47,7 @@ The correct sequence is: read and understand the task, summarise your understand
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
-**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the journal check (step 6), the journal USER.md scan (step 7), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by this file, not user-directed work. They run once on a fresh clone and on each session for the journal steps; they do not require explicit permission.
+**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the session search index update (step 6), the journal check (step 7), the journal USER.md scan (step 8), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by this file, not user-directed work. They run once on a fresh clone and on each session for the maintenance steps; they do not require explicit permission.
 
 ### Reading context before working
 
@@ -412,13 +413,18 @@ Either condition means the system has not been set up on this machine yet. Perfo
 4. For each directory missing a `LOG.md`, create one using the standard `LOG.md` template. Fetch the real timestamp first (PowerShell: `Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"`, Bash: `date +"%Y-%m-%dT%H:%M:%S%z"`), then write the entry:
    `[YYYY-MM-DDTHH:MM:SS±HH:MM] | Actor: Biblio | Action: created | Note: First-run initialisation — LOG.md created on fresh clone.`
 5. If `memory/MEMORY.md` does not exist, create it with just the header line `# Memory Index`. The `memory/LOG.md` will be created by step 4.
-6. For any directory that is also missing a `CONTEXT.md`, flag it to the user rather than creating one silently. CONTEXT.md files require deliberate content and should be written with full knowledge of the directory's purpose.
-7. Check whether `.env` exists at the project root. If it does not exist, note the following to the user without stopping or waiting for a response:
+6. If `workflows/session-search/` exists, set up the hourly archive scheduled task:
+   a. Call `list_scheduled_tasks` to check whether a task with id `session-search-archive` already exists on this machine.
+   b. If it does not exist, call `create_scheduled_task` with taskId `session-search-archive`, description `Hourly session archive — captures any new or updated Book Dragon sessions`, cronExpression `0 * * * *`, notifyOnCompletion `false`, and a prompt that runs `python "<absolute-path-to-project>\workflows\session-search\scripts\archive.py" --all` (substituting the real absolute path to the project root on this machine). This script is idempotent and safe to re-run; it should not notify on normal completion.
+   c. Note briefly to the user that the session search scheduled task has been created.
+   If the task already exists, skip this step silently.
+7. For any directory that is also missing a `CONTEXT.md`, flag it to the user rather than creating one silently. CONTEXT.md files require deliberate content and should be written with full knowledge of the directory's purpose.
+8. Check whether `.env` exists at the project root. If it does not exist, note the following to the user without stopping or waiting for a response:
    - Web research will run in free-sources-only mode (Wikipedia, HackerNews, Reddit, arXiv, Semantic Scholar, Stack Exchange, Dev.to, RSS, direct scraper). This is functional but has limited coverage for general web content and current news.
    - Workflows that depend on web research may produce less thorough or less accurate results without extended source coverage.
    - To obtain and configure API keys, follow `workflows/web-research/SETUP.md`.
-8. Append a line to the `## Getting started` section of `README.md` recording the date the system was initialised on this machine.
-9. Greet the user by name, confirm the system has been initialised, and ask what
+9. Append a line to the `## Getting started` section of `README.md` recording the date the system was initialised on this machine.
+10. Greet the user by name, confirm the system has been initialised, and ask what
    they want to work on. If the USER.md onboarding Q&A was deferred in step 2d,
    mention it briefly: "When you're ready, we can run the USER.md onboarding Q&A
    to fill in the remaining sections."

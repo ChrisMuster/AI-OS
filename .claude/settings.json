@@ -6,8 +6,47 @@
       "Bash(python workflows/link-check/scripts/run.py *)",
       "Bash(python workflows/web-research/scripts/run.py *)",
       "Bash(python workflows/weather/scripts/run.py *)",
+      "Bash(python workflows/session-search/scripts/archive.py *)",
+      "Bash(python workflows/session-search/scripts/index.py *)",
+      "Bash(python workflows/session-search/scripts/search.py *)",
+      "Bash(python workflows/session-search/scripts/discover.py *)",
       "Bash(python journal/scripts/new-month.py *)",
       "Bash(date *)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"%CLAUDE_PROJECT_DIR%\\workflows\\session-search\\scripts\\archive.py\" --hook"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"%CLAUDE_PROJECT_DIR%\\workflows\\session-search\\scripts\\archive.py\" --hook"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"%CLAUDE_PROJECT_DIR%\\workflows\\session-search\\scripts\\archive.py\" --hook"
+          }
+        ]
+      }
     ]
   }
 }

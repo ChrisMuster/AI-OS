@@ -58,6 +58,12 @@ conversations/*
 # .obsidian/ contains Obsidian vault settings; workspace.json changes on every use
 .obsidian/
 
+# Session search — archive files and database shards contain personal conversation data
+# index_state.json is machine-specific state; CONTEXT.md is structural and tracked
+workflows/session-search/data/*
+!workflows/session-search/data/.gitkeep
+!workflows/session-search/data/CONTEXT.md
+
 # OS
 .DS_Store
 Thumbs.db

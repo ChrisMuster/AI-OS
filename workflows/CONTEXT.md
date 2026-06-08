@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-06-03
+**Last modified:** 2026-06-08
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -11,6 +11,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - Web Research — `workflows/web-research/` [[workflows/web-research/CONTEXT]] — CLI workflow for researching a topic; saves a research package for Biblio to turn into a report.
 - Link Check — `workflows/link-check/` [[workflows/link-check/CONTEXT]] — Inserts Obsidian [[links]] into CONTEXT.md files and audits them for dead targets.
 - Weather — `workflows/weather/` [[workflows/weather/CONTEXT]] — Fetches current conditions and forecasts for any location worldwide via Open-Meteo and Nominatim. No API keys required.
+- Session Search — `workflows/session-search/` [[workflows/session-search/CONTEXT]] — Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database; provides a skill for searching session history.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -39,3 +40,4 @@ N/A. This is a container directory, not a workflow itself.
 - 2026-05-29 — Added web-research workflow to Contents.
 - 2026-06-03 — Added link-check workflow to Contents.
 - 2026-06-03 — Added weather workflow to Contents.
+- 2026-06-08 — Added session-search workflow to Contents.
