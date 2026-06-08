@@ -4,13 +4,19 @@ run.py — Settings coverage validator for Book Dragon.
 
 Verifies that every command configured to run automatically — hook commands
 in .claude/settings.json and Bash commands in scheduled task SKILL.md files —
-is covered by at least one allowlist entry in permissions.allow.
+is covered by at least one allowlist entry across both the project settings
+(.claude/settings.json) and the global user settings (~/.claude/settings.json).
 
-A command is "covered" if at least one pattern matches it using glob matching
-(the same logic Claude Code uses). Patterns have the form Bash(<glob>).
+Scheduled tasks are also checked against global settings specifically, because
+they run outside the project context and may not load project-level settings.
+A command covered only by project settings will still prompt for permission
+when fired from a scheduled task session.
 
-An uncovered command will prompt for permission every time it fires, defeating
-the purpose of silent automation.
+Additionally checks:
+  - All scripts referenced in hook and task commands exist on disk.
+  - All Python scripts in workflows/ and journal/scripts/ pass syntax check.
+  - No tracked files contain hardcoded absolute paths that would break on
+    another machine.
 
 Usage:
     python workflows/settings-check/scripts/run.py [--verbose]
@@ -22,7 +28,10 @@ Options:
 import argparse
 import fnmatch
 import json
+import py_compile
 import re
+import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -30,12 +39,25 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT_DIR    = Path(__file__).resolve().parent
-WORKFLOW_DIR  = SCRIPT_DIR.parent
-PROJECT_ROOT  = WORKFLOW_DIR.parent.parent
-SETTINGS_FILE = PROJECT_ROOT / '.claude' / 'settings.json'
-TASKS_DIR     = Path.home() / '.claude' / 'scheduled-tasks'
-WORKFLOW_LOG  = WORKFLOW_DIR / 'LOG.md'
+SCRIPT_DIR      = Path(__file__).resolve().parent
+WORKFLOW_DIR    = SCRIPT_DIR.parent
+PROJECT_ROOT    = WORKFLOW_DIR.parent.parent
+SETTINGS_FILE   = PROJECT_ROOT / '.claude' / 'settings.json'
+GLOBAL_SETTINGS = Path.home() / '.claude' / 'settings.json'
+TASKS_DIR       = Path.home() / '.claude' / 'scheduled-tasks'
+WORKFLOW_LOG    = WORKFLOW_DIR / 'LOG.md'
+
+# Directories to scan for Python syntax checking
+PYTHON_SCAN_DIRS = [
+    PROJECT_ROOT / 'workflows',
+    PROJECT_ROOT / 'journal' / 'scripts',
+]
+
+# Patterns that indicate a hardcoded absolute path tied to a specific machine
+ABS_PATH_PATTERNS = [
+    re.compile(r'C:[/\\]Users[/\\][A-Za-z]'),
+    re.compile(r'/home/[A-Za-z]'),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -62,11 +84,11 @@ def rel(path: Path) -> str:
 # ---------------------------------------------------------------------------
 # Settings parsing
 # ---------------------------------------------------------------------------
-def load_settings() -> dict:
-    if not SETTINGS_FILE.exists():
+def load_settings(path: Path) -> dict:
+    if not path.exists():
         return {}
     try:
-        return json.loads(SETTINGS_FILE.read_text(encoding='utf-8'))
+        return json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return {}
 
@@ -151,6 +173,156 @@ def is_covered(command: str, allowlist: list[str]) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Global settings coverage for scheduled tasks
+# ---------------------------------------------------------------------------
+def check_global_task_coverage(
+    task_commands: list[tuple[str, str]],
+    project_allowlist: list[str],
+    global_allowlist: list[str],
+) -> list:
+    """
+    Scheduled tasks run outside the project context and may not load project
+    settings. If a task command is covered only by the project allowlist and
+    NOT by the global allowlist, emit a warning — it may still prompt at runtime.
+    """
+    findings = []
+    for task_name, command in task_commands:
+        proj_ok, _ = is_covered(command, project_allowlist)
+        glob_ok, _ = is_covered(command, global_allowlist)
+        if proj_ok and not glob_ok:
+            findings.append(('WARN', f'Task:{task_name}',
+                f'Covered by project settings only — scheduled tasks may not load '
+                f'project settings and could still prompt. '
+                f'Add a matching entry to ~/.claude/settings.json.'))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Script existence check
+# ---------------------------------------------------------------------------
+def extract_script_path(command: str) -> str | None:
+    """Extract the .py script path from a python invocation like 'python path/script.py args'."""
+    parts = command.strip().split()
+    if not parts or parts[0] not in ('python', 'python3', 'py'):
+        return None
+    if len(parts) < 2:
+        return None
+    script_arg = parts[1].strip('"\'')
+    if script_arg.endswith('.py'):
+        return script_arg
+    return None
+
+
+def check_script_existence(
+    hook_commands: list[tuple[str, str]],
+    task_commands: list[tuple[str, str]],
+) -> list:
+    findings = []
+    for label, command in hook_commands + task_commands:
+        script_str = extract_script_path(command)
+        if not script_str:
+            continue
+        script_path = Path(script_str)
+        if not script_path.is_absolute():
+            script_path = PROJECT_ROOT / script_path
+        if not script_path.exists():
+            findings.append(('FAIL', label, f'Script not found on disk: {script_str}'))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Python syntax check
+# ---------------------------------------------------------------------------
+def check_script_syntax() -> tuple[list, int]:
+    """
+    Run py_compile on every .py file in PYTHON_SCAN_DIRS.
+    Reports both hard errors (SyntaxError) and warnings (SyntaxWarning).
+    Returns (findings, count_of_files_checked).
+    """
+    findings = []
+    count = 0
+    for scan_dir in PYTHON_SCAN_DIRS:
+        if not scan_dir.exists():
+            continue
+        for py_file in sorted(scan_dir.rglob('*.py')):
+            count += 1
+            caught_warnings = []
+            try:
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter('always')
+                    py_compile.compile(str(py_file), doraise=True)
+                caught_warnings = [
+                    w for w in caught if issubclass(w.category, SyntaxWarning)
+                ]
+            except py_compile.PyCompileError as e:
+                findings.append(('FAIL', rel(py_file), f'Syntax error: {e}'))
+                continue
+            for w in caught_warnings:
+                findings.append(('WARN', rel(py_file),
+                    f'Syntax warning ({w.category.__name__}): {w.message}'))
+    return findings, count
+
+
+# ---------------------------------------------------------------------------
+# Absolute path audit on tracked files
+# ---------------------------------------------------------------------------
+def _is_documentation_line(line: str) -> bool:
+    """Return True for lines that mention absolute paths as examples, not real hardcoded values."""
+    stripped = line.strip()
+    if stripped.startswith('#'):   # Python / shell comment
+        return True
+    if '→' in line:               # before → after transformation example
+        return True
+    if 'e.g.' in line:            # explicit example marker in prose
+        return True
+    return False
+
+
+def check_absolute_paths() -> tuple[list, int]:
+    """
+    List all files tracked by git and scan each line for hardcoded absolute paths.
+    Lines that are comments or labelled as documentation examples are skipped to
+    avoid false positives from explanatory text.
+    Returns (findings, count_of_files_checked).
+    """
+    findings = []
+    try:
+        result = subprocess.run(
+            ['git', 'ls-files'],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        tracked = [f for f in result.stdout.strip().splitlines() if f]
+    except Exception as exc:
+        return [('WARN', 'git ls-files', f'Could not list tracked files: {exc}')], 0
+
+    count = 0
+    for file_str in tracked:
+        full_path = PROJECT_ROOT / file_str
+        if not full_path.exists() or not full_path.is_file():
+            continue
+        try:
+            content = full_path.read_text(encoding='utf-8', errors='ignore')
+        except Exception:
+            continue
+        count += 1
+        for line_num, line in enumerate(content.splitlines(), 1):
+            if _is_documentation_line(line):
+                continue
+            for pattern in ABS_PATH_PATTERNS:
+                if pattern.search(line):
+                    findings.append(('WARN', file_str,
+                        f'Line {line_num}: hardcoded absolute path — will break on another machine'))
+                    break  # one finding per file
+            else:
+                continue
+            break  # stop scanning this file after first real match
+    return findings, count
+
+
+# ---------------------------------------------------------------------------
 # Check runner
 # ---------------------------------------------------------------------------
 Finding = tuple[str, str, str]  # (level, source_label, message)
@@ -159,35 +331,42 @@ Finding = tuple[str, str, str]  # (level, source_label, message)
 def run_check(verbose: bool = False) -> tuple[list[Finding], dict]:
     findings: list[Finding] = []
     stats = {
-        'allowlist': 0,
+        'project_allowlist': 0,
+        'global_allowlist': 0,
         'hooks': 0,
         'tasks': 0,
         'tasks_dir_missing': False,
+        'scripts_checked': 0,
+        'tracked_files_checked': 0,
     }
 
     if not SETTINGS_FILE.exists():
-        findings.append(('FAIL', rel(SETTINGS_FILE),
-            '.claude/settings.json not found'))
+        findings.append(('FAIL', rel(SETTINGS_FILE), '.claude/settings.json not found'))
         return findings, stats
 
-    settings = load_settings()
-    if not settings:
-        findings.append(('FAIL', rel(SETTINGS_FILE),
-            'Could not parse .claude/settings.json'))
+    project_settings = load_settings(SETTINGS_FILE)
+    if not project_settings:
+        findings.append(('FAIL', rel(SETTINGS_FILE), 'Could not parse .claude/settings.json'))
         return findings, stats
 
-    allowlist = get_allowlist(settings)
-    stats['allowlist'] = len(allowlist)
+    global_settings = load_settings(GLOBAL_SETTINGS)
+    project_allowlist = get_allowlist(project_settings)
+    global_allowlist  = get_allowlist(global_settings)
+    combined_allowlist = project_allowlist + global_allowlist
 
-    if not allowlist:
+    stats['project_allowlist'] = len(project_allowlist)
+    stats['global_allowlist']  = len(global_allowlist)
+
+    if not combined_allowlist:
         findings.append(('WARN', rel(SETTINGS_FILE),
-            'permissions.allow is empty — all commands will prompt for permission'))
+            'permissions.allow is empty in both project and global settings — '
+            'all commands will prompt for permission'))
 
-    # --- Hook commands ---
-    hook_commands = get_hook_commands(settings)
+    # --- Hook commands (checked against combined allowlist) ---
+    hook_commands = get_hook_commands(project_settings)
     stats['hooks'] = len(hook_commands)
     for label, command in hook_commands:
-        covered, pattern = is_covered(command, allowlist)
+        covered, pattern = is_covered(command, combined_allowlist)
         if covered:
             if verbose:
                 findings.append(('INFO', label,
@@ -197,6 +376,7 @@ def run_check(verbose: bool = False) -> tuple[list[Finding], dict]:
                 f'No allowlist entry covers hook command: "{command}"'))
 
     # --- Scheduled task commands ---
+    task_commands: list[tuple[str, str]] = []
     if not TASKS_DIR.exists():
         stats['tasks_dir_missing'] = True
         findings.append(('INFO', '~/.claude/scheduled-tasks/',
@@ -209,7 +389,7 @@ def run_check(verbose: bool = False) -> tuple[list[Finding], dict]:
             findings.append(('INFO', '~/.claude/scheduled-tasks/',
                 'No SKILL.md files found in scheduled tasks directory'))
         for task_name, command in task_commands:
-            covered, pattern = is_covered(command, allowlist)
+            covered, pattern = is_covered(command, combined_allowlist)
             if covered:
                 if verbose:
                     findings.append(('INFO', f'Task:{task_name}',
@@ -217,6 +397,34 @@ def run_check(verbose: bool = False) -> tuple[list[Finding], dict]:
             else:
                 findings.append(('FAIL', f'Task:{task_name}',
                     f'No allowlist entry covers scheduled task command: "{command}"'))
+
+        # Extra: warn if task is covered only by project settings, not global
+        findings.extend(check_global_task_coverage(
+            task_commands, project_allowlist, global_allowlist
+        ))
+
+    # --- Script existence ---
+    existence_findings = check_script_existence(hook_commands, task_commands)
+    findings.extend(existence_findings)
+    if verbose and not existence_findings:
+        findings.append(('INFO', 'Script existence',
+            'All referenced scripts found on disk'))
+
+    # --- Python syntax ---
+    syntax_findings, scripts_checked = check_script_syntax()
+    stats['scripts_checked'] = scripts_checked
+    findings.extend(syntax_findings)
+    if verbose and not syntax_findings and scripts_checked > 0:
+        findings.append(('INFO', 'Python syntax',
+            f'All {scripts_checked} scripts passed syntax check'))
+
+    # --- Absolute path audit ---
+    abs_findings, files_checked = check_absolute_paths()
+    stats['tracked_files_checked'] = files_checked
+    findings.extend(abs_findings)
+    if verbose and not abs_findings and files_checked > 0:
+        findings.append(('INFO', 'Absolute paths',
+            f'All {files_checked} tracked files clean'))
 
     return findings, stats
 
@@ -234,18 +442,20 @@ def format_report(findings: list[Finding], stats: dict, verbose: bool) -> str:
         '# Book Dragon — Settings Coverage Check',
         '',
         f'**Run at:** {run_at}',
-        f'**Allowlist entries:** {stats["allowlist"]}',
+        f'**Allowlist entries:** {stats["project_allowlist"]} project, '
+        f'{stats["global_allowlist"]} global',
         f'**Hook commands checked:** {stats["hooks"]}',
     ]
     if stats['tasks_dir_missing']:
-        lines.append('**Scheduled tasks:** directory not found '
-                     '(fresh clone — skipped)')
+        lines.append('**Scheduled tasks:** directory not found (fresh clone — skipped)')
     else:
         lines.append(f'**Scheduled task commands checked:** {stats["tasks"]}')
+    lines.append(f'**Python scripts syntax-checked:** {stats["scripts_checked"]}')
+    lines.append(f'**Tracked files checked for absolute paths:** {stats["tracked_files_checked"]}')
     lines.append('')
 
     if not fails and not warns:
-        lines.append('All commands are covered by allowlist entries.')
+        lines.append('All checks passed.')
         lines.append('')
     else:
         if fails:
@@ -273,7 +483,7 @@ def format_report(findings: list[Finding], stats: dict, verbose: bool) -> str:
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='Validate that all automated commands are covered by allowlist entries.',
+        description='Validate settings coverage, script health, and path safety.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -292,10 +502,13 @@ def main() -> None:
     print(report)
 
     fails = sum(1 for f in findings if f[0] == 'FAIL')
+    warns = sum(1 for f in findings if f[0] == 'WARN')
     note = (
-        f'Settings check complete. {stats["hooks"]} hook command(s), '
-        f'{stats["tasks"]} scheduled task command(s) checked. '
-        f'{fails} failure(s).'
+        f'Settings check complete. {stats["hooks"]} hook(s), '
+        f'{stats["tasks"]} task(s), '
+        f'{stats["scripts_checked"]} script(s), '
+        f'{stats["tracked_files_checked"]} tracked file(s) checked. '
+        f'{fails} failure(s), {warns} warning(s).'
     )
     append_log(WORKFLOW_LOG, ts, 'completed', note)
 

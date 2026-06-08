@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 cowork.py — Cowork (FleetView) adapter for Book Dragon session search.
 
 One-time historical import of Cowork session transcripts from:

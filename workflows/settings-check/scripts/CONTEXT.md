@@ -3,17 +3,20 @@
 **Last modified:** 2026-06-08
 
 ## Purpose
-Contains the settings coverage validator script for the settings-check workflow.
+Contains the health validator script for the settings-check workflow. Runs four checks: permission coverage across project and global settings, script existence, Python syntax, and absolute path audit on tracked files.
 
 ## Contents
-- run.py — `workflows/settings-check/scripts/run.py` [[workflows/settings-check/scripts/CONTEXT]] — Parses `.claude/settings.json` and any scheduled task SKILL.md files; reports every command that has no matching allowlist entry.
+- run.py — `workflows/settings-check/scripts/run.py` — Performs all four checks and prints a report. Accepts `--verbose` to show passing checks.
 
 ## Inputs
-- `.claude/settings.json` — read for allowlist patterns and hook command definitions.
-- `~/.claude/scheduled-tasks/*/SKILL.md` — read for scheduled task commands (skipped if the directory does not exist).
+- `.claude/settings.json` — project allowlist patterns and hook commands.
+- `~/.claude/settings.json` — global allowlist patterns.
+- `~/.claude/scheduled-tasks/*/SKILL.md` — scheduled task commands (skipped if absent).
+- All `.py` files under `workflows/` and `journal/scripts/` — syntax-checked.
+- All `git`-tracked files — scanned for hardcoded absolute paths.
 
 ## Outputs
-- Coverage report printed to stdout.
+- Health report printed to stdout.
 - `workflows/settings-check/LOG.md` — started and completed entries appended on every run.
 
 ## Steps
@@ -25,11 +28,14 @@ python workflows/settings-check/scripts/run.py [--verbose]
 
 ## Dependencies
 - `.claude/settings.json` — must exist; read at runtime.
+- `~/.claude/settings.json` — optional; checked when present.
 - `~/.claude/scheduled-tasks/` — optional; gracefully absent on fresh clones.
 - `workflows/settings-check/LOG.md` — appended on every run.
+- `git` — called via subprocess for the absolute path audit.
 
 ## Known Issues
 - See parent `workflows/settings-check/CONTEXT.md` [[workflows/settings-check/CONTEXT]] for the full list of known limitations.
 
 ## Revision History
 - 2026-06-08 — Initial creation.
+- 2026-06-08 — Extended run.py with global settings coverage, script existence, Python syntax, and absolute path audit checks.

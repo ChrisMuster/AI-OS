@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 claude_code.py — Claude Code adapter for Book Dragon session search.
 
 One-time historical import of Claude Code session transcripts from:
