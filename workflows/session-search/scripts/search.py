@@ -14,7 +14,13 @@ Usage:
 
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
+
+# Reconfigure stdout to UTF-8 so snippets with non-ASCII characters
+# (e.g. emoji, accented letters) display correctly on Windows terminals.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 # ---------------------------------------------------------------------------
 # Paths
