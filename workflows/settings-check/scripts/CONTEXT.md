@@ -6,13 +6,13 @@
 Contains the health validator script for the settings-check workflow. Runs four checks: permission coverage across project and global settings, script existence, Python syntax, and absolute path audit on tracked files.
 
 ## Contents
-- run.py — `workflows/settings-check/scripts/run.py` — Performs all four checks and prints a report. Accepts `--verbose` to show passing checks.
+- run.py — `workflows/settings-check/scripts/run.py` [[workflows/settings-check/scripts/CONTEXT]] — Performs all four checks and prints a report. Accepts `--verbose` to show passing checks.
 
 ## Inputs
 - `.claude/settings.json` — project allowlist patterns and hook commands.
 - `~/.claude/settings.json` — global allowlist patterns.
 - `~/.claude/scheduled-tasks/*/SKILL.md` — scheduled task commands (skipped if absent).
-- All `.py` files under `workflows/` and `journal/scripts/` — syntax-checked.
+- All `.py` files under `workflows/` [[workflows/CONTEXT]] and `journal/scripts/` [[journal/scripts/CONTEXT]] — syntax-checked.
 - All `git`-tracked files — scanned for hardcoded absolute paths.
 
 ## Outputs

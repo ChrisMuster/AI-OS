@@ -6,16 +6,25 @@ Pre-fills the file with a heading for every day of the month so you can
 scroll straight to today and start writing.
 
 Usage:
-    python journal/scripts/new-month.py [--month YYYY-MM] [--dry-run]
+    python journal/scripts/new-month.py [--month YYYY-MM] [--dry-run] [--force]
 
 Options:
     --month YYYY-MM   Create a specific month instead of next month.
     --dry-run         Print what would happen without creating any files.
+    --force           Override the date gate and create the file regardless of
+                      how many days remain in the current month.
+
+Date gate:
+    When the target month is the calendar month immediately after the current
+    month, this script checks whether today falls within the last 7 days of the
+    current month. If not, it exits without creating anything. Use --force to
+    override this gate (e.g. for legitimate early creation).
 
 Examples:
     python journal/scripts/new-month.py
     python journal/scripts/new-month.py --month 2026-07
     python journal/scripts/new-month.py --dry-run
+    python journal/scripts/new-month.py --month 2026-07 --force
 """
 
 import argparse
@@ -102,6 +111,11 @@ def main() -> None:
         action="store_true",
         help="Print what would happen without creating any files or writing logs.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Override the date gate and create next month's file regardless of the current date.",
+    )
     args = parser.parse_args()
 
     today = date.today()
@@ -116,6 +130,22 @@ def main() -> None:
             raise SystemExit(1)
     else:
         year, month = next_month_from(today)
+
+    # Date gate: if the target is the month immediately after the current month,
+    # creation is only permitted within the last 7 days of the current month.
+    next_year, next_month = next_month_from(today)
+    is_next_month = (year == next_year and month == next_month)
+    if is_next_month and not args.force:
+        days_in_current_month = calendar.monthrange(today.year, today.month)[1]
+        days_remaining = days_in_current_month - today.day
+        if days_remaining >= 7:
+            print(
+                f"DATE GATE: Today is {today} — {days_remaining} days remain in "
+                f"{today.strftime('%B %Y')}. Next month's file is only created "
+                f"within the last 7 days of the current month. Exiting."
+            )
+            print("Use --force to override this gate if you have a specific reason.")
+            raise SystemExit(0)
 
     month_str   = f"{year}-{month:02d}"
     month_label = month_display(year, month)

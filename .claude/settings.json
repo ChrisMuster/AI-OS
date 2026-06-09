@@ -1,6 +1,10 @@
 {
   "permissions": {
     "allow": [
+      "Bash(python --version)",
+      "Bash(py --version)",
+      "Bash(python3 --version)",
+      "mcp__scheduled-tasks__list_scheduled_tasks",
       "Bash(python workflows/audit/scripts/run.py *)",
       "Bash(python workflows/create-wiki/scripts/run.py *)",
       "Bash(python workflows/link-check/scripts/run.py *)",

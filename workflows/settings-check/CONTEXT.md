@@ -12,7 +12,7 @@ Validates the health of the automated command infrastructure on every session st
 - `.claude/settings.json` — project-level allowlist patterns and hook command definitions.
 - `~/.claude/settings.json` — global allowlist patterns (also checked, because scheduled tasks may not load project-level settings).
 - `~/.claude/scheduled-tasks/*/SKILL.md` — scheduled task commands. Gracefully skipped if the directory does not exist (expected on a fresh clone before first session startup).
-- All `.py` files under `workflows/` and `journal/scripts/` — syntax-checked via `py_compile`.
+- All `.py` files under `workflows/` [[workflows/CONTEXT]] and `journal/scripts/` [[journal/scripts/CONTEXT]] — syntax-checked via `py_compile`.
 - All files tracked by `git ls-files` — scanned for hardcoded absolute paths.
 
 ## Outputs

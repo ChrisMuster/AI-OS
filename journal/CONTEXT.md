@@ -53,3 +53,4 @@ updates USER.md from journal content.
 ## Revision History
 - 2026-05-29 — Initial creation.
 - 2026-06-05 — Added USER.md sync section. Biblio now scans recent journal entries at session startup and flags new information matching USER.md tracked categories for confirmation.
+- 2026-06-09 — new-month.py updated with date gate and `--force` flag. Next month's file is blocked by the script if the date condition is not met.
