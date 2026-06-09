@@ -1,6 +1,6 @@
 # Templates
 
-**Last modified:** 2026-05-12
+**Last modified:** 2026-06-09
 
 ## Purpose
 Holds reusable boilerplate templates for standard files used across Book Dragon. Biblio uses these as the starting point when scaffolding any new directory, ensuring every directory in the project has a consistent structure without freehanding.
@@ -24,7 +24,7 @@ This directory is a container for reference files, not a runnable workflow. The 
 2. Rename it by removing the .template extension.
 3. Replace all `{{PLACEHOLDER}}` variables with the correct values for that directory.
 4. Review the filled-in file to make sure no placeholders were missed and all sections make sense.
-5. Run the full verification checklist across all sections (defined in root CLAUDE.md) before finalising. No lazy "None" entries.
+5. Run the full verification checklist across all sections (defined in root AGENTS.md) before finalising. No lazy "None" entries.
 6. Append this directory's LOG.md if a new template is added or an existing one is modified.
 
 Available placeholders:
@@ -42,10 +42,10 @@ Available placeholders:
 - `{{CREATION_NOTE}}` — Short note for the initial log entry.
 
 ## Dependencies
-- `CLAUDE.md` [[CLAUDE]] (root) — Defines the CONTEXT.md schema and LOG.md format that these templates implement. The templates must match the rules in CLAUDE.md at all times.
+- `AGENTS.md` [[AGENTS]] (root) — Defines the CONTEXT.md schema and LOG.md format that these templates implement. The templates must match the rules in AGENTS.md at all times.
 
 ## Known Issues
-- If the CONTEXT.md schema or LOG.md format in root CLAUDE.md changes, the templates here must be updated to match. Drift between the rules and the templates is the fastest way to corrupt the system.
+- If the CONTEXT.md schema or LOG.md format in root AGENTS.md changes, the templates here must be updated to match. Drift between the rules and the templates is the fastest way to corrupt the system.
 
 ## Revision History
 - 2026-05-12 — Initial creation with CONTEXT.md and LOG.md templates.
@@ -53,3 +53,4 @@ Available placeholders:
 - 2026-05-12 — Added dependency on root CLAUDE.md and drift risk to Known Issues.
 - 2026-05-12 — Added verification checklist step to template usage procedure.
 - 2026-05-12 — Updated checklist reference to cover all sections (Contents, Inputs, Outputs, Steps, Dependencies, Known Issues).
+- 2026-06-09 — Dependencies and references updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).

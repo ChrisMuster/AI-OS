@@ -1,6 +1,6 @@
 # Link Check
 
-**Last modified:** 2026-06-03
+**Last modified:** 2026-06-09
 
 ## Purpose
 Manages Obsidian wiki links in all Book Dragon CONTEXT.md files. Adds `[[links]]` alongside existing prose path references so the Obsidian knowledge graph shows connections between directories, and audits those links for dead targets after renames or deletions.
@@ -32,7 +32,7 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 4. Append LOG.md with a completion or failure entry.
 
 ## Dependencies
-- `CLAUDE.md` (root) [[CLAUDE]] — Defines the CONTEXT.md schema and project structure that this workflow operates on.
+- `AGENTS.md` (root) [[AGENTS]] — Defines the CONTEXT.md schema and project structure that this workflow operates on.
 - `workflows/link-check/scripts/run.py` [[workflows/link-check/scripts/CONTEXT]] — The script that performs all link operations.
 
 ## Known Issues
@@ -42,3 +42,4 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 
 ## Revision History
 - 2026-06-03 — Initial creation.
+- 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).

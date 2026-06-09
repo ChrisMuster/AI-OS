@@ -18,10 +18,11 @@ None. Individual skill subdirectories define their own outputs.
 N/A. This is a container directory, not a workflow itself.
 
 ## Dependencies
-- `CLAUDE.md` [[CLAUDE]] — Defines the skills convention: one skill per subdirectory, SKILL.md as the spec, CONTEXT.md as the directory record.
+- `AGENTS.md` [[AGENTS]] — Defines the skills convention: one skill per subdirectory, SKILL.md as the spec, CONTEXT.md as the directory record.
 
 ## Known Issues
 None.
 
 ## Revision History
 - 2026-06-08 — Initial creation.
+- 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).

@@ -1,6 +1,6 @@
 # Skills
 
-**Last modified:** 2026-05-29
+**Last modified:** 2026-06-09
 
 ## Purpose
 Parent directory for all shared skills in Book Dragon. A skill lives here once it is needed by more than one workflow. Each skill gets its own subdirectory with a SKILL.md spec and, where applicable, its own scripts.
@@ -19,7 +19,7 @@ None. Individual skill subdirectories define their own outputs.
 N/A. This is a container directory, not a workflow itself.
 
 ## Dependencies
-- `CLAUDE.md` [[CLAUDE]] (root) — Defines the shared skills convention, the CONTEXT.md schema, and the promotion rules for workflow-scoped skills.
+- `AGENTS.md` [[AGENTS]] (root) — Defines the shared skills convention, the CONTEXT.md schema, and the promotion rules for workflow-scoped skills.
 
 ## Known Issues
 - The Contents section of this file must be updated every time a new skill is added or removed.
@@ -27,3 +27,4 @@ N/A. This is a container directory, not a workflow itself.
 ## Revision History
 - 2026-05-29 — Initial creation. Added web-research as the first shared skill.
 - 2026-05-29 — Added image-prompt as the second shared skill.
+- 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).

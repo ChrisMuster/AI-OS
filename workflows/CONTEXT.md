@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-06-08
+**Last modified:** 2026-06-09
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -24,7 +24,7 @@ None. Individual workflow subdirectories define their own outputs.
 N/A. This is a container directory, not a workflow itself.
 
 ## Dependencies
-- `CLAUDE.md` [[CLAUDE]] (root) — Defines the rules for workflow structure, the skills convention, the CONTEXT.md schema, and the requirement to use templates when scaffolding new workflows.
+- `AGENTS.md` [[AGENTS]] (root) — Defines the rules for workflow structure, the skills convention, the CONTEXT.md schema, and the requirement to use templates when scaffolding new workflows.
 - `templates/` [[templates/CONTEXT]] — Biblio uses these templates when creating new workflow subdirectories.
 
 ## Known Issues
@@ -43,3 +43,4 @@ N/A. This is a container directory, not a workflow itself.
 - 2026-06-03 — Added weather workflow to Contents.
 - 2026-06-08 — Added session-search workflow to Contents.
 - 2026-06-08 — Added settings-check workflow to Contents.
+- 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).

@@ -30,7 +30,7 @@ A fully scaffolded wiki directory at `wikis/<wiki-name>/` containing:
 4. The script handles everything: directory and file creation, updates to wikis/CONTEXT.md and README.md, all LOG entries, and a final structural audit to verify nothing is broken.
 
 ## Dependencies
-- `CLAUDE.md` [[CLAUDE]] (root) — Defines the CONTEXT.md schema, LOG.md format, and verification checklist that this workflow follows.
+- `AGENTS.md` [[AGENTS]] (root) — Defines the CONTEXT.md schema, LOG.md format, and verification checklist that this workflow follows.
 - `templates/` [[templates/CONTEXT]] — The general CONTEXT.md and LOG.md templates inform the structure for subdirectories (raw/, wiki/), though the wiki's own CONTEXT.md uses a wiki-specific template stored in this workflow directory.
 - `wikis/CONTEXT.md` [[wikis/CONTEXT]] — Updated automatically by run.py on each run.
 - `README.md` [[README]] (root) — Updated automatically by run.py on each run.
@@ -48,3 +48,4 @@ A fully scaffolded wiki directory at `wikis/<wiki-name>/` containing:
 - 2026-05-27 — Converted to 90-10 protocol. Added scripts/ subdirectory with run.py scaffold script. Steps reduced from 11 AI-driven steps to 4. Script now handles all file creation, wikis/CONTEXT.md and README.md updates, and log entries. Also adds LOG.md to wiki root (previously missing).
 - 2026-05-27 — Added idempotency and --dry-run flag to run.py. Added post-scaffold audit step: script now runs the structural audit automatically on completion and reports any failures or warnings.
 - 2026-06-06 — Fixed bug in run.py: generated CONTEXT.md files used `../` relative paths in Dependencies sections instead of project-root-relative paths. Both raw_context() and wiki_subdir_context() corrected.
+- 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).

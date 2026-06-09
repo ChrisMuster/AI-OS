@@ -25,7 +25,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 1. **Initial import (one time):** Run `python workflows/session-search/scripts/index.py` to discover existing Claude Code and Cowork sessions, archive them, and build the initial database.
 2. **Ongoing (automated):** Stop, PreCompact, and Notification (idle_prompt) hooks in `.claude/settings.json` call `archive.py --hook` automatically at session end and idle events.
 3. **Hourly safety net:** MCP scheduled task runs `archive.py --all` to catch Cowork sessions and idle Claude Code sessions.
-4. **Session startup (automated):** `index.py` runs automatically at step 6 of the CLAUDE.md session startup sequence, updating the archive and search index at the start of every session.
+4. **Session startup (automated):** `index.py` runs automatically at step 6 of the Claude session startup sequence (defined in `CLAUDE.md` [[CLAUDE]]), updating the archive and search index at the start of every session.
 5. **Search:** Trigger Biblio's session-search skill with phrases such as "when did we talk about X" or "search our history for...".
 6. **Adding a new AI source:** Run `discover.py <ai-name>` to inspect the new tool's data footprint and scaffold an adapter.
 7. Append LOG.md with a completion or failure entry.
@@ -33,7 +33,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 ## Dependencies
 - `.claude/settings.json` — Stop, PreCompact, and Notification (idle_prompt) hooks configured here call `archive.py --hook`.
 - `scheduled-tasks` MCP — Hourly scheduled task runs `archive.py --all` while the Claude desktop app is open.
-- `CLAUDE.md` [[CLAUDE]] — Session startup step 6b calls `index.py` automatically; step 6a checks for and creates the hourly scheduled task on any machine where it is missing. First-run init step 6 also creates it on a fresh clone.
+- `CLAUDE.md` [[CLAUDE]] — Claude-specific session maintenance: step 6b calls `index.py` automatically; step 6a checks for and creates the hourly scheduled task on any machine where it is missing. First-run step 6 also creates it on a fresh clone.
 - Python 3.9+ with standard library only (sqlite3 with FTS5 is included in CPython builds on Windows).
 - `templates/` [[templates/CONTEXT]] — Standard CONTEXT.md and LOG.md templates used during scaffolding.
 
@@ -49,3 +49,4 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - 2026-06-08 — Wired index.py into CLAUDE.md session startup (step 6) and scheduled task creation into first-run init (step 6). Updated Steps, Dependencies, and Known Issues accordingly.
 - 2026-06-08 — Updated Dependencies and Known Issues to reflect scheduled task check in regular startup (step 6a) as well as first-run init. Fixed personal-data language in Known Issues.
 - 2026-06-08 — Fixed scheduled task permission prompt: SKILL.md updated to use forward-slash path, settings.json allowlist broadened to wildcard pattern covering both relative (hooks) and absolute (scheduled task) invocations.
+- 2026-06-09 — Clarified CLAUDE.md dependency as Claude-specific session maintenance (AI-agnostic transition).

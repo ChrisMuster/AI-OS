@@ -1,9 +1,9 @@
 # Audit
 
-**Last modified:** 2026-06-03
+**Last modified:** 2026-06-09
 
 ## Purpose
-Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, broken Contents paths, unlisted subdirectories, and dead Obsidian [[links]]. Also checks that CLAUDE.md has not exceeded its line-count threshold (600 lines), and runs code hygiene checks across all Python scripts (currently: strftime calls with time but no timezone). Produces a report of failures and warnings for review.
+Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, broken Contents paths, unlisted subdirectories, and dead Obsidian [[links]]. Also checks that AGENTS.md has not exceeded its line-count threshold (600 lines), and runs code hygiene checks across all Python scripts (currently: strftime calls with time but no timezone). Produces a report of failures and warnings for review.
 
 ## Contents
 - scripts/ — `workflows/audit/scripts/` [[workflows/audit/scripts/CONTEXT]] — Automation scripts for this workflow; run.py is the main audit entry point.
@@ -22,7 +22,7 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 3. Fix any real issues found, then re-run to confirm clean.
 
 ## Dependencies
-- `CLAUDE.md` [[CLAUDE]] (root) — Defines the structural rules (CONTEXT.md schema, LOG.md requirement) that this workflow audits against.
+- `AGENTS.md` [[AGENTS]] (root) — Defines the structural rules (CONTEXT.md schema, LOG.md requirement) that this workflow audits against.
 - `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] — The automation script that performs all checks.
 
 ## Known Issues
@@ -36,3 +36,4 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 - 2026-06-03 — Added dead [[link]] check. Audit now warns on any project [[links]] that point to non-existent .md files. Wiki-internal links are ignored.
 - 2026-06-05 — Added CLAUDE.md line-count check. Warns when CLAUDE.md exceeds 600 lines, prompting a review and reorganisation into a rules/ directory.
 - 2026-06-08 — Added code hygiene check: scans all project Python scripts for strftime calls with time components but no timezone offset. Fixed format_report to use isoformat (was itself a timezone-less timestamp).
+- 2026-06-09 — Line-count check updated from CLAUDE.md to AGENTS.md. Dependencies updated. AGENTS added to dead-link root stems.

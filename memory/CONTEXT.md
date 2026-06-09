@@ -1,6 +1,6 @@
 # Memory
 
-**Last modified:** 2026-06-05
+**Last modified:** 2026-06-09
 
 ## Purpose
 
@@ -23,18 +23,18 @@ None. This directory is a store, not a workflow.
 
 ## Steps
 
-N/A. This is a store directory, not a workflow. See the "Project memory" rule in `CLAUDE.md` [[CLAUDE]] for the full read procedure, write rules, and four-step write procedure.
+N/A. This is a store directory, not a workflow. See the "Project memory" rule in `AGENTS.md` [[AGENTS]] for the full read procedure, write rules, and four-step write procedure.
 
 ## Dependencies
 
-- `CLAUDE.md` [[CLAUDE]] (root) — defines the session startup sequence and all rules governing when and how to read and write memory.
+- `AGENTS.md` [[AGENTS]] (root) — defines the session startup sequence and all rules governing when and how to read and write memory.
 
 ## Known Issues
 
-- The old per-user cache at `~/.claude/projects/<sanitized-cwd>/memory/` may still exist on machines where it was previously written to. New writes must land in this directory. If a conflict arises, this project-scoped memory takes precedence.
-- This file currently references `CLAUDE.md` [[CLAUDE]] as its governing rules file. When Book Dragon becomes AI-agnostic, `CLAUDE.md` [[CLAUDE]] will be replaced by a different configuration layer and this dependency will need updating at that point.
+- The old per-user Claude cache at `~/.claude/projects/<sanitized-cwd>/memory/` may still exist on machines where it was previously written to. New writes must land in this directory. If a conflict arises, this project-scoped memory takes precedence.
 
 ## Revision History
 
 - 2026-06-05 — Initial creation. Project-scoped memory system established per user specification.
-- 2026-06-05 — Stripped to standard CONTEXT.md schema. Procedural content consolidated into CLAUDE.md "Project memory" rule. Privacy and git rules added.
+- 2026-06-05 — Stripped to standard CONTEXT.md schema. Procedural content consolidated into project memory rule. Privacy and git rules added.
+- 2026-06-09 — Dependencies and references updated from CLAUDE.md to AGENTS.md. Removed stale Known Issue about AI-agnostic transition (now complete).
