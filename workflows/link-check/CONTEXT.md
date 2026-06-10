@@ -43,3 +43,4 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 ## Revision History
 - 2026-06-03 — Initial creation.
 - 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).
+- 2026-06-09 — GEMINI.md added to ROOT_LINK_FILES (Phase 2 AI-agnostic transition).

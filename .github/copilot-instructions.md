@@ -1,0 +1,31 @@
+# Book Dragon — GitHub Copilot Instructions
+
+**Last updated:** 2026-06-09
+
+The universal rules for this project are defined in `AGENTS.md` at the project root. You must read and follow all rules in `AGENTS.md` before doing any work. This file contains only Copilot-specific additions.
+
+## AI self-identification
+
+At the very start of each session — before the greeting — output a single line:
+
+`AI_IDENTITY: GitHub Copilot`
+
+This identifies which AI is running for the duration of the session. Currently it is a visible marker only — session-search indexing and setup verification will be implemented in Phase 4 of the AI-agnostic plan. Output it once, before any other session startup work.
+
+## Tool conventions
+
+Copilot operates within the IDE (VS Code, JetBrains) and via the GitHub coding agent. The abstract tool references in AGENTS.md map to Copilot's native capabilities:
+
+- **Check file/directory existence:** Use the file system tools available in your environment.
+- **Search file contents:** Use workspace search or terminal commands.
+- **Read files:** Open and read files directly.
+- **Modify existing files:** Edit files in place.
+- **Create new files:** Create files using your file system tools.
+- **Run shell commands:** Use the integrated terminal.
+
+## Copilot-specific notes
+
+- When running as the GitHub coding agent, you have full terminal access. Prefer `python` for script execution and `date +"%Y-%m-%dT%H:%M:%S%:z"` for timestamps (via Bash/terminal).
+- When running as Copilot Chat in the IDE, you may not have terminal access. Do your best with the tools available and flag any steps you cannot complete.
+- Path-specific instructions in `.github/instructions/` apply alongside these project-wide instructions.
+- See `AGENT-SETUP.md` for MCP server registration and full setup instructions.

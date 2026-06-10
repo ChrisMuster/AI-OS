@@ -1,8 +1,10 @@
 # Book Dragon
 
-**Last updated:** 8 June 2026
+**Last updated:** 9 June 2026
 
-Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. The current default is Claude by Anthropic. Book Dragon is intended to become AI-agnostic in future, so the underlying model can eventually be swapped while Biblio's identity and rules remain the same.
+Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
+
+All universal rules live in `AGENTS.md` (the open standard adopted by the Linux Foundation). Each supported AI has a thin wrapper file that imports `AGENTS.md` and adds only AI-specific details — see `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.cursor/rules/project.mdc`, `.windsurf/rules/project.md`, `.clinerules/00-project.md`, `.roo/rules/project.md`, `.continue/rules/00-project.md`, and `.aider.conf.yml`.
 
 The system is modular, organised into workflows, wikis, skills, and other tools that grow over time.
 
@@ -10,12 +12,12 @@ The system is modular, organised into workflows, wikis, skills, and other tools 
 
 **Python 3.9+** is the only current system-level requirement. See `REQUIREMENTS.md` for full details including per-workflow package requirements and API key setup.
 
-**Running with Claude:** This project requires a **paid Claude plan**. You can access it through the Claude desktop app (which includes Chat, Code, and Cowork in one installation), the Claude Code CLI, or an IDE extension for VS Code or JetBrains. The free Claude plan does not include Claude Code or Cowork.
+**Supported AIs:** Book Dragon works with any AI that reads `AGENTS.md`. Currently supported via thin wrapper files: Claude Code, Claude Cowork, GitHub Copilot, Gemini CLI, Cursor, Windsurf, Cline, Roo Code, Continue.dev, and Aider. Codex CLI, Codex Desktop, and OpenCode read `AGENTS.md` natively with no wrapper needed. See `AGENT-SETUP.md` for per-AI setup instructions.
+
+**Running with Claude:** Claude requires a **paid Claude plan**. You can access it through the Claude desktop app (which includes Chat, Code, and Cowork in one installation), the Claude Code CLI, or an IDE extension for VS Code or JetBrains. The free Claude plan does not include Claude Code or Cowork.
 
 - Desktop app (all three products): [claude.com/download](https://claude.com/download)
 - Claude Code (CLI, IDE extension, and plan details): [anthropic.com/claude-code](https://www.anthropic.com/claude-code)
-
-This project is intended to become AI-agnostic in future; when that happens, Claude will remain a supported option.
 
 ## Getting started
 

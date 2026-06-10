@@ -37,3 +37,4 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 - 2026-06-05 — Added CLAUDE.md line-count check. Warns when CLAUDE.md exceeds 600 lines, prompting a review and reorganisation into a rules/ directory.
 - 2026-06-08 — Added code hygiene check: scans all project Python scripts for strftime calls with time components but no timezone offset. Fixed format_report to use isoformat (was itself a timezone-less timestamp).
 - 2026-06-09 — Line-count check updated from CLAUDE.md to AGENTS.md. Dependencies updated. AGENTS added to dead-link root stems.
+- 2026-06-09 — GEMINI added to dead-link root stems (Phase 2 AI-agnostic transition).

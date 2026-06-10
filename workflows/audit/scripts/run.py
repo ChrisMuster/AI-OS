@@ -136,7 +136,7 @@ STALE_PHRASES = [
 # Top-level directory names used to identify project [[links]] vs wiki-internal ones
 _LINK_TOP_LEVEL = {"workflows", "wikis", "skills", "templates", "journal"}
 # Root file stems we link (LOG excluded)
-_LINK_ROOT_STEMS = {"AGENTS", "CLAUDE", "README", "USER", "SOUL"}
+_LINK_ROOT_STEMS = {"AGENTS", "CLAUDE", "GEMINI", "README", "USER", "SOUL"}
 
 
 def strip_code_blocks(content: str) -> str:

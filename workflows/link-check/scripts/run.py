@@ -50,7 +50,7 @@ SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".claude"}
 TOP_LEVEL_DIRS = {"workflows", "wikis", "skills", "templates", "journal"}
 
 # Root-level .md files that get direct links (LOG.md excluded — too noisy)
-ROOT_LINK_FILES = {"AGENTS.md", "CLAUDE.md", "README.md", "USER.md", "SOUL.md"}
+ROOT_LINK_FILES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md", "README.md", "USER.md", "SOUL.md"}
 
 
 # ---------------------------------------------------------------------------

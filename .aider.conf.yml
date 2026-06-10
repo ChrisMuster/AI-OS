@@ -1,0 +1,8 @@
+# Book Dragon — Aider configuration
+#
+# Aider does not auto-load AGENTS.md. The read list below ensures
+# the project's universal rules are loaded at the start of every session.
+# See AGENT-SETUP.md for full setup instructions.
+
+read:
+  - AGENTS.md

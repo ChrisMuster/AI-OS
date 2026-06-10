@@ -12,7 +12,7 @@ At the very start of each session — before the greeting — identify which Cla
 
 `AI_IDENTITY: [product name]`
 
-This line is used by session-search indexing to tag sessions by AI. Output it once, before any other session startup work.
+This identifies which AI is running for the duration of the session. Currently it is a visible marker only — session-search indexing and setup verification will be implemented in Phase 4 of the AI-agnostic plan. Output it once, before any other session startup work.
 
 ## Claude-specific tool conventions
 
