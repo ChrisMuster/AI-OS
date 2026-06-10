@@ -10,6 +10,7 @@ Usage:
   python search.py "USER.md" --since 2026-06-01
   python search.py "journal" --source claude-code
   python search.py "session" --hostname DESKTOP-XXXXX
+  python search.py "audit" --ai "Claude Code"
 """
 
 import argparse
@@ -51,6 +52,7 @@ def search(
     since: str = None,
     hostname_filter: str = None,
     source_filter: str = None,
+    ai_filter: str = None,
 ) -> list:
     """
     Search across all shards and return merged results sorted by FTS5 rank.
@@ -82,16 +84,20 @@ def search(
             if source_filter:
                 conditions.append('source = ?')
                 params.append(source_filter)
+            if ai_filter:
+                conditions.append('ai_identity = ?')
+                params.append(ai_filter)
 
             where = ' AND '.join(conditions)
 
             sql = f"""
                 SELECT
-                    snippet(sessions, 6, "[", "]", "...", 20) AS snippet,
+                    snippet(sessions, 7, "[", "]", "...", 20) AS snippet,
                     hostname,
                     source,
                     session_id,
                     session_title,
+                    ai_identity,
                     timestamp,
                     role,
                     rank
@@ -132,14 +138,16 @@ def format_results(results: list) -> None:
     print(f'\n{len(results)} result(s):\n')
     for i, r in enumerate(results, 1):
         title = r.get('session_title') or r.get('session_id', 'Unknown session')
-        source    = r.get('source', '')
-        hostname  = r.get('hostname', '')
-        date_str  = (r.get('timestamp') or '')[:10]
-        role      = r.get('role', '')
-        snippet   = r.get('snippet', '')
+        source      = r.get('source', '')
+        hostname    = r.get('hostname', '')
+        ai_identity = r.get('ai_identity', '')
+        date_str    = (r.get('timestamp') or '')[:10]
+        role        = r.get('role', '')
+        snippet     = r.get('snippet', '')
 
+        ai_tag = f'  |  {ai_identity}' if ai_identity else ''
         print(f'[{i}] {title}')
-        print(f'    {date_str}  |  {source}  |  {hostname}  |  {role}')
+        print(f'    {date_str}  |  {source}{ai_tag}  |  {hostname}  |  {role}')
         print(f'    {snippet}')
         print()
 
@@ -169,6 +177,8 @@ def main() -> None:
                         help='Limit results to a specific machine')
     parser.add_argument('--source',   choices=['claude-code', 'cowork'],
                         help='Limit results to a specific source')
+    parser.add_argument('--ai',       metavar='NAME',
+                        help='Limit results to a specific AI (e.g. "Claude Code")')
     args = parser.parse_args()
 
     print(f'Searching {len(shards)} shard(s) for: {args.query!r}')
@@ -178,6 +188,7 @@ def main() -> None:
         since=args.since,
         hostname_filter=args.hostname,
         source_filter=args.source,
+        ai_filter=args.ai,
     )
     format_results(results)
 

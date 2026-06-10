@@ -10,9 +10,7 @@ The universal rules for this project are defined in `AGENTS.md` at the project r
 
 ## AI self-identification
 
-At the very start of each session, output: `AI_IDENTITY: Cursor`
-
-Currently a visible marker only — session indexing and setup verification are Phase 4 work.
+For step 6a of session startup (`AGENTS.md`), output: `AI_IDENTITY: Cursor`
 
 ## Tool conventions
 

@@ -19,13 +19,15 @@ Archive format (one JSON object per line):
     "session_id":    "<string>",
     "session_title": "<string | empty>",
     "source":        "claude-code" | "cowork",
-    "hostname":      "<machine hostname>"
+    "hostname":      "<machine hostname>",
+    "ai_identity":   "<string | empty>"
   }
 """
 
 import argparse
 import json
 import os
+import re
 import socket
 import sys
 from pathlib import Path
@@ -84,6 +86,46 @@ def get_session_title(session_id: str) -> str:
                         return meta.get('title', '')
                 except Exception:
                     continue
+    return ''
+
+
+# ---------------------------------------------------------------------------
+# AI identity extraction
+# ---------------------------------------------------------------------------
+
+# Regex to match the AI_IDENTITY line output at session start.
+_AI_IDENTITY_RE = re.compile(r'^AI_IDENTITY:\s*(.+)$', re.MULTILINE)
+
+# Retroactive mapping: for sessions that predate the AI_IDENTITY convention,
+# infer the AI identity from the source field. Every historical session in
+# this project was produced by either Claude Code or Claude Cowork.
+_SOURCE_TO_AI: dict = {
+    'claude-code': 'Claude Code',
+    'cowork': 'Claude Cowork',
+}
+
+
+def extract_ai_identity(records: list) -> str:
+    """
+    Scan the first few assistant messages for an AI_IDENTITY line.
+
+    Returns the AI name if found, or falls back to the retroactive
+    source-based mapping for sessions that predate the convention.
+    """
+    # Scan assistant messages for the AI_IDENTITY pattern
+    for record in records[:20]:  # Only check early messages
+        if record.get('role') != 'assistant':
+            continue
+        content = record.get('content', '')
+        match = _AI_IDENTITY_RE.search(content)
+        if match:
+            return match.group(1).strip()
+
+    # Retroactive fallback: infer from source field
+    if records:
+        source = records[0].get('source', '')
+        return _SOURCE_TO_AI.get(source, '')
+
     return ''
 
 
@@ -213,7 +255,8 @@ def parse_cowork_audit(file_path: Path) -> tuple:
 # Archive writer
 # ---------------------------------------------------------------------------
 
-def write_archive(session_id: str, records: list, title: str = '', dry_run: bool = False) -> int:
+def write_archive(session_id: str, records: list, title: str = '',
+                   ai_identity: str = '', dry_run: bool = False) -> int:
     """Write records to data/archive/<hostname>/<session_id>.jsonl. Returns count written."""
     if not records:
         return 0
@@ -223,6 +266,10 @@ def write_archive(session_id: str, records: list, title: str = '', dry_run: bool
     if title:
         for r in records:
             r['session_title'] = title
+
+    if ai_identity:
+        for r in records:
+            r['ai_identity'] = ai_identity
 
     if dry_run:
         print(f'  [DRY RUN] Would write {len(records)} message(s) to {archive_file.relative_to(WORKFLOW_DIR)}')
@@ -253,7 +300,8 @@ def archive_claude_code_file(jsonl_file: Path, state: dict, dry_run: bool = Fals
 
     session_id, records = parse_claude_code_jsonl(jsonl_file)
     title = get_session_title(session_id)
-    count = write_archive(session_id, records, title=title, dry_run=dry_run)
+    ai_identity = extract_ai_identity(records)
+    count = write_archive(session_id, records, title=title, ai_identity=ai_identity, dry_run=dry_run)
 
     if not dry_run and count > 0:
         state['archived'][file_key] = {
@@ -277,7 +325,8 @@ def archive_cowork_file(audit_file: Path, state: dict, dry_run: bool = False) ->
         return 0
 
     session_id, records = parse_cowork_audit(audit_file)
-    count = write_archive(session_id, records, dry_run=dry_run)
+    ai_identity = extract_ai_identity(records)
+    count = write_archive(session_id, records, ai_identity=ai_identity, dry_run=dry_run)
 
     if not dry_run and count > 0:
         state['archived'][file_key] = {

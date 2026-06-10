@@ -174,6 +174,31 @@ async def run_settings_check(verbose: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Tools — setup verification
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def verify_setup(ai_name: str) -> dict:
+    """Verify that the project environment is correctly configured for a given AI.
+
+    Runs deterministic checks: AGENTS.md exists, Python version, wrapper file,
+    MCP configuration, .env, and AI-specific config files. Returns structured
+    results with PASS/FAIL/WARN status for each check.
+
+    Args:
+        ai_name: The AI to verify setup for (e.g. "Claude Code", "Gemini CLI").
+            Use the exact name as shown in AGENT-SETUP.md.
+    """
+    cmd = [
+        PYTHON,
+        str(PROJECT_ROOT / "workflows/biblio-tools/scripts/verify.py"),
+        "--ai",
+        ai_name,
+        "--json",
+    ]
+    return await _run_script(cmd)
+
+
+# ---------------------------------------------------------------------------
 # Tools — utilities
 # ---------------------------------------------------------------------------
 @mcp.tool()

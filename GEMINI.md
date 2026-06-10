@@ -2,17 +2,13 @@
 
 @AGENTS.md
 
-**Last updated:** 2026-06-09
+**Last updated:** 2026-06-10
 
 The universal rules for this project are defined in `AGENTS.md`. Gemini CLI reads both files via the `@AGENTS.md` import above. This file contains only Gemini-specific additions.
 
 ## AI self-identification
 
-At the very start of each session — before the greeting — output a single line:
-
-`AI_IDENTITY: Gemini CLI`
-
-This identifies which AI is running for the duration of the session. Currently it is a visible marker only — session-search indexing and setup verification will be implemented in Phase 4 of the AI-agnostic plan. Output it once, before any other session startup work.
+For step 6a of session startup (`AGENTS.md`), output: `AI_IDENTITY: Gemini CLI`
 
 ## Gemini-specific tool conventions
 

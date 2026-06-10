@@ -2,17 +2,18 @@
 
 @AGENTS.md
 
-**Last updated:** 2026-06-09
+**Last updated:** 2026-06-10
 
 The universal rules for this project are defined in `AGENTS.md`. Claude reads both files. This file contains only Claude-specific additions: tool conventions, session maintenance tasks, and configuration guidance. It applies to all Claude products (Claude Code, Claude Cowork, and any future Claude interfaces that read this file).
 
 ## AI self-identification
 
-At the very start of each session — before the greeting — identify which Claude product you are running as (e.g. Claude Code, Claude Cowork) and output a single line:
+For step 6a of session startup (`AGENTS.md`), identify which Claude product you are running as:
 
-`AI_IDENTITY: [product name]`
+- If running as Claude Code, output: `AI_IDENTITY: Claude Code`
+- If running as Claude Cowork, output: `AI_IDENTITY: Claude Cowork`
 
-This identifies which AI is running for the duration of the session. Currently it is a visible marker only — session-search indexing and setup verification will be implemented in Phase 4 of the AI-agnostic plan. Output it once, before any other session startup work.
+This is used by session-search indexing to tag sessions by AI and by setup verification to check the correct environment.
 
 ## Claude-specific tool conventions
 
@@ -51,9 +52,9 @@ These are the Claude Code tools that map to the abstract tool references in AGEN
 
 When writing log entries (per the LOG.md rules in AGENTS.md), always use the Edit tool to append. Never use Bash (`cat >>` or similar) — the Edit tool is always permitted without a permission prompt and is the correct tool for file modification in Claude Code.
 
-## Session maintenance (step 6)
+## Session maintenance (step 6c)
 
-For step 6 of session startup (AI-specific session maintenance), perform the following silently if `workflows/session-search/scripts/index.py` exists:
+For step 6c of session startup (AI-specific maintenance), perform the following silently if `workflows/session-search/scripts/index.py` exists:
 
 a. **Scheduled task check** — call `list_scheduled_tasks` and check whether `session-search-archive` exists on this machine. If it does not, create it with the same parameters as first-run step 6b (using forward slashes in the path). Tell the user in a single sentence that it has been set up.
 
@@ -61,9 +62,9 @@ b. **Index update** — run `python workflows/session-search/scripts/index.py` t
 
 c. **Settings coverage check** — run `python workflows/settings-check/scripts/run.py` silently. Do not report results unless there are FAIL findings. If failures are found, tell the user in a single sentence after greeting them: "Settings coverage check found uncovered commands — [list]. These will prompt for permission when they fire."
 
-## First-run setup (step 6)
+## First-run setup (step 6c)
 
-For step 6 of first-run initialisation (AI-specific first-run setup), set up the session-search scheduled task if `workflows/session-search/` exists:
+For step 6c of first-run initialisation (AI-specific first-run setup), set up the session-search scheduled task if `workflows/session-search/` exists:
 
 a. Call `list_scheduled_tasks` to check whether a task with id `session-search-archive` already exists on this machine.
 

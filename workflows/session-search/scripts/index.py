@@ -43,6 +43,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sessions USING fts5(
     source,
     session_id,
     session_title,
+    ai_identity,
     timestamp,
     role,
     content
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS session_meta (
     hostname       TEXT,
     source         TEXT,
     session_title  TEXT,
+    ai_identity    TEXT,
     first_timestamp TEXT,
     last_timestamp  TEXT,
     message_count  INTEGER
@@ -65,6 +67,21 @@ CREATE TABLE IF NOT EXISTS session_meta (
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
+
+def needs_schema_migration(db_file: Path) -> bool:
+    """Check if an existing database is missing the ai_identity column."""
+    if not db_file.exists():
+        return False
+    try:
+        conn = sqlite3.connect(f'file:{db_file}?mode=ro', uri=True)
+        # Check FTS5 table columns
+        row = conn.execute("SELECT * FROM sessions LIMIT 0").description
+        col_names = [col[0] for col in row] if row else []
+        conn.close()
+        return 'ai_identity' not in col_names
+    except Exception:
+        return False
+
 
 def open_db(db_file: Path) -> sqlite3.Connection:
     """Open the database, creating it with the correct schema if needed."""
@@ -140,17 +157,21 @@ def index_archive_file(conn: sqlite3.Connection, archive_file: Path,
     conn.execute('DELETE FROM sessions WHERE session_id = ?', (session_id,))
     conn.execute('DELETE FROM session_meta WHERE session_id = ?', (session_id,))
 
+    # Determine AI identity for the session
+    ai_identity = records[0].get('ai_identity', '')
+
     # Insert all records
     for record in records:
         conn.execute(
             'INSERT INTO sessions '
-            '(hostname, source, session_id, session_title, timestamp, role, content) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            '(hostname, source, session_id, session_title, ai_identity, timestamp, role, content) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             (
                 record.get('hostname', ''),
                 record.get('source', ''),
                 record.get('session_id', session_id),
                 record.get('session_title', ''),
+                record.get('ai_identity', ai_identity),
                 record.get('timestamp', ''),
                 record.get('role', ''),
                 record.get('content', ''),
@@ -160,12 +181,13 @@ def index_archive_file(conn: sqlite3.Connection, archive_file: Path,
     # Update summary metadata
     timestamps = [r.get('timestamp', '') for r in records if r.get('timestamp')]
     conn.execute(
-        'INSERT OR REPLACE INTO session_meta VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT OR REPLACE INTO session_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         (
             session_id,
             records[0].get('hostname', ''),
             records[0].get('source', ''),
             records[0].get('session_title', ''),
+            ai_identity,
             min(timestamps) if timestamps else '',
             max(timestamps) if timestamps else '',
             len(records),
@@ -196,6 +218,13 @@ def run_index(dry_run: bool = False, rebuild: bool = False) -> None:
 
     # Step 2: (re)build the database
     state = load_state()
+
+    # Auto-detect schema migration: if the database exists but lacks the
+    # ai_identity column, trigger a full rebuild so all sessions get the
+    # new field (with retroactive AI identity from archive.py).
+    if not rebuild and needs_schema_migration(DB_FILE):
+        rebuild = True
+        print('Schema migration detected (ai_identity column missing). Triggering rebuild.')
 
     if rebuild:
         if DB_FILE.exists() and not dry_run:

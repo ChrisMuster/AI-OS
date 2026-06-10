@@ -1,6 +1,6 @@
 # Book Dragon — Agent Instructions
 
-**Last updated:** 2026-06-09
+**Last updated:** 2026-06-10
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -23,7 +23,10 @@ At the start of every new session, before doing anything else:
 3. Read `README.md` — this is the living index of everything in the project. Individual wikis are not listed in README.md (they are personal content); if `wikis/CONTEXT.md` exists, read it too — it is the authoritative list of what wikis have been created.
 4. Read `memory/MEMORY.md` — this is the index of all persistent memory for this project. Pull individual memory files as their topics become relevant during the session.
 5. Read the last 15 entries of the root `LOG.md` — this tells you what has happened recently. If `LOG.md` does not exist at the root, this is a fresh clone — follow the **First-run initialisation** rule immediately before doing anything else.
-6. **AI-specific session maintenance** — perform any session maintenance tasks defined in your AI's wrapper file. If no AI-specific session maintenance tasks are defined, skip this step.
+6. **Setup verification and AI-specific maintenance:**
+   a. **Self-identification** — identify which AI product you are (e.g. Claude Code, Gemini CLI, Cursor) and output a single line before any other step-6 work: `AI_IDENTITY: [product name]`. Your wrapper file specifies which value to use. This line is parsed by session-search indexing to tag sessions by AI.
+   b. **Setup verification** — run `python workflows/biblio-tools/scripts/verify.py --ai "[your AI name]"` silently. If any check returns FAIL, tell the user in a single sentence what is missing and point them to `AGENT-SETUP.md` for remediation. If all checks pass or only return WARN, say nothing.
+   c. **AI-specific maintenance** — perform any additional session maintenance tasks defined in your AI's wrapper file. If none are defined, skip this sub-step.
 7. Check journal files silently. Follow these steps in order — do not combine them:
    a. **Current month** — check whether `journal/entries/YYYY-MM.md` for the current month exists. If it does not, run: `python journal/scripts/new-month.py --month YYYY-MM` (substituting the real year and month).
    b. **Next month** — first establish today's date. Count the days remaining in the current month. Only if today falls within the last 7 days of the current month, check whether next month's file exists. If it does not exist, run: `python journal/scripts/new-month.py --month YYYY-MM` (substituting next month's year and month). If today is not within the last 7 days of the current month, skip this step entirely — do not run the command. The script enforces this gate independently and will also refuse if the condition is not met.
@@ -57,7 +60,7 @@ The correct sequence is: read and understand the task, summarise your understand
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
-**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), AI-specific session maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
+**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
 
 ### Reading context before working
 

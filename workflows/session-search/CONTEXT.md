@@ -1,6 +1,6 @@
 # Session Search
 
-**Last modified:** 2026-06-08
+**Last modified:** 2026-06-10
 
 ## Purpose
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
@@ -50,3 +50,4 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - 2026-06-08 — Updated Dependencies and Known Issues to reflect scheduled task check in regular startup (step 6a) as well as first-run init. Fixed personal-data language in Known Issues.
 - 2026-06-08 — Fixed scheduled task permission prompt: SKILL.md updated to use forward-slash path, settings.json allowlist broadened to wildcard pattern covering both relative (hooks) and absolute (scheduled task) invocations.
 - 2026-06-09 — Clarified CLAUDE.md dependency as Claude-specific session maintenance (AI-agnostic transition).
+- 2026-06-10 — Added AI identity (ai_identity) field to archive format, FTS5 schema, and search filters. Retroactive identity inferred from source field for pre-existing sessions. Auto-migration detects old schema and triggers rebuild (Phase 4, AI-agnostic transition).
