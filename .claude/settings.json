@@ -16,7 +16,14 @@
       "Bash(python workflows/session-search/scripts/search.py *)",
       "Bash(python workflows/session-search/scripts/discover.py *)",
       "Bash(python journal/scripts/new-month.py *)",
-      "Bash(date *)"
+      "Bash(date *)",
+      "mcp__biblio-tools__run_audit",
+      "mcp__biblio-tools__run_link_check",
+      "mcp__biblio-tools__run_new_month",
+      "mcp__biblio-tools__run_session_search_index",
+      "mcp__biblio-tools__run_settings_check",
+      "mcp__biblio-tools__get_timestamp",
+      "mcp__biblio-tools__append_log"
     ]
   },
   "hooks": {

@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 9 June 2026
+**Last updated:** 10 June 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -38,6 +38,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Weather** — Fetches current conditions and forecasts for any location worldwide. No API keys required. `workflows/weather/` `[active]`
 - **Session Search** — Indexes all conversation transcripts into a local SQLite FTS5 database and provides a searchable session history skill. `workflows/session-search/` `[active]`
 - **Settings Check** — Validates that all automated commands (hooks and scheduled tasks) are covered by allowlist entries; catches permission-prompt bugs before they occur. `workflows/settings-check/` `[active]`
+- **Biblio Tools** — MCP server exposing project scripts as typed, callable tools for any AI that supports the Model Context Protocol. `workflows/biblio-tools/` `[active]`
 
 ## Skills
 

@@ -2,16 +2,7 @@
 
 ## AI system
 
-This project requires **Claude Code** or **Claude Cowork**, both of which require a paid Claude plan. The free Claude plan provides chat only and is not sufficient to run this project.
-
-**How to get set up:**
-- **Desktop app** (recommended) — includes Chat, Code, and Cowork in one installation. Download from [claude.com/download](https://claude.com/download).
-- **Claude Code CLI** — terminal-based, without the desktop app. Requires a paid plan or API credits.
-- **IDE extension** — available for VS Code and JetBrains. Requires a paid plan or API credits.
-
-For plan details and pricing: [anthropic.com/claude-code](https://www.anthropic.com/claude-code).
-
-Support for other AI systems is planned; when added, Claude will remain a supported option.
+Book Dragon is AI-agnostic — it works with any AI that reads `AGENTS.md`. See `README.md` for the full list of supported AIs and `AGENT-SETUP.md` for per-AI setup instructions.
 
 ## System requirements
 
@@ -29,8 +20,9 @@ Most workflows use the Python standard library only and need no additional packa
 | weather | None — standard library only | — |
 | journal | None — standard library only | — |
 | web-research | See requirements.txt | `pip install -r skills/web-research/scripts/requirements.txt` |
+| biblio-tools | mcp >= 1.0.0 (Python 3.10+) | `pip install -r workflows/biblio-tools/requirements.txt` |
 
-Run the web-research install command once before using that workflow. All other workflows are ready to use as soon as Python is installed.
+Run the web-research install command once before using that workflow. The biblio-tools MCP server requires Python 3.10+ (the MCP SDK requirement) — if running Python 3.9, the MCP server cannot start but all underlying scripts still work via direct shell commands. All other workflows are ready to use as soon as Python is installed.
 
 ## API keys
 

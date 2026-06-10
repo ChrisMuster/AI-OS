@@ -1,0 +1,3 @@
+# biblio-tools MCP server
+# Requires Python 3.10+ (MCP SDK requirement)
+mcp>=1.0.0

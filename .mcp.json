@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "biblio-tools": {
+      "command": "python",
+      "args": ["workflows/biblio-tools/scripts/server.py"]
+    }
+  }
+}

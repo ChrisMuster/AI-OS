@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-06-09
+**Last modified:** 2026-06-10
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -13,6 +13,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - Weather — `workflows/weather/` [[workflows/weather/CONTEXT]] — Fetches current conditions and forecasts for any location worldwide via Open-Meteo and Nominatim. No API keys required.
 - Session Search — `workflows/session-search/` [[workflows/session-search/CONTEXT]] — Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database; provides a skill for searching session history.
 - Settings Check — `workflows/settings-check/` [[workflows/settings-check/CONTEXT]] — Validates that all automated commands (hooks and scheduled tasks) are covered by allowlist entries in `.claude/settings.json`.
+- Biblio Tools — `workflows/biblio-tools/` [[workflows/biblio-tools/CONTEXT]] — MCP server exposing project scripts as typed, callable tools for any AI that supports the Model Context Protocol.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -44,3 +45,4 @@ N/A. This is a container directory, not a workflow itself.
 - 2026-06-08 — Added session-search workflow to Contents.
 - 2026-06-08 — Added settings-check workflow to Contents.
 - 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).
+- 2026-06-10 — Added biblio-tools MCP server to Contents (Phase 3, AI-agnostic transition).
