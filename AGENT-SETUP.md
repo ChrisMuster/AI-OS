@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-06-10
+**Last updated:** 2026-06-10 (MCP support updated for all 14 AIs)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -52,9 +52,7 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | `mcp` package | Install: `pip install -r workflows/biblio-tools/requirements.txt` |
 | `.mcp.json` | Must exist at project root with biblio-tools registered. Ships with the repository. |
 
-**Which AIs support MCP:** Claude Code, Claude Cowork, Cursor, Windsurf, Devin Desktop, Cline, Roo Code, Continue.dev.
-
-**Which AIs do not use MCP:** Gemini CLI, GitHub Copilot, Aider, Codex CLI, Codex Desktop, OpenCode. These AIs call project scripts directly via shell commands.
+**All 14 supported AIs have MCP support.** Each AI's MCP configuration format differs — see the per-AI sections below for details. For most AIs, the biblio-tools server is pre-configured in a project-scoped config file that ships with the repository. The only exception is GitHub Copilot CLI, which requires a one-time manual config step (see its section below).
 
 ## Per-AI setup
 
@@ -84,15 +82,19 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 |---|---|
 | Wrapper file | `GEMINI.md` |
 | AGENTS.md loading | Import — `@AGENTS.md` on line 3 of `GEMINI.md` |
-| MCP support | Not via `.mcp.json` — Gemini has its own MCP configuration method |
-| Config files | `.gemini/settings.json` (context file settings) |
+| MCP support | Yes — pre-configured in `.gemini/settings.json` |
+| Config files | `.gemini/settings.json` (context files and MCP servers) |
 | AI identity | `Gemini CLI` |
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install and configure Gemini CLI per Google's documentation.
-3. Open the project. Gemini reads `GEMINI.md` which imports `AGENTS.md` via `@AGENTS.md`.
-4. The first session triggers first-run initialisation.
+2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+3. Install and configure Gemini CLI per Google's documentation.
+4. Open the project. Gemini reads `GEMINI.md` which imports `AGENTS.md` via `@AGENTS.md`.
+5. The biblio-tools MCP server is pre-configured in `.gemini/settings.json` — no additional MCP setup needed.
+6. The first session triggers first-run initialisation.
+
+**MCP config location:** `.gemini/settings.json` (project-scoped, ships with the repository). Gemini CLI does not read `.mcp.json` — it uses its own `mcpServers` block in `settings.json`.
 
 ### GitHub Copilot
 
@@ -100,14 +102,29 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 |---|---|
 | Wrapper file | `.github/copilot-instructions.md` |
 | AGENTS.md loading | Native — Copilot reads `AGENTS.md` natively (since August 2025) |
-| MCP support | No |
-| Config files | None |
+| MCP support | Yes — requires one-time manual config |
+| Config files | None in the repository (MCP config is user-scoped) |
 | AI identity | `GitHub Copilot` |
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install the GitHub Copilot extension in VS Code or JetBrains (requires a Copilot subscription).
-3. Open the project. Copilot reads `.github/copilot-instructions.md` and `AGENTS.md` automatically.
+2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+3. Install the GitHub Copilot extension in VS Code or JetBrains (requires a Copilot subscription).
+4. Open the project. Copilot reads `.github/copilot-instructions.md` and `AGENTS.md` automatically.
+5. **MCP setup (one-time):** Add the biblio-tools server to your Copilot CLI config. Run `/mcp add` in the Copilot CLI, or manually add the following to `~/.copilot/mcp-config.json`:
+   ```json
+   {
+     "mcpServers": {
+       "biblio-tools": {
+         "command": "python",
+         "args": ["workflows/biblio-tools/scripts/server.py"]
+       }
+     }
+   }
+   ```
+   In VS Code, Copilot also reads `.mcp.json` (which ships with the repository), so MCP may work without additional config in the IDE.
+
+**Note:** Copilot CLI's MCP config is stored at `~/.copilot/mcp-config.json` (user home), so it cannot be shipped in the repository. The VS Code extension reads `.mcp.json` at the project root, which is pre-configured.
 
 ### Cursor
 
@@ -202,31 +219,56 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 |---|---|
 | Wrapper file | `.aider.conf.yml` (config file, not an instruction file) |
 | AGENTS.md loading | Config — `.aider.conf.yml` lists `AGENTS.md` in the `read` section |
-| MCP support | No |
+| MCP support | Yes — pre-configured in `.aider.conf.yml` |
 | Config files | None beyond `.aider.conf.yml` |
 | AI identity | `Aider` |
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install Aider per its documentation.
-3. Open the project. Aider reads `.aider.conf.yml` which loads `AGENTS.md` into context.
+2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+3. Install Aider per its documentation.
+4. Open the project. Aider reads `.aider.conf.yml` which loads `AGENTS.md` into context.
+5. The biblio-tools MCP server is pre-configured in `.aider.conf.yml` under `mcp-server` — no additional MCP setup needed.
 
-**Note:** Aider has no wrapper/instruction file concept. The `.aider.conf.yml` is a configuration file that ensures `AGENTS.md` is loaded.
+**Note:** Aider has no wrapper/instruction file concept. The `.aider.conf.yml` is a configuration file that ensures `AGENTS.md` is loaded and the biblio-tools MCP server is registered. MCP tools are offered to whatever model the session uses (assuming tool-call support).
 
-### Codex CLI / Codex Desktop / OpenCode
+### Codex CLI / Codex Desktop
 
 | Item | Detail |
 |---|---|
 | Wrapper file | None needed |
-| AGENTS.md loading | Native — these tools read `AGENTS.md` by default |
-| MCP support | No |
-| Config files | None |
-| AI identity | `Codex CLI`, `Codex Desktop`, or `OpenCode` |
+| AGENTS.md loading | Native — Codex reads `AGENTS.md` by default |
+| MCP support | Yes — pre-configured in `.codex/config.toml` |
+| Config files | `.codex/config.toml` (MCP server registration) |
+| AI identity | `Codex CLI` or `Codex Desktop` |
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install the tool per its documentation.
-3. Open the project. The tool reads `AGENTS.md` automatically — no wrapper file needed.
+2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+3. Install the tool per OpenAI's documentation.
+4. Open the project. Codex reads `AGENTS.md` automatically — no wrapper file needed.
+5. The biblio-tools MCP server is pre-configured in `.codex/config.toml` — no additional MCP setup needed.
+
+**Note:** Codex CLI, Codex Desktop, and the Codex IDE extension share MCP settings. The project-scoped `.codex/config.toml` is picked up by all three surfaces. You can also manage servers via the `codex mcp` CLI commands.
+
+### OpenCode
+
+| Item | Detail |
+|---|---|
+| Wrapper file | None needed |
+| AGENTS.md loading | Native — OpenCode reads `AGENTS.md` by default |
+| MCP support | Yes — pre-configured in `opencode.json` |
+| Config files | `opencode.json` (MCP server registration) |
+| AI identity | `OpenCode` |
+
+**Setup steps:**
+1. Ensure Python 3.9+ is installed.
+2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+3. Install OpenCode per its documentation.
+4. Open the project. OpenCode reads `AGENTS.md` automatically — no wrapper file needed.
+5. The biblio-tools MCP server is pre-configured in `opencode.json` — no additional MCP setup needed.
+
+**Note:** Project-scoped `opencode.json` has the highest precedence among OpenCode config files. It merges with (rather than replacing) global config at `~/.config/opencode/opencode.json`.
 
 ## Adding a new AI
 

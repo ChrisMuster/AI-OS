@@ -1,0 +1,8 @@
+# Book Dragon — Codex configuration
+#
+# Shared by Codex CLI, Codex Desktop, and Codex IDE extension.
+# See AGENT-SETUP.md for full setup instructions.
+
+[mcp.biblio-tools]
+command = "python"
+args = ["workflows/biblio-tools/scripts/server.py"]

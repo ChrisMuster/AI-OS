@@ -6,3 +6,11 @@
 
 read:
   - AGENTS.md
+
+# MCP servers — biblio-tools exposes project scripts as typed tools.
+# Requires Python 3.10+ and the mcp package (pip install -r workflows/biblio-tools/requirements.txt).
+mcp-server:
+  - name: biblio-tools
+    command: python
+    args:
+      - workflows/biblio-tools/scripts/server.py
