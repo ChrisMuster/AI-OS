@@ -126,6 +126,16 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 
 **Note:** Copilot CLI's MCP config is stored at `~/.copilot/mcp-config.json` (user home), so it cannot be shipped in the repository. The VS Code extension reads `.mcp.json` at the project root, which is pre-configured.
 
+**Model selection:** Copilot supports 23+ models from OpenAI, Anthropic, Google,
+and Microsoft. The user selects the model via the model picker, or Copilot's
+auto-selection chooses one based on task complexity. Model choice does not affect
+which instruction files are loaded — `AGENTS.md` and `.github/copilot-instructions.md`
+apply regardless of model. However, instruction-following quality may vary between
+models. For best results with Book Dragon's complex multi-step procedures, use a
+high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
+
+**Known issue — CLAUDE.md loading:** GitHub's documentation is ambiguous about whether Copilot loads `CLAUDE.md` only when a Claude model is active, or always regardless of model. If loaded unconditionally, non-Claude models would receive Claude-specific instructions (settings.json paths, session-search hooks) that do not apply to them. This has not caused problems in practice but may warrant testing if unexpected behaviour is observed.
+
 ### Cursor
 
 | Item | Detail |

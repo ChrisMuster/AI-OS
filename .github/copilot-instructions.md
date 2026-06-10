@@ -25,3 +25,12 @@ Copilot operates within the IDE (VS Code, JetBrains) and via the GitHub coding a
 - When running as Copilot Chat in the IDE, you may not have terminal access. Do your best with the tools available and flag any steps you cannot complete.
 - Path-specific instructions in `.github/instructions/` apply alongside these project-wide instructions.
 - See `AGENT-SETUP.md` for MCP server registration and full setup instructions.
+
+## Model awareness
+
+GitHub Copilot can use models from multiple providers (OpenAI, Anthropic, Google,
+Microsoft). The underlying model may vary between sessions or be selected by the
+user. All models should follow AGENTS.md identically. If a complex multi-step
+procedure (such as session startup or build close-out) is beyond your current
+capabilities, complete as many steps as you can and clearly state which steps you
+were unable to perform.
