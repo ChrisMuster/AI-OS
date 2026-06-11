@@ -7,5 +7,17 @@
       "command": "python",
       "args": ["workflows/biblio-tools/scripts/server.py"]
     }
+  },
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python workflows/session-search/scripts/archive.py --all"
+          }
+        ]
+      }
+    ]
   }
 }

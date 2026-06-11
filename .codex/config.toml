@@ -6,3 +6,8 @@
 [mcp.biblio-tools]
 command = "python"
 args = ["workflows/biblio-tools/scripts/server.py"]
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "python workflows/session-search/scripts/archive.py --all"

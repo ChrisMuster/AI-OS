@@ -1,6 +1,6 @@
 # Session Search
 
-**Last modified:** 2026-06-10
+**Last modified:** 2026-06-11
 
 ## Purpose
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
@@ -23,7 +23,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 
 ## Steps
 1. **Initial import (one time):** Run `python workflows/session-search/scripts/index.py` to discover existing Claude Code and Cowork sessions, archive them, and build the initial database.
-2. **Ongoing (automated):** Stop, PreCompact, and Notification (idle_prompt) hooks in `.claude/settings.json` call `archive.py --hook` automatically at session end and idle events.
+2. **Ongoing (automated):** Session hooks call `archive.py` automatically at session end or idle events. Claude Code uses `--hook` (via `.claude/settings.json`); other AIs with hooks (Gemini CLI, Cursor, Windsurf/Devin Desktop, Cline, Codex) use `--all` via their respective config files.
 3. **Hourly safety net:** MCP scheduled task runs `archive.py --all` to catch Cowork sessions and idle Claude Code sessions.
 4. **Session startup (automated):** `index.py` runs automatically at step 6 of the Claude session startup sequence (defined in `CLAUDE.md` [[CLAUDE]]), updating the archive and search index at the start of every session.
 5. **Search:** Trigger Biblio's session-search skill with phrases such as "when did we talk about X" or "search our history for...".
@@ -31,8 +31,13 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 7. Append LOG.md with a completion or failure entry.
 
 ## Dependencies
-- `.claude/settings.json` — Stop, PreCompact, and Notification (idle_prompt) hooks configured here call `archive.py --hook`.
-- `scheduled-tasks` MCP — Hourly scheduled task runs `archive.py --all` while the Claude desktop app is open.
+- `.claude/settings.json` — Stop, PreCompact, and Notification (idle_prompt) hooks call `archive.py --hook` for Claude Code sessions.
+- `.gemini/settings.json` — SessionEnd hook calls `archive.py --all` for Gemini CLI sessions.
+- `.cursor/hooks.json` — sessionEnd hook calls `archive.py --all` for Cursor sessions.
+- `.windsurf/hooks.json` — post_cascade_response hook calls `archive.py --all` for Windsurf/Devin Desktop sessions.
+- `.clinerules/hooks/TaskComplete` — Executable hook script calls `archive.py --all` for Cline sessions.
+- `.codex/config.toml` — Stop hook calls `archive.py --all` for Codex CLI/Desktop sessions.
+- `scheduled-tasks` MCP — Hourly scheduled task runs `archive.py --all` while the Claude desktop app is open. Also covers AIs without hooks (GitHub Copilot, Continue.dev, OpenCode, Aider).
 - `CLAUDE.md` [[CLAUDE]] — Claude-specific session maintenance: step 6b calls `index.py` automatically; step 6a checks for and creates the hourly scheduled task on any machine where it is missing. First-run step 6 also creates it on a fresh clone.
 - Python 3.9+ with standard library only (sqlite3 with FTS5 is included in CPython builds on Windows).
 - `templates/` [[templates/CONTEXT]] — Standard CONTEXT.md and LOG.md templates used during scaffolding.
@@ -51,3 +56,4 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - 2026-06-08 — Fixed scheduled task permission prompt: SKILL.md updated to use forward-slash path, settings.json allowlist broadened to wildcard pattern covering both relative (hooks) and absolute (scheduled task) invocations.
 - 2026-06-09 — Clarified CLAUDE.md dependency as Claude-specific session maintenance (AI-agnostic transition).
 - 2026-06-10 — Added AI identity (ai_identity) field to archive format, FTS5 schema, and search filters. Retroactive identity inferred from source field for pre-existing sessions. Auto-migration detects old schema and triggers rebuild (Phase 4, AI-agnostic transition).
+- 2026-06-11 — Added session hooks for 6 non-Claude AIs (Gemini CLI, Cursor, Windsurf/Devin Desktop, Cline, Codex). Updated Steps and Dependencies to reflect multi-AI hook coverage. AIs without hooks (Copilot, Continue.dev, OpenCode, Aider) rely on background scheduler (Phase 5, Item 2).

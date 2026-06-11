@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "post_cascade_response": [
+      {
+        "command": "python workflows/session-search/scripts/archive.py --all",
+        "show_output": false
+      }
+    ]
+  }
+}

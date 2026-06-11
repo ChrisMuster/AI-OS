@@ -76,7 +76,7 @@ All 14 supported AIs now have MCP (Model Context Protocol) support. The six AIs 
 
 ### 1. `.mcp.json` is not universal
 
-The project's `.mcp.json` (Claude-style format) is read natively by Claude Code/Cowork and by VS Code-based tools (Cursor, Cline, Roo Code, Continue, Windsurf/Devin Desktop, and GitHub Copilot in VS Code). But five CLI tools have their own config formats:
+The project's `.mcp.json` (Claude-style format) is read natively by Claude Code/Cowork and by VS Code-based tools (Cursor, Cline, Continue, Windsurf/Devin Desktop, and GitHub Copilot in VS Code). But five CLI tools have their own config formats:
 
 | AI | MCP config file | Format |
 |---|---|---|

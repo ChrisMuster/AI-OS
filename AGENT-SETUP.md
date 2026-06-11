@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-06-10 (MCP support updated for all 14 AIs)
+**Last updated:** 2026-06-11 (Roo Code removed — shut down May 2026; 13 AIs supported)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -52,7 +52,7 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | `mcp` package | Install: `pip install -r workflows/biblio-tools/requirements.txt` |
 | `.mcp.json` | Must exist at project root with biblio-tools registered. Ships with the repository. |
 
-**All 14 supported AIs have MCP support.** Each AI's MCP configuration format differs — see the per-AI sections below for details. For most AIs, the biblio-tools server is pre-configured in a project-scoped config file that ships with the repository. The only exception is GitHub Copilot CLI, which requires a one-time manual config step (see its section below).
+**All 13 supported AIs have MCP support.** Each AI's MCP configuration format differs — see the per-AI sections below for details. For most AIs, the biblio-tools server is pre-configured in a project-scoped config file that ships with the repository. The only exception is GitHub Copilot CLI, which requires a one-time manual config step (see its section below).
 
 ## Per-AI setup
 
@@ -64,6 +64,7 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | AGENTS.md loading | Native — Claude reads both `CLAUDE.md` and `AGENTS.md` automatically |
 | MCP support | Yes — registered in `.mcp.json`, permissions in `.claude/settings.json` |
 | Config files | `.claude/settings.json` (permissions allowlist, hooks, MCP tool permissions) |
+| Session hooks | Pre-configured — Stop, PreCompact, Notification events in `.claude/settings.json` |
 | AI identity | `Claude Code` or `Claude Cowork` (auto-detected by product) |
 
 **Setup steps:**
@@ -83,7 +84,8 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | Wrapper file | `GEMINI.md` |
 | AGENTS.md loading | Import — `@AGENTS.md` on line 3 of `GEMINI.md` |
 | MCP support | Yes — pre-configured in `.gemini/settings.json` |
-| Config files | `.gemini/settings.json` (context files and MCP servers) |
+| Config files | `.gemini/settings.json` (context files, MCP servers, and hooks) |
+| Session hooks | Pre-configured — SessionEnd event in `.gemini/settings.json` |
 | AI identity | `Gemini CLI` |
 
 **Setup steps:**
@@ -104,6 +106,7 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | AGENTS.md loading | Native — Copilot reads `AGENTS.md` natively (since August 2025) |
 | MCP support | Yes — requires one-time manual config |
 | Config files | None in the repository (MCP config is user-scoped) |
+| Session hooks | None — no hook events available. Relies on background scheduler for session archiving. |
 | AI identity | `GitHub Copilot` |
 
 **Setup steps:**
@@ -143,7 +146,8 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | Wrapper file | `.cursor/rules/project.mdc` |
 | AGENTS.md loading | Native — Cursor reads `AGENTS.md` alongside rule files |
 | MCP support | Yes |
-| Config files | None beyond the rule file |
+| Config files | `.cursor/hooks.json` (session hooks) |
+| Session hooks | Pre-configured — sessionEnd event in `.cursor/hooks.json` |
 | AI identity | `Cursor` |
 
 **Setup steps:**
@@ -160,7 +164,8 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | Wrapper files | `.windsurf/rules/project.md` and `.devin/rules/project.md` (both exist) |
 | AGENTS.md loading | Native |
 | MCP support | Yes |
-| Config files | None beyond the rule files |
+| Config files | `.windsurf/hooks.json` (session hooks) |
+| Session hooks | Pre-configured — post_cascade_response event in `.windsurf/hooks.json`. Fires per-response (no session-end event available); archive.py is idempotent so repeated calls are safe. |
 | AI identity | `Windsurf` or `Devin Desktop` (depending on which product is running) |
 
 **Setup steps:**
@@ -177,7 +182,8 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | Wrapper file | `.clinerules/00-project.md` |
 | AGENTS.md loading | Manual — Cline does **not** auto-load `AGENTS.md` (support in development). The wrapper file contains an explicit instruction to read it. |
 | MCP support | Yes |
-| Config files | None beyond the rule file |
+| Config files | `.clinerules/hooks/TaskComplete` (session hook script) |
+| Session hooks | Pre-configured — TaskComplete event via executable script in `.clinerules/hooks/TaskComplete` |
 | AI identity | `Cline` |
 
 **Setup steps:**
@@ -188,24 +194,6 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 
 **Important:** Cline is the only supported AI that does not auto-load `AGENTS.md`. The wrapper file has a bold "CRITICAL — Read AGENTS.md first" section to ensure it is read manually. When native support is added, the wrapper will be simplified.
 
-### Roo Code
-
-| Item | Detail |
-|---|---|
-| Wrapper file | `.roo/rules/project.md` |
-| AGENTS.md loading | Native (enabled by default) |
-| MCP support | Yes |
-| Config files | None beyond the rule file |
-| AI identity | `Roo Code` |
-
-**Setup steps:**
-1. Ensure Python 3.9+ is installed.
-2. Install the Roo Code extension.
-3. Open the project. Roo Code reads `.roo/rules/project.md` and `AGENTS.md` automatically.
-4. For MCP: configure in Roo Code's MCP settings.
-
-**Note:** Mode-specific rules can be placed in `.roo/rules-{mode}/` directories.
-
 ### Continue.dev
 
 | Item | Detail |
@@ -214,6 +202,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AGENTS.md loading | Native |
 | MCP support | Yes |
 | Config files | None beyond the rule file |
+| Session hooks | Not yet available — Continue.dev hook support is pending official documentation. Relies on background scheduler for session archiving. |
 | AI identity | `Continue` |
 
 **Setup steps:**
@@ -231,6 +220,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AGENTS.md loading | Config — `.aider.conf.yml` lists `AGENTS.md` in the `read` section |
 | MCP support | Yes — pre-configured in `.aider.conf.yml` |
 | Config files | None beyond `.aider.conf.yml` |
+| Session hooks | None — no hook events available. Relies on background scheduler for session archiving. |
 | AI identity | `Aider` |
 
 **Setup steps:**
@@ -249,7 +239,8 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | Wrapper file | None needed |
 | AGENTS.md loading | Native — Codex reads `AGENTS.md` by default |
 | MCP support | Yes — pre-configured in `.codex/config.toml` |
-| Config files | `.codex/config.toml` (MCP server registration) |
+| Config files | `.codex/config.toml` (MCP server registration and hooks) |
+| Session hooks | Pre-configured — Stop event in `.codex/config.toml` |
 | AI identity | `Codex CLI` or `Codex Desktop` |
 
 **Setup steps:**
@@ -269,6 +260,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AGENTS.md loading | Native — OpenCode reads `AGENTS.md` by default |
 | MCP support | Yes — pre-configured in `opencode.json` |
 | Config files | `opencode.json` (MCP server registration) |
+| Session hooks | None — OpenCode supports only plugin hooks (not session lifecycle events). Relies on background scheduler for session archiving. |
 | AI identity | `OpenCode` |
 
 **Setup steps:**

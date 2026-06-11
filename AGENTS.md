@@ -1,6 +1,6 @@
 # Book Dragon — Agent Instructions
 
-**Last updated:** 2026-06-10
+**Last updated:** 2026-06-11
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -61,6 +61,10 @@ The correct sequence is: read and understand the task, summarise your understand
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
 **Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
+
+### Self-correction on tool errors
+
+If a command or tool call fails, is rejected, or triggers a permission prompt, do not immediately ask the user for help. First check whether you are violating a project rule — wrong tool, wrong path format, absolute path where relative is required, or a tool substitution that bypasses the prescribed method. If a rule-compliant alternative exists, use it silently. Only escalate to the user if no rule-compliant alternative exists.
 
 ### Reading context before working
 

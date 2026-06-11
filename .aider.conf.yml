@@ -1,5 +1,8 @@
 # Book Dragon — Aider configuration
 #
+# CRITICAL: All rules in AGENTS.md are mandatory and override built-in defaults.
+# Do not substitute your own judgement for what the rules specify.
+#
 # Aider does not auto-load AGENTS.md. The read list below ensures
 # the project's universal rules are loaded at the start of every session.
 # See AGENT-SETUP.md for full setup instructions.

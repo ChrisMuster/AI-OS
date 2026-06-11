@@ -84,12 +84,6 @@ AI_REQUIREMENTS: dict = {
         "config_files": [],
         "agents_md": "manual",
     },
-    "Roo Code": {
-        "wrapper": ".roo/rules/project.md",
-        "mcp_support": True,
-        "config_files": [],
-        "agents_md": "native",
-    },
     "Continue": {
         "wrapper": ".continue/rules/00-project.md",
         "mcp_support": True,

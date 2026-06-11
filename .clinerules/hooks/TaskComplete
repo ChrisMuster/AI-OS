@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Cline TaskComplete hook — archives session data for session-search."""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+project_root = Path(__file__).resolve().parent.parent.parent
+subprocess.run(
+    [sys.executable, str(project_root / "workflows/session-search/scripts/archive.py"), "--all"],
+    cwd=str(project_root),
+)
+print(json.dumps({"cancel": False}))
