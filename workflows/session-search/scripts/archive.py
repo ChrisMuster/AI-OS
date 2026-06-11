@@ -2,12 +2,13 @@
 """
 archive.py — Book Dragon session archive writer.
 
-Reads conversation transcripts from Claude Code or Cowork caches and writes
+Reads conversation transcripts from all registered AI adapters and writes
 extracted message content to the Book Dragon archive in a standard normalised format.
 
 Called by:
   - Stop / PreCompact / Notification hooks  →  python archive.py --hook
-  - Hourly scheduled task                   →  python archive.py --all
+  - Session hooks (all AIs)                 →  python archive.py --all
+  - Hourly scheduled task / scheduler.py    →  python archive.py --all
   - index.py (as subprocess)                →  python archive.py --all
   - Manually                                →  python archive.py [--all] [--dry-run]
 
@@ -18,7 +19,7 @@ Archive format (one JSON object per line):
     "timestamp":     "<ISO 8601>",
     "session_id":    "<string>",
     "session_title": "<string | empty>",
-    "source":        "claude-code" | "cowork",
+    "source":        "<adapter source label>",
     "hostname":      "<machine hostname>",
     "ai_identity":   "<string | empty>"
   }
@@ -37,6 +38,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 SCRIPT_DIR   = Path(__file__).resolve().parent
 WORKFLOW_DIR = SCRIPT_DIR.parent                    # workflows/session-search/
+PROJECT_ROOT = WORKFLOW_DIR.parent.parent            # project root
 DATA_DIR     = WORKFLOW_DIR / 'data'
 ARCHIVE_DIR  = DATA_DIR / 'archive'
 STATE_FILE   = DATA_DIR / 'index_state.json'
@@ -65,8 +67,14 @@ def save_state(state: dict) -> None:
 # Session title lookup (Claude Code only)
 # ---------------------------------------------------------------------------
 
-def get_session_title(session_id: str) -> str:
-    """Return the auto-generated session title from claude-code-sessions metadata, or ''."""
+def get_session_title(session_id: str, source: str) -> str:
+    """Return the auto-generated session title, or ''.
+
+    Currently only Claude Code stores session titles in a metadata file.
+    Other sources return '' immediately.
+    """
+    if source != 'claude-code':
+        return ''
     appdata = os.environ.get('APPDATA', '')
     if not appdata:
         return ''
@@ -93,12 +101,8 @@ def get_session_title(session_id: str) -> str:
 # AI identity extraction
 # ---------------------------------------------------------------------------
 
-# Regex to match the AI_IDENTITY line output at session start.
 _AI_IDENTITY_RE = re.compile(r'^AI_IDENTITY:\s*(.+)$', re.MULTILINE)
 
-# Retroactive mapping: for sessions that predate the AI_IDENTITY convention,
-# infer the AI identity from the source field. Every historical session in
-# this project was produced by either Claude Code or Claude Cowork.
 _SOURCE_TO_AI: dict = {
     'claude-code': 'Claude Code',
     'cowork': 'Claude Cowork',
@@ -106,14 +110,11 @@ _SOURCE_TO_AI: dict = {
 
 
 def extract_ai_identity(records: list) -> str:
-    """
-    Scan the first few assistant messages for an AI_IDENTITY line.
+    """Scan the first few assistant messages for an AI_IDENTITY line.
 
-    Returns the AI name if found, or falls back to the retroactive
-    source-based mapping for sessions that predate the convention.
+    Falls back to source-based mapping for sessions that predate the convention.
     """
-    # Scan assistant messages for the AI_IDENTITY pattern
-    for record in records[:20]:  # Only check early messages
+    for record in records[:20]:
         if record.get('role') != 'assistant':
             continue
         content = record.get('content', '')
@@ -121,134 +122,11 @@ def extract_ai_identity(records: list) -> str:
         if match:
             return match.group(1).strip()
 
-    # Retroactive fallback: infer from source field
     if records:
         source = records[0].get('source', '')
         return _SOURCE_TO_AI.get(source, '')
 
     return ''
-
-
-# ---------------------------------------------------------------------------
-# Text extraction
-# ---------------------------------------------------------------------------
-
-def extract_text(content_raw) -> str:
-    """Extract plain text from a message content field (string or block array)."""
-    if isinstance(content_raw, str):
-        return content_raw.strip()
-    if isinstance(content_raw, list):
-        parts = []
-        for block in content_raw:
-            if isinstance(block, dict) and block.get('type') == 'text':
-                parts.append(block.get('text', ''))
-            elif isinstance(block, str):
-                parts.append(block)
-        return '\n'.join(parts).strip()
-    return ''
-
-
-# ---------------------------------------------------------------------------
-# Parsers
-# ---------------------------------------------------------------------------
-
-def parse_claude_code_jsonl(file_path: Path) -> tuple:
-    """
-    Extract user and assistant messages from a Claude Code JSONL session file.
-
-    Returns: (session_id: str, records: list[dict])
-    """
-    session_id = file_path.stem
-    records = []
-    try:
-        for line in file_path.read_text(encoding='utf-8', errors='ignore').splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            event_type = event.get('type')
-            if event_type not in ('user', 'assistant'):
-                continue
-
-            # Update session ID from the event if present
-            if event.get('sessionId'):
-                session_id = event['sessionId']
-
-            message = event.get('message', {})
-            role = message.get('role', event_type)
-            content = extract_text(message.get('content', ''))
-            if not content:
-                continue
-
-            records.append({
-                'role': role,
-                'content': content,
-                'timestamp': event.get('timestamp', ''),
-                'session_id': session_id,
-                'source': 'claude-code',
-                'hostname': HOSTNAME,
-            })
-    except Exception as e:
-        print(f'  [WARNING] Could not parse {file_path.name}: {e}', file=sys.stderr)
-
-    return session_id, records
-
-
-def parse_cowork_audit(file_path: Path) -> tuple:
-    """
-    Extract user and assistant messages from a Cowork audit.jsonl file.
-
-    Returns: (session_id: str, records: list[dict])
-    """
-    # Fall back to conversation folder name if no session_id found in data
-    session_id = file_path.parent.name
-    records = []
-    try:
-        for line in file_path.read_text(encoding='utf-8', errors='ignore').splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            event_type = event.get('type')
-
-            # cwd lives on the system/init line only
-            if event_type == 'system' and event.get('subtype') == 'init':
-                if event.get('session_id'):
-                    session_id = event['session_id']
-                continue
-
-            if event_type not in ('user', 'assistant'):
-                continue
-
-            if event.get('session_id'):
-                session_id = event['session_id']
-
-            message = event.get('message', {})
-            role = message.get('role', event_type)
-            content = extract_text(message.get('content', ''))
-            if not content:
-                continue
-
-            records.append({
-                'role': role,
-                'content': content,
-                'timestamp': event.get('_audit_timestamp', ''),
-                'session_id': session_id,
-                'source': 'cowork',
-                'hostname': HOSTNAME,
-            })
-    except Exception as e:
-        print(f'  [WARNING] Could not parse {file_path.parent.name}: {e}', file=sys.stderr)
-
-    return session_id, records
 
 
 # ---------------------------------------------------------------------------
@@ -284,22 +162,27 @@ def write_archive(session_id: str, records: list, title: str = '',
 
 
 # ---------------------------------------------------------------------------
-# Session archivers
+# Generic file archiver (adapter-based)
 # ---------------------------------------------------------------------------
 
-def archive_claude_code_file(jsonl_file: Path, state: dict, dry_run: bool = False) -> int:
-    """Archive one Claude Code JSONL session file if new or changed."""
-    file_key = str(jsonl_file)
+def archive_file(adapter, file_path: Path, state: dict, dry_run: bool = False) -> int:
+    """Archive one transcript file using the given adapter, if new or changed."""
+    file_key = str(file_path)
     try:
-        current_mtime = jsonl_file.stat().st_mtime
+        current_mtime = file_path.stat().st_mtime
     except OSError:
         return 0
 
     if current_mtime <= state['archived'].get(file_key, {}).get('mtime', 0):
-        return 0  # unchanged since last archive
+        return 0
 
-    session_id, records = parse_claude_code_jsonl(jsonl_file)
-    title = get_session_title(session_id)
+    records = list(adapter.parse(str(file_path)))
+    if not records:
+        return 0
+
+    session_id = records[-1].get('session_id', file_path.stem)
+    source = adapter.SOURCE_LABEL
+    title = get_session_title(session_id, source)
     ai_identity = extract_ai_identity(records)
     count = write_archive(session_id, records, title=title, ai_identity=ai_identity, dry_run=dry_run)
 
@@ -313,131 +196,35 @@ def archive_claude_code_file(jsonl_file: Path, state: dict, dry_run: bool = Fals
     return count
 
 
-def archive_cowork_file(audit_file: Path, state: dict, dry_run: bool = False) -> int:
-    """Archive one Cowork audit.jsonl file if new or changed."""
-    file_key = str(audit_file)
-    try:
-        current_mtime = audit_file.stat().st_mtime
-    except OSError:
-        return 0
-
-    if current_mtime <= state['archived'].get(file_key, {}).get('mtime', 0):
-        return 0
-
-    session_id, records = parse_cowork_audit(audit_file)
-    ai_identity = extract_ai_identity(records)
-    count = write_archive(session_id, records, ai_identity=ai_identity, dry_run=dry_run)
-
-    if not dry_run and count > 0:
-        state['archived'][file_key] = {
-            'mtime': current_mtime,
-            'session_id': session_id,
-            'count': count,
-        }
-
-    return count
-
-
-# ---------------------------------------------------------------------------
-# Discovery
-# ---------------------------------------------------------------------------
-
-def get_project_cache_dir() -> Path | None:
-    """Return the Claude Code cache directory for the current working project."""
-    claude_dir = Path.home() / '.claude' / 'projects'
-    if not claude_dir.exists():
-        return None
-
-    cwd = str(Path.cwd().resolve())
-    # Claude sanitises the path by stripping the drive colon and replacing
-    # separators with hyphens: C:\Users\X\project → C-Users-X-project
-    sanitized = cwd.replace(':', '').replace('\\', '-').replace('/', '-')
-    candidate = claude_dir / sanitized
-    if candidate.exists():
-        return candidate
-
-    # Fallback: scan project directories and check cwd in JSONL files
-    try:
-        for project_dir in claude_dir.iterdir():
-            if not project_dir.is_dir():
-                continue
-            for jsonl_file in list(project_dir.glob('*.jsonl'))[:3]:
-                try:
-                    first_line = jsonl_file.read_text(encoding='utf-8', errors='ignore').split('\n')[0]
-                    event = json.loads(first_line)
-                    if Path(event.get('cwd', '')).resolve() == Path(cwd).resolve():
-                        return project_dir
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-    return None
-
-
-def discover_claude_code_files() -> list:
-    """Return all Claude Code JSONL session files for the current project."""
-    cache_dir = get_project_cache_dir()
-    if not cache_dir:
-        return []
-    return sorted(cache_dir.glob('*.jsonl'), key=lambda p: p.stat().st_mtime)
-
-
-def discover_cowork_files() -> list:
-    """Return all Cowork audit.jsonl files."""
-    appdata = os.environ.get('APPDATA', '')
-    if not appdata:
-        return []
-    base = Path(appdata) / 'Claude' / 'local-agent-mode-sessions'
-    if not base.exists():
-        return []
-    results = []
-    try:
-        for org_dir in base.iterdir():
-            if not org_dir.is_dir():
-                continue
-            for session_dir in org_dir.iterdir():
-                if not session_dir.is_dir():
-                    continue
-                for conv_dir in session_dir.iterdir():
-                    if not conv_dir.is_dir():
-                        continue
-                    audit = conv_dir / 'audit.jsonl'
-                    if audit.exists():
-                        results.append(audit)
-    except Exception:
-        pass
-    return results
-
-
 # ---------------------------------------------------------------------------
 # Main archive modes
 # ---------------------------------------------------------------------------
 
 def archive_all(dry_run: bool = False) -> int:
-    """Discover and archive all new or updated sessions from all sources."""
+    """Discover and archive all new or updated sessions from all registered adapters."""
+    from adapters._registry import all_adapters
+
     state = load_state()
     total = 0
 
-    # Claude Code
-    cc_files = discover_claude_code_files()
-    print(f'Claude Code: found {len(cc_files)} session file(s).')
-    for f in cc_files:
-        count = archive_claude_code_file(f, state, dry_run=dry_run)
-        if count > 0:
-            tag = '[DRY RUN] ' if dry_run else ''
-            print(f'  {tag}Archived {count} message(s) from {f.stem}')
-        total += count
+    for adapter in all_adapters():
+        label = adapter.SOURCE_LABEL
+        try:
+            files = adapter.discover(str(PROJECT_ROOT))
+        except NotImplementedError:
+            continue
+        except Exception as e:
+            print(f'{label}: discovery error — {e}', file=sys.stderr)
+            continue
 
-    # Cowork
-    cw_files = discover_cowork_files()
-    print(f'Cowork: found {len(cw_files)} session file(s).')
-    for f in cw_files:
-        count = archive_cowork_file(f, state, dry_run=dry_run)
-        if count > 0:
-            tag = '[DRY RUN] ' if dry_run else ''
-            print(f'  {tag}Archived {count} message(s) from {f.parent.name}')
-        total += count
+        print(f'{label}: found {len(files)} session file(s).')
+        for f in files:
+            f = Path(f)
+            count = archive_file(adapter, f, state, dry_run=dry_run)
+            if count > 0:
+                tag = '[DRY RUN] ' if dry_run else ''
+                print(f'  {tag}Archived {count} message(s) from {f.stem}')
+            total += count
 
     if not dry_run:
         save_state(state)
@@ -454,6 +241,8 @@ def archive_from_hook(dry_run: bool = False) -> int:
     hook data (known stale-path bug, GitHub #8564); discovers the latest
     JSONL by modification time instead.
     """
+    from adapters._registry import get_adapter
+
     try:
         raw = sys.stdin.read()
         hook_data = json.loads(raw) if raw.strip() else {}
@@ -466,28 +255,27 @@ def archive_from_hook(dry_run: bool = False) -> int:
     is_cowork = os.environ.get('CLAUDE_CODE_IS_COWORK', '').strip() == '1'
 
     if is_cowork:
-        # Cowork hooks do not actually fire (GitHub #40495), but handle
-        # gracefully in case that changes in future.
-        cw_files = discover_cowork_files()
-        for f in cw_files:
-            total += archive_cowork_file(f, state, dry_run=dry_run)
+        adapter = get_adapter('cowork')
+        if adapter:
+            files = adapter.discover(str(PROJECT_ROOT))
+            for f in files:
+                total += archive_file(adapter, Path(f), state, dry_run=dry_run)
     else:
-        # Claude Code: find the most recently modified JSONL in this project's cache.
-        cc_files = discover_claude_code_files()
-        if cc_files:
-            latest = max(cc_files, key=lambda p: p.stat().st_mtime)
-            count = archive_claude_code_file(latest, state, dry_run=dry_run)
-            if count > 0:
-                tag = '[DRY RUN] ' if dry_run else ''
-                print(f'  {tag}Hook: archived {count} message(s) from {latest.stem}',
-                      file=sys.stderr)
-            total += count
+        adapter = get_adapter('claude-code')
+        if adapter:
+            files = adapter.discover(str(PROJECT_ROOT))
+            if files:
+                latest = max(files, key=lambda p: Path(p).stat().st_mtime)
+                count = archive_file(adapter, Path(latest), state, dry_run=dry_run)
+                if count > 0:
+                    tag = '[DRY RUN] ' if dry_run else ''
+                    print(f'  {tag}Hook: archived {count} message(s) from {Path(latest).stem}',
+                          file=sys.stderr)
+                total += count
 
     if not dry_run:
         save_state(state)
 
-    # Return a minimal valid hook response. hookSpecificOutput is not supported
-    # for PreCompact or Notification events and causes schema validation errors.
     print(json.dumps({'continue': True}))
     return total
 

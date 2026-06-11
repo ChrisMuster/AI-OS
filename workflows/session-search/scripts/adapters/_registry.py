@@ -9,12 +9,14 @@ Maps source labels to adapter instances. When adding a new AI source:
 """
 
 from .claude_code import ClaudeCodeAdapter
+from .codex import CodexAdapter
 from .cowork import CoworkAdapter
 
 # Registry: source label → adapter instance
 REGISTRY: dict = {
     'claude-code': ClaudeCodeAdapter(),
     'cowork':      CoworkAdapter(),
+    'codex':       CodexAdapter(),
 }
 
 

@@ -14,6 +14,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 ## Inputs
 - Claude Code session transcripts: `%USERPROFILE%\.claude\projects\<sanitized-cwd>\<session-uuid>.jsonl`
 - Cowork session transcripts: `%APPDATA%\Claude\local-agent-mode-sessions\<orgId>\<sessionId>\local_<conv-uuid>\audit.jsonl`
+- Codex CLI/Desktop session transcripts: `%USERPROFILE%\.codex\sessions\YYYY\MM\DD\rollout-<timestamp>-<uuid>.jsonl`
 - Session metadata (titles): `%APPDATA%\Claude\claude-code-sessions\<orgId>\<sessionId>\local_<uuid>.json`
 
 ## Outputs
@@ -59,3 +60,4 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - 2026-06-10 — Added AI identity (ai_identity) field to archive format, FTS5 schema, and search filters. Retroactive identity inferred from source field for pre-existing sessions. Auto-migration detects old schema and triggers rebuild (Phase 4, AI-agnostic transition).
 - 2026-06-11 — Added session hooks for 6 non-Claude AIs (Gemini CLI, Cursor, Windsurf/Devin Desktop, Cline, Codex). Updated Steps and Dependencies to reflect multi-AI hook coverage. AIs without hooks (Copilot, Continue.dev, OpenCode, Aider) rely on background scheduler (Phase 5, Item 2).
 - 2026-06-11 — Added scheduler.py — PID-guarded background scheduler running archive.py --all hourly. Started at AGENTS.md step 6d for non-Claude AIs. Auto-terminates after 4 hours of inactivity. Updated Steps, Contents, and Dependencies (Phase 5, Item 3).
+- 2026-06-11 — Refactored archive.py to use adapter registry for all discovery and parsing (inline parsers removed). Added Codex CLI/Desktop adapter. archive.py now iterates all registered adapters in --all mode. Updated Inputs (Phase 5, Item 4).
