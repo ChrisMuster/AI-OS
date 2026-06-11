@@ -69,6 +69,10 @@ If a rule-compliant alternative exists, use it without prompting. Only ask the u
 
 When writing log entries (per the LOG.md rules in AGENTS.md), always use the Edit tool to append. Never use Bash (`cat >>` or similar) — the Edit tool is always permitted without a permission prompt and is the correct tool for file modification in Claude Code.
 
+## Background scheduler exemption (step 6d)
+
+Claude is exempt from the background scheduler (AGENTS.md step 6d). Claude uses its own MCP scheduled task (`session-search-archive`) for hourly archiving, which is more reliable and does not require a background process. Skip step 6d entirely.
+
 ## Session maintenance (step 6c)
 
 For step 6c of session startup (AI-specific maintenance), perform the following silently if `workflows/session-search/scripts/index.py` exists:

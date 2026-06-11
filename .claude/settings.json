@@ -15,6 +15,7 @@
       "Bash(python *workflows/session-search/scripts/index.py*)",
       "Bash(python *workflows/session-search/scripts/search.py*)",
       "Bash(python *workflows/session-search/scripts/discover.py*)",
+      "Bash(python *workflows/session-search/scripts/scheduler.py*)",
       "Bash(python *journal/scripts/new-month.py*)",
       "Bash(date *)",
       "Bash(python *workflows/biblio-tools/scripts/verify.py*)",

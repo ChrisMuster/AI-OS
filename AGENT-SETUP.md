@@ -54,6 +54,18 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 
 **All 13 supported AIs have MCP support.** Each AI's MCP configuration format differs — see the per-AI sections below for details. For most AIs, the biblio-tools server is pre-configured in a project-scoped config file that ships with the repository. The only exception is GitHub Copilot CLI, which requires a one-time manual config step (see its section below).
 
+## Background scheduler
+
+A Python background scheduler (`workflows/session-search/scripts/scheduler.py`) runs `archive.py --all` every hour to catch sessions that hooks may have missed. It is started automatically at session startup (AGENTS.md step 6d) for all AIs except Claude (which uses its own MCP scheduled task instead).
+
+The scheduler is PID-file-guarded — only one instance runs at a time. It auto-terminates after 4 hours of inactivity (no new sessions archived). It is especially important for AIs without session hooks (GitHub Copilot, Continue.dev, OpenCode, Aider), where it is the primary archiving mechanism.
+
+| Command | Description |
+|---|---|
+| `python workflows/session-search/scripts/scheduler.py` | Start the scheduler (foreground) |
+| `python workflows/session-search/scripts/scheduler.py --status` | Check if running |
+| `python workflows/session-search/scripts/scheduler.py --stop` | Stop a running instance |
+
 ## Per-AI setup
 
 ### Claude Code / Claude Cowork

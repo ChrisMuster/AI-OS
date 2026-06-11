@@ -1,15 +1,16 @@
 # Session Search — Scripts
 
-**Last modified:** 2026-06-08
+**Last modified:** 2026-06-11
 
 ## Purpose
-Python scripts that implement the session-search workflow: archiving conversation transcripts, building the SQLite FTS5 search index, querying it, and scaffolding adapters for new AI sources.
+Python scripts that implement the session-search workflow: archiving conversation transcripts, building the SQLite FTS5 search index, querying it, scaffolding adapters for new AI sources, and running the background archive scheduler.
 
 ## Contents
 - archive.py — `workflows/session-search/scripts/archive.py` [[workflows/session-search/scripts/CONTEXT]] — Shared write layer. Reads from Claude Code or Cowork caches and writes normalised records to the archive. Called by hooks (via `--hook`) and the scheduled task (via `--all`).
 - index.py — `workflows/session-search/scripts/index.py` [[workflows/session-search/scripts/CONTEXT]] — Calls archive.py then reads the archive and builds or updates the SQLite FTS5 database. Supports `--rebuild` for full database reconstruction.
 - search.py — `workflows/session-search/scripts/search.py` [[workflows/session-search/scripts/CONTEXT]] — Queries all machine shards and returns merged, ranked results.
 - discover.py — `workflows/session-search/scripts/discover.py` [[workflows/session-search/scripts/CONTEXT]] — Inspects a new AI tool's data footprint; either identifies a matching existing adapter or scaffolds a blank one.
+- scheduler.py — `workflows/session-search/scripts/scheduler.py` [[workflows/session-search/scripts/CONTEXT]] — Background scheduler. Runs archive.py --all every hour in a loop. PID-file-guarded, auto-terminates after 4 hours of inactivity. Used by non-Claude AIs (Claude uses its MCP scheduled task). Started at AGENTS.md step 6d.
 - adapters/ — `workflows/session-search/scripts/adapters/` [[workflows/session-search/scripts/adapters/CONTEXT]] — One-time historical import adapters for each supported AI source.
 
 ## Inputs
@@ -39,3 +40,4 @@ N/A. Scripts are invoked individually; see each script's module docstring for us
 
 ## Revision History
 - 2026-06-08 — Initial creation.
+- 2026-06-11 — Added scheduler.py for background hourly archiving (non-Claude AIs).
