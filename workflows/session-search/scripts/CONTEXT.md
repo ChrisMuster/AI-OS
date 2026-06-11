@@ -11,12 +11,19 @@ Python scripts that implement the session-search workflow: archiving conversatio
 - search.py — `workflows/session-search/scripts/search.py` [[workflows/session-search/scripts/CONTEXT]] — Queries all machine shards and returns merged, ranked results.
 - discover.py — `workflows/session-search/scripts/discover.py` [[workflows/session-search/scripts/CONTEXT]] — Inspects a new AI tool's data footprint; either identifies a matching existing adapter or scaffolds a blank one.
 - scheduler.py — `workflows/session-search/scripts/scheduler.py` [[workflows/session-search/scripts/CONTEXT]] — Background scheduler. Runs archive.py --all every hour in a loop. PID-file-guarded, auto-terminates after 4 hours of inactivity. Used by non-Claude AIs (Claude uses its MCP scheduled task). Started at AGENTS.md step 6d.
-- adapters/ — `workflows/session-search/scripts/adapters/` [[workflows/session-search/scripts/adapters/CONTEXT]] — One-time historical import adapters for each supported AI source.
+- adapters/ — `workflows/session-search/scripts/adapters/` [[workflows/session-search/scripts/adapters/CONTEXT]] — Session transcript adapters for 9 AI sources (claude-code, cowork, codex, copilot, gemini-cli, continue-dev, opencode, cursor, cline).
 
 ## Inputs
 - Claude Code JSONL cache files (read-only)
 - Cowork audit.jsonl files (read-only)
 - Claude Code session metadata JSON files (read-only, for session titles)
+- Codex session JSONL files (read-only, from `~/.codex/sessions/`)
+- Copilot CLI events JSONL files (read-only, from `~/.copilot/session-state/`)
+- Gemini CLI chat files (read-only, from `~/.gemini/tmp/`)
+- Continue.dev session JSON files (read-only, from `~/.continue/sessions/`)
+- OpenCode SQLite database (read-only, from `~/.local/share/opencode/`)
+- Cursor agent transcript JSONL files (read-only, from `~/.cursor/projects/`)
+- Cline task JSON files (read-only, from VS Code globalStorage)
 - Hook context JSON (stdin when called with `--hook`)
 
 ## Outputs

@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-06-11 (Roo Code removed — shut down May 2026; 13 AIs supported)
+**Last updated:** 2026-06-11 (session adapters for 9 AI sources; 13 AIs supported)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -77,6 +77,7 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 | MCP support | Yes — registered in `.mcp.json`, permissions in `.claude/settings.json` |
 | Config files | `.claude/settings.json` (permissions allowlist, hooks, MCP tool permissions) |
 | Session hooks | Pre-configured — Stop, PreCompact, Notification events in `.claude/settings.json` |
+| Session transcripts | Claude Code: `~/.claude/projects/<project>/<session>.jsonl` — adapter: `claude-code`. Cowork: `%APPDATA%/Claude/local-agent-mode-sessions/` — adapter: `cowork`. |
 | AI identity | `Claude Code` or `Claude Cowork` (auto-detected by product) |
 
 **Setup steps:**
@@ -89,18 +90,23 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 - If MCP tools prompt for permission, check that the tool names in `.claude/settings.json` match the `mcp__biblio-tools__*` pattern.
 - If hooks prompt for permission, run `python workflows/settings-check/scripts/run.py` to identify uncovered commands.
 
-### Gemini CLI
+### Gemini CLI / Antigravity CLI
+
+> **Transition notice (June 2026):** Gemini CLI is being replaced by [Antigravity CLI](https://antigravity.google). Free and Pro users lose Gemini CLI access on **June 18, 2026**. Enterprise users retain Gemini CLI access. Antigravity CLI reads `GEMINI.md` and `AGENTS.md` unchanged — no wrapper file changes needed. Hooks use the same JSON format. MCP config has moved from inline in `settings.json` to dedicated `mcp_config.json` files (workspace: `.agents/mcp_config.json`, global: `~/.gemini/antigravity-cli/mcp_config.json`) — this migration is pending.
+>
+> Google also launched **Antigravity 2.0** (desktop app), **Antigravity IDE**, and **Antigravity SDK** alongside the CLI. These may also work with Book Dragon — research pending.
 
 | Item | Detail |
 |---|---|
-| Wrapper file | `GEMINI.md` |
+| Wrapper file | `GEMINI.md` (shared by Gemini CLI and Antigravity CLI) |
 | AGENTS.md loading | Import — `@AGENTS.md` on line 3 of `GEMINI.md` |
-| MCP support | Yes — pre-configured in `.gemini/settings.json` |
-| Config files | `.gemini/settings.json` (context files, MCP servers, and hooks) |
-| Session hooks | Pre-configured — SessionEnd event in `.gemini/settings.json` |
+| MCP support | Yes — Gemini CLI: pre-configured in `.gemini/settings.json`. Antigravity CLI: pending migration to `.agents/mcp_config.json`. |
+| Config files | Gemini CLI: `.gemini/settings.json` (context files, MCP servers, and hooks). Antigravity CLI: `~/.gemini/antigravity-cli/` (global config). |
+| Session hooks | Pre-configured — SessionEnd event in `.gemini/settings.json`. Hook format is unchanged in Antigravity CLI. |
+| Session transcripts | Gemini CLI: `~/.gemini/tmp/<project_hash>/chats/*.jsonl`. Antigravity CLI: `~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl`. Adapter: `gemini-cli` (checks both locations). |
 | AI identity | `Gemini CLI` |
 
-**Setup steps:**
+**Setup steps (Gemini CLI):**
 1. Ensure Python 3.9+ is installed.
 2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
 3. Install and configure Gemini CLI per Google's documentation.
@@ -108,7 +114,13 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 5. The biblio-tools MCP server is pre-configured in `.gemini/settings.json` — no additional MCP setup needed.
 6. The first session triggers first-run initialisation.
 
-**MCP config location:** `.gemini/settings.json` (project-scoped, ships with the repository). Gemini CLI does not read `.mcp.json` — it uses its own `mcpServers` block in `settings.json`.
+**Setup steps (Antigravity CLI):**
+1. Ensure Python 3.9+ is installed.
+2. Install Antigravity CLI from [antigravity.google](https://antigravity.google).
+3. Open the project. Antigravity CLI reads `GEMINI.md` and `AGENTS.md` automatically.
+4. MCP setup: pending — `.agents/mcp_config.json` config file needs to be created. See transition notice above.
+
+**MCP config location:** Gemini CLI: `.gemini/settings.json` (project-scoped, ships with the repository). Antigravity CLI: `.agents/mcp_config.json` (workspace-scoped) and `~/.gemini/antigravity-cli/mcp_config.json` (global). Migration from inline `settings.json` to dedicated `mcp_config.json` is pending.
 
 ### GitHub Copilot
 
@@ -119,6 +131,7 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 | MCP support | Yes — requires one-time manual config |
 | Config files | None in the repository (MCP config is user-scoped) |
 | Session hooks | None — no hook events available. Relies on background scheduler for session archiving. |
+| Session transcripts | `~/.copilot/session-state/<uuid>/events.jsonl` — adapter: `copilot` |
 | AI identity | `GitHub Copilot` |
 
 **Setup steps:**
@@ -160,6 +173,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | MCP support | Yes |
 | Config files | `.cursor/hooks.json` (session hooks) |
 | Session hooks | Pre-configured — sessionEnd event in `.cursor/hooks.json` |
+| Session transcripts | `~/.cursor/projects/*/agent-transcripts/*.jsonl` — adapter: `cursor` |
 | AI identity | `Cursor` |
 
 **Setup steps:**
@@ -178,6 +192,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | MCP support | Yes |
 | Config files | `.windsurf/hooks.json` (session hooks) |
 | Session hooks | Pre-configured — post_cascade_response event in `.windsurf/hooks.json`. Fires per-response (no session-end event available); archive.py is idempotent so repeated calls are safe. |
+| Session transcripts | No documented local transcript storage. Sessions may be cloud-only. No adapter — relies on hooks and background scheduler. |
 | AI identity | `Windsurf` or `Devin Desktop` (depending on which product is running) |
 
 **Setup steps:**
@@ -196,6 +211,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | MCP support | Yes |
 | Config files | `.clinerules/hooks/TaskComplete` (session hook script) |
 | Session hooks | Pre-configured — TaskComplete event via executable script in `.clinerules/hooks/TaskComplete` |
+| Session transcripts | `%APPDATA%/Code/User/globalStorage/saoudrizwan.claude-dev/tasks/<id>/api_conversation_history.json` — adapter: `cline` |
 | AI identity | `Cline` |
 
 **Setup steps:**
@@ -215,6 +231,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | MCP support | Yes |
 | Config files | None beyond the rule file |
 | Session hooks | Not yet available — Continue.dev hook support is pending official documentation. Relies on background scheduler for session archiving. |
+| Session transcripts | `~/.continue/sessions/<uuid>.json` — adapter: `continue-dev` |
 | AI identity | `Continue` |
 
 **Setup steps:**
@@ -233,6 +250,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | MCP support | Yes — pre-configured in `.aider.conf.yml` |
 | Config files | None beyond `.aider.conf.yml` |
 | Session hooks | None — no hook events available. Relies on background scheduler for session archiving. |
+| Session transcripts | None — Aider uses Git commits as the session record. No local transcript files are stored. No adapter. |
 | AI identity | `Aider` |
 
 **Setup steps:**
@@ -253,6 +271,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | MCP support | Yes — pre-configured in `.codex/config.toml` |
 | Config files | `.codex/config.toml` (MCP server registration and hooks) |
 | Session hooks | Pre-configured — Stop event in `.codex/config.toml` |
+| Session transcripts | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — adapter: `codex` |
 | AI identity | `Codex CLI` or `Codex Desktop` |
 
 **Setup steps:**
@@ -273,6 +292,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | MCP support | Yes — pre-configured in `opencode.json` |
 | Config files | `opencode.json` (MCP server registration) |
 | Session hooks | None — OpenCode supports only plugin hooks (not session lifecycle events). Relies on background scheduler for session archiving. |
+| Session transcripts | `~/.local/share/opencode/opencode.db` (SQLite) — adapter: `opencode`. Custom path via `OPENCODE_DATA_DIR`. |
 | AI identity | `OpenCode` |
 
 **Setup steps:**

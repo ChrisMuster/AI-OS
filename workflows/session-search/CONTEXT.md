@@ -15,6 +15,13 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - Claude Code session transcripts: `%USERPROFILE%\.claude\projects\<sanitized-cwd>\<session-uuid>.jsonl`
 - Cowork session transcripts: `%APPDATA%\Claude\local-agent-mode-sessions\<orgId>\<sessionId>\local_<conv-uuid>\audit.jsonl`
 - Codex CLI/Desktop session transcripts: `%USERPROFILE%\.codex\sessions\YYYY\MM\DD\rollout-<timestamp>-<uuid>.jsonl`
+- Copilot CLI session transcripts: `%USERPROFILE%\.copilot\session-state\<uuid>\events.jsonl`
+- Gemini CLI chat files: `~/.gemini/tmp/<project_hash>/chats/*.jsonl`
+- Antigravity CLI transcript files: `~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl`
+- Continue.dev session files: `%USERPROFILE%\.continue\sessions\<uuid>.json`
+- OpenCode SQLite database: `~/.local/share/opencode/opencode.db`
+- Cursor agent transcripts: `%USERPROFILE%\.cursor\projects\*\agent-transcripts\*.jsonl`
+- Cline task transcripts: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\tasks\<id>\api_conversation_history.json`
 - Session metadata (titles): `%APPDATA%\Claude\claude-code-sessions\<orgId>\<sessionId>\local_<uuid>.json`
 
 ## Outputs
@@ -61,3 +68,4 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - 2026-06-11 — Added session hooks for 6 non-Claude AIs (Gemini CLI, Cursor, Windsurf/Devin Desktop, Cline, Codex). Updated Steps and Dependencies to reflect multi-AI hook coverage. AIs without hooks (Copilot, Continue.dev, OpenCode, Aider) rely on background scheduler (Phase 5, Item 2).
 - 2026-06-11 — Added scheduler.py — PID-guarded background scheduler running archive.py --all hourly. Started at AGENTS.md step 6d for non-Claude AIs. Auto-terminates after 4 hours of inactivity. Updated Steps, Contents, and Dependencies (Phase 5, Item 3).
 - 2026-06-11 — Refactored archive.py to use adapter registry for all discovery and parsing (inline parsers removed). Added Codex CLI/Desktop adapter. archive.py now iterates all registered adapters in --all mode. Updated Inputs (Phase 5, Item 4).
+- 2026-06-11 — Added 6 new adapters: Copilot CLI, Gemini CLI, Continue.dev, OpenCode, Cursor, Cline. Total: 9 adapters covering all AIs with local transcript storage. Updated Inputs. Two AIs have no adapter: Aider (git-based only) and Windsurf/Devin Desktop (no documented local storage).

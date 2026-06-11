@@ -23,7 +23,10 @@ SCRIPT_DIR   = Path(__file__).resolve().parent
 WORKFLOW_DIR = SCRIPT_DIR.parent
 
 # Sources already handled by existing adapters
-KNOWN_SOURCES = {'claude-code', 'cowork', 'codex'}
+KNOWN_SOURCES = {
+    'claude-code', 'cowork', 'codex', 'copilot', 'gemini-cli',
+    'continue-dev', 'opencode', 'cursor', 'cline',
+}
 
 # Common Windows locations to inspect, parametrised by AI name
 CANDIDATE_TEMPLATES = [

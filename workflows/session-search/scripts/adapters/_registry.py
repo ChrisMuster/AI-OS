@@ -9,14 +9,26 @@ Maps source labels to adapter instances. When adding a new AI source:
 """
 
 from .claude_code import ClaudeCodeAdapter
+from .cline import ClineAdapter
 from .codex import CodexAdapter
+from .continue_dev import ContinueDevAdapter
+from .copilot import CopilotAdapter
 from .cowork import CoworkAdapter
+from .cursor import CursorAdapter
+from .gemini_cli import GeminiCliAdapter
+from .opencode import OpenCodeAdapter
 
 # Registry: source label → adapter instance
 REGISTRY: dict = {
-    'claude-code': ClaudeCodeAdapter(),
-    'cowork':      CoworkAdapter(),
-    'codex':       CodexAdapter(),
+    'claude-code':  ClaudeCodeAdapter(),
+    'cowork':       CoworkAdapter(),
+    'codex':        CodexAdapter(),
+    'copilot':      CopilotAdapter(),
+    'gemini-cli':   GeminiCliAdapter(),
+    'continue-dev': ContinueDevAdapter(),
+    'opencode':     OpenCodeAdapter(),
+    'cursor':       CursorAdapter(),
+    'cline':        ClineAdapter(),
 }
 
 
