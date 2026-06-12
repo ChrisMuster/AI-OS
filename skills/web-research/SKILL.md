@@ -112,9 +112,9 @@ Returns: `dict` (research package — see structure below)
 ---
 
 ## Dependencies
-Install once:
+Set up the canonical Book Dragon runtime once:
 ```bash
-pip install -r skills/web-research/scripts/requirements.txt
+python workflows/biblio-tools/scripts/setup.py
 ```
 
 For keyed sources, set environment variables (or use a `.env` file in the project root):

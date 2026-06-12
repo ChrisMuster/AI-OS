@@ -17,6 +17,7 @@ Works on Python 3.9+ (standard library only — no MCP dependency).
 import argparse
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -41,78 +42,102 @@ AI_REQUIREMENTS: dict = {
         "mcp_support": True,
         "config_files": [".claude/settings.json"],
         "agents_md": "native",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Claude Cowork": {
         "wrapper": "CLAUDE.md",
         "mcp_support": True,
         "config_files": [".claude/settings.json"],
         "agents_md": "native",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Gemini CLI": {
         "wrapper": "GEMINI.md",
         "mcp_support": True,
         "config_files": [".gemini/settings.json"],
         "agents_md": "import",
+        "mcp_config": ("gemini-json", ".gemini/settings.json"),
+    },
+    "Antigravity CLI": {
+        "wrapper": "GEMINI.md",
+        "mcp_support": False,
+        "config_files": [],
+        "agents_md": "import",
+        "readiness_blocker": (
+            "Antigravity MCP migration is not implemented or live-verified. "
+            "The expected workspace config is .agents/mcp_config.json; see "
+            "the transition notice in AGENT-SETUP.md."
+        ),
     },
     "GitHub Copilot": {
         "wrapper": ".github/copilot-instructions.md",
         "mcp_support": True,
         "config_files": [],
         "agents_md": "native",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Cursor": {
         "wrapper": ".cursor/rules/project.mdc",
         "mcp_support": True,
         "config_files": [],
         "agents_md": "native",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Windsurf": {
         "wrapper": ".windsurf/rules/project.md",
         "mcp_support": True,
         "config_files": [],
         "agents_md": "native",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Devin Desktop": {
         "wrapper": ".devin/rules/project.md",
         "mcp_support": True,
         "config_files": [],
         "agents_md": "native",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Cline": {
         "wrapper": ".clinerules/00-project.md",
         "mcp_support": True,
         "config_files": [],
         "agents_md": "manual",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Continue": {
         "wrapper": ".continue/rules/00-project.md",
         "mcp_support": True,
         "config_files": [],
         "agents_md": "native",
+        "mcp_config": ("mcp-json", ".mcp.json"),
     },
     "Aider": {
         "wrapper": ".aider.conf.yml",
         "mcp_support": True,
         "config_files": [],
         "agents_md": "config",
+        "mcp_config": ("aider-yaml", ".aider.conf.yml"),
     },
     "Codex CLI": {
         "wrapper": None,
         "mcp_support": True,
         "config_files": [".codex/config.toml"],
         "agents_md": "native",
+        "mcp_config": ("codex-toml", ".codex/config.toml"),
     },
     "Codex Desktop": {
         "wrapper": None,
         "mcp_support": True,
         "config_files": [".codex/config.toml"],
         "agents_md": "native",
+        "mcp_config": ("codex-toml", ".codex/config.toml"),
     },
     "OpenCode": {
         "wrapper": None,
         "mcp_support": True,
         "config_files": ["opencode.json"],
         "agents_md": "native",
+        "mcp_config": ("opencode-json", "opencode.json"),
     },
 }
 
@@ -167,19 +192,112 @@ def check_config_files(config_files: list) -> list:
     return results
 
 
-def check_mcp_json() -> dict:
-    """Check that .mcp.json exists and contains the biblio-tools server."""
-    path = PROJECT_ROOT / ".mcp.json"
+def _load_json(path: Path) -> dict:
+    """Load a JSON config file."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _parse_aider_command(path: Path) -> tuple[str, list[str]]:
+    """Extract the biblio-tools command from the checked-in Aider config."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    in_server = False
+    in_args = False
+    command = None
+    args = []
+
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if stripped == "- name: biblio-tools":
+            in_server = True
+            in_args = False
+            continue
+        if in_server and stripped.startswith("- name:"):
+            break
+        if not in_server:
+            continue
+        if stripped.startswith("command:"):
+            command = stripped.split(":", 1)[1].strip()
+            in_args = False
+        elif stripped == "args:":
+            in_args = True
+        elif in_args and stripped.startswith("- "):
+            args.append(stripped[2:].strip())
+
+    if not command:
+        raise ValueError("biblio-tools command not found")
+    return command, args
+
+
+def load_mcp_command(config_kind: str, config_path: str) -> tuple[str, list[str]]:
+    """Read the selected AI's native config and return its stdio command."""
+    path = PROJECT_ROOT / config_path
     if not path.exists():
-        return {"check": "MCP config (.mcp.json)", "status": "FAIL", "detail": ".mcp.json not found at project root."}
+        raise FileNotFoundError(f"{config_path} not found")
+
+    if config_kind in {"mcp-json", "gemini-json"}:
+        server = _load_json(path).get("mcpServers", {}).get("biblio-tools")
+        if not isinstance(server, dict):
+            raise ValueError("biblio-tools is not registered under mcpServers")
+        command = server.get("command")
+        args = server.get("args", [])
+    elif config_kind == "opencode-json":
+        server = _load_json(path).get("mcp", {}).get("biblio-tools")
+        if not isinstance(server, dict):
+            raise ValueError("biblio-tools is not registered under mcp")
+        command_parts = server.get("command")
+        if not isinstance(command_parts, list) or not command_parts:
+            raise ValueError("OpenCode local command must be a non-empty array")
+        command, *args = command_parts
+    elif config_kind == "codex-toml":
+        try:
+            import tomllib
+        except ImportError as exc:
+            raise RuntimeError(
+                "Python 3.11+ is required to parse Codex TOML config"
+            ) from exc
+        config = tomllib.loads(path.read_text(encoding="utf-8"))
+        server = config.get("mcp_servers", {}).get("biblio-tools")
+        if not isinstance(server, dict):
+            raise ValueError("biblio-tools is not registered under mcp_servers")
+        command = server.get("command")
+        args = server.get("args", [])
+    elif config_kind == "aider-yaml":
+        return _parse_aider_command(path)
+    else:
+        raise ValueError(f"Unsupported MCP config kind: {config_kind}")
+
+    if not isinstance(command, str) or not command:
+        raise ValueError("MCP command must be a non-empty string")
+    if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+        raise ValueError("MCP args must be a list of strings")
+    return command, args
+
+
+def check_mcp_config(
+    config_kind: str, config_path: str
+) -> tuple[dict, tuple[str, list[str]] | None]:
+    """Validate the selected AI's native MCP configuration."""
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
-        servers = config.get("mcpServers", {})
-        if "biblio-tools" in servers:
-            return {"check": "MCP config (.mcp.json)", "status": "PASS", "detail": "biblio-tools server registered."}
-        return {"check": "MCP config (.mcp.json)", "status": "WARN", "detail": ".mcp.json exists but biblio-tools server not registered."}
-    except (json.JSONDecodeError, OSError) as exc:
-        return {"check": "MCP config (.mcp.json)", "status": "FAIL", "detail": f"Could not parse .mcp.json: {exc}"}
+        command = load_mcp_command(config_kind, config_path)
+    except (json.JSONDecodeError, OSError, RuntimeError, ValueError) as exc:
+        return (
+            {
+                "check": f"MCP config ({config_path})",
+                "status": "FAIL",
+                "detail": str(exc),
+            },
+            None,
+        )
+
+    rendered = " ".join([command[0], *command[1]])
+    return (
+        {
+            "check": f"MCP config ({config_path})",
+            "status": "PASS",
+            "detail": f"biblio-tools registered: {rendered}",
+        },
+        command,
+    )
 
 
 def check_mcp_package() -> dict:
@@ -194,10 +312,193 @@ def check_mcp_package() -> dict:
     spec = importlib.util.find_spec("mcp")
     if spec is not None:
         return {"check": "MCP package", "status": "PASS", "detail": "mcp package installed."}
+
+    local_pythons = [
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+        PROJECT_ROOT / ".venv" / "bin" / "python",
+    ]
+    for python in local_pythons:
+        if not python.exists():
+            continue
+        try:
+            result = subprocess.run(
+                [str(python), "-c", "import mcp"],
+                capture_output=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return {
+                "check": "MCP package",
+                "status": "PASS",
+                "detail": "mcp package installed in project .venv.",
+            }
+
     return {
         "check": "MCP package",
         "status": "WARN",
-        "detail": "mcp package not installed. Run: pip install -r workflows/biblio-tools/requirements.txt",
+        "detail": (
+            "mcp package not installed. Run: "
+            "python workflows/biblio-tools/scripts/setup.py"
+        ),
+    }
+
+
+def check_pdf_extraction() -> dict:
+    """Check the shared Create Wiki PDF extraction capability."""
+    script = PROJECT_ROOT / "workflows" / "create-wiki" / "scripts" / "extract_pdf.py"
+    if not script.is_file():
+        return {
+            "check": "PDF extraction",
+            "status": "FAIL",
+            "detail": "workflows/create-wiki/scripts/extract_pdf.py not found.",
+        }
+
+    local_pythons = [
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+        PROJECT_ROOT / ".venv" / "bin" / "python",
+    ]
+    for python in local_pythons:
+        if not python.exists():
+            continue
+        try:
+            result = subprocess.run(
+                [str(python), "-c", "import pypdf; print(pypdf.__version__)"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            version = result.stdout.strip() or "installed"
+            return {
+                "check": "PDF extraction",
+                "status": "PASS",
+                "detail": (
+                    f"pypdf {version} installed in project .venv; "
+                    "shared extractor available."
+                ),
+            }
+
+    return {
+        "check": "PDF extraction",
+        "status": "FAIL",
+        "detail": (
+            "pypdf is not installed in the project .venv. Run: "
+            "python workflows/biblio-tools/scripts/setup.py"
+        ),
+    }
+
+
+def check_project_runtime() -> dict:
+    """Check the canonical .venv and all packages in root requirements.txt."""
+    setup_script = SCRIPT_DIR / "setup.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(setup_script), "--check"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "check": "Project Python runtime",
+            "status": "FAIL",
+            "detail": f"Could not check .venv: {exc}",
+        }
+
+    if result.returncode == 0:
+        return {
+            "check": "Project Python runtime",
+            "status": "PASS",
+            "detail": "Canonical .venv and all declared packages are available.",
+        }
+
+    detail = result.stdout.strip() or result.stderr.strip()
+    return {
+        "check": "Project Python runtime",
+        "status": "FAIL",
+        "detail": (
+            f"{detail} Run: python workflows/biblio-tools/scripts/setup.py"
+        ),
+    }
+
+
+def _mcp_python() -> Path | None:
+    """Return an interpreter capable of importing the MCP SDK."""
+    candidates = [
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+        PROJECT_ROOT / ".venv" / "bin" / "python",
+    ]
+    for python in candidates:
+        if python.exists():
+            return python
+    if importlib.util.find_spec("mcp") is not None:
+        return Path(sys.executable)
+    return None
+
+
+def check_mcp_handshake(command: str, args: list[str]) -> dict:
+    """Prove the configured server starts, speaks MCP, and exposes all tools."""
+    python = _mcp_python()
+    if python is None:
+        return {
+            "check": "MCP handshake and tools",
+            "status": "WARN",
+            "detail": "MCP SDK unavailable, so the protocol smoke test was skipped.",
+        }
+
+    smoke_cmd = [
+        str(python),
+        str(SCRIPT_DIR / "mcp_smoke.py"),
+        "--command",
+        command,
+        "--cwd",
+        str(PROJECT_ROOT),
+    ]
+    for arg in args:
+        smoke_cmd.extend(["--arg", arg])
+
+    try:
+        result = subprocess.run(
+            smoke_cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=PROJECT_ROOT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "check": "MCP handshake and tools",
+            "status": "FAIL",
+            "detail": f"Could not run smoke test: {exc}",
+        }
+
+    output_lines = [line for line in result.stdout.splitlines() if line.strip()]
+    try:
+        payload = json.loads(output_lines[-1]) if output_lines else {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    if result.returncode == 0 and payload.get("success"):
+        return {
+            "check": "MCP handshake and tools",
+            "status": "PASS",
+            "detail": (
+                f"Protocol {payload.get('protocol_version')}; "
+                f"{len(payload.get('tools', []))} tools discovered; "
+                "read-only call and rejection checks passed."
+            ),
+        }
+
+    error = payload.get("error") or result.stderr.strip() or "Unknown MCP failure."
+    return {
+        "check": "MCP handshake and tools",
+        "status": "FAIL",
+        "detail": error,
     }
 
 
@@ -242,7 +543,6 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     reqs = AI_REQUIREMENTS.get(ai_name)
     if reqs is None:
         return [{"check": "AI recognised", "status": "FAIL", "detail": f"Unknown AI: {ai_name!r}. Use --list to see supported AIs."}]
-
     if dry_run:
         checks = [
             "AGENTS.md exists",
@@ -251,12 +551,15 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
             "SOUL.md exists",
             "USER.md exists",
             ".env file",
+            "Project Python runtime",
+            "PDF extraction",
         ]
         for cf in reqs["config_files"]:
             checks.append(f"Config: {cf}")
         if reqs["mcp_support"]:
-            checks.append("MCP config (.mcp.json)")
+            checks.append(f"MCP config ({reqs['mcp_config'][1]})")
             checks.append("MCP package")
+            checks.append("MCP handshake and tools")
         return [{"check": c, "status": "DRY RUN", "detail": "Would check."} for c in checks]
 
     results = []
@@ -266,11 +569,22 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     results.append(check_soul_md())
     results.append(check_user_md())
     results.append(check_env_file())
+    results.append(check_project_runtime())
+    results.append(check_pdf_extraction())
     results.extend(check_config_files(reqs["config_files"]))
 
-    if reqs["mcp_support"]:
-        results.append(check_mcp_json())
+    if reqs.get("readiness_blocker"):
+        results.append({
+            "check": "MCP integration",
+            "status": "WARN",
+            "detail": reqs["readiness_blocker"],
+        })
+    elif reqs["mcp_support"]:
         results.append(check_mcp_package())
+        config_result, command = check_mcp_config(*reqs["mcp_config"])
+        results.append(config_result)
+        if command is not None:
+            results.append(check_mcp_handshake(*command))
 
     return results
 
@@ -281,10 +595,15 @@ def format_results(results: list) -> str:
     fail_count = sum(1 for r in results if r["status"] == "FAIL")
     warn_count = sum(1 for r in results if r["status"] == "WARN")
     pass_count = sum(1 for r in results if r["status"] == "PASS")
+    dry_run_count = sum(1 for r in results if r["status"] == "DRY RUN")
 
     for r in results:
         icon = {"PASS": "[PASS]", "FAIL": "[FAIL]", "WARN": "[WARN]", "DRY RUN": "[DRY RUN]"}.get(r["status"], "[????]")
         lines.append(f"  {icon} {r['check']} — {r['detail']}")
+
+    if dry_run_count:
+        lines.append(f"\n{dry_run_count} check(s) would run.")
+        return "\n".join(lines)
 
     summary = f"\n{pass_count} passed, {warn_count} warning(s), {fail_count} failure(s)."
     if fail_count == 0 and warn_count == 0:
@@ -333,11 +652,14 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.list_ais:
-        print("Supported AIs:")
+        print("Known AI profiles:")
         for name, reqs in AI_REQUIREMENTS.items():
             wrapper = reqs["wrapper"] or "(reads AGENTS.md natively)"
-            mcp = "MCP" if reqs["mcp_support"] else "no MCP"
-            print(f"  {name:<20} wrapper: {wrapper:<40} {mcp}")
+            if reqs.get("readiness_blocker"):
+                status = "MCP pending"
+            else:
+                status = "MCP" if reqs["mcp_support"] else "no MCP"
+            print(f"  {name:<20} wrapper: {wrapper:<40} {status}")
         return
 
     if not args.ai:

@@ -1,6 +1,6 @@
 # Session Search
 
-**Last modified:** 2026-06-11
+**Last modified:** 2026-06-12
 
 ## Purpose
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
@@ -59,8 +59,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - **`data/` contents are personal data** — Archive files and database shards are not listed in this CONTEXT.md. The filesystem is the authoritative source; read `data/archive/<hostname>/` directly when needed.
 
 ## Revision History
-- 2026-06-08 — Initial creation.
-- 2026-06-08 — Wired index.py into CLAUDE.md session startup (step 6) and scheduled task creation into first-run init (step 6). Updated Steps, Dependencies, and Known Issues accordingly.
+Earlier history archived to LOG.md on 2026-06-12.
 - 2026-06-08 — Updated Dependencies and Known Issues to reflect scheduled task check in regular startup (step 6a) as well as first-run init. Fixed personal-data language in Known Issues.
 - 2026-06-08 — Fixed scheduled task permission prompt: SKILL.md updated to use forward-slash path, settings.json allowlist broadened to wildcard pattern covering both relative (hooks) and absolute (scheduled task) invocations.
 - 2026-06-09 — Clarified CLAUDE.md dependency as Claude-specific session maintenance (AI-agnostic transition).
@@ -69,3 +68,4 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - 2026-06-11 — Added scheduler.py — PID-guarded background scheduler running archive.py --all hourly. Started at AGENTS.md step 6d for non-Claude AIs. Auto-terminates after 4 hours of inactivity. Updated Steps, Contents, and Dependencies (Phase 5, Item 3).
 - 2026-06-11 — Refactored archive.py to use adapter registry for all discovery and parsing (inline parsers removed). Added Codex CLI/Desktop adapter. archive.py now iterates all registered adapters in --all mode. Updated Inputs (Phase 5, Item 4).
 - 2026-06-11 — Added 6 new adapters: Copilot CLI, Gemini CLI, Continue.dev, OpenCode, Cursor, Cline. Total: 9 adapters covering all AIs with local transcript storage. Updated Inputs. Two AIs have no adapter: Aider (git-based only) and Windsurf/Devin Desktop (no documented local storage).
+- 2026-06-11 — Fixed scheduler status detection in sandboxed Windows environments.

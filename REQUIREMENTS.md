@@ -10,19 +10,25 @@ Book Dragon is AI-agnostic — it works with any AI that reads `AGENTS.md`. See 
 
 ## Python packages by workflow
 
-Most workflows use the Python standard library only and need no additional packages. The exception is web-research.
+Book Dragon uses one canonical project environment at `.venv`. Create or repair it with:
+
+```
+python workflows/biblio-tools/scripts/setup.py
+```
+
+The setup script installs the root `requirements.txt`, which includes every workflow-specific manifest below. Dependency-bearing workflow entry points automatically hand themselves to `.venv`, so the same documented commands work in every supported AI.
 
 | Workflow | Packages required | Install command |
 |---|---|---|
 | audit | None — standard library only | — |
-| create-wiki | None — standard library only | — |
+| create-wiki | pypdf >= 6.0.0 | Included by root `requirements.txt` |
 | link-check | None — standard library only | — |
 | weather | None — standard library only | — |
 | journal | None — standard library only | — |
-| web-research | See requirements.txt | `pip install -r skills/web-research/scripts/requirements.txt` |
-| biblio-tools | mcp >= 1.0.0 (Python 3.10+) | `pip install -r workflows/biblio-tools/requirements.txt` |
+| web-research | See workflow requirements | Included by root `requirements.txt` |
+| biblio-tools | mcp >= 1.0.0 (Python 3.10+) | Included by root `requirements.txt`; skipped on Python 3.9 |
 
-Run the web-research install command once before using that workflow. The biblio-tools MCP server requires Python 3.10+ (the MCP SDK requirement) — if running Python 3.9, the MCP server cannot start but all underlying scripts still work via direct shell commands. All other workflows are ready to use as soon as Python is installed.
+The Create Wiki dependency provides shared PDF extraction for every supported AI. The biblio-tools MCP server requires Python 3.10+ (the MCP SDK requirement); on Python 3.9 the root manifest skips MCP, while direct workflow scripts remain available.
 
 ## API keys
 

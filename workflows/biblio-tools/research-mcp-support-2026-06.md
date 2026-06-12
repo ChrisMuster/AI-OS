@@ -88,9 +88,9 @@ The project's `.mcp.json` (Claude-style format) is read natively by Claude Code/
 
 Each needs a separate entry pointing to the same `python workflows/biblio-tools/scripts/server.py` command.
 
-### 2. verify.py's `check_mcp_json()` scope
+### 2. Per-AI verification scope
 
-The current `check_mcp_json()` checks only `.mcp.json`. With all 14 AIs now MCP-capable, this check confirms the canonical server definition exists but does not verify AI-specific config. For CLI tools, the user also needs to add biblio-tools to their tool's own config. This is a documentation/setup-guide concern, not a verify.py bug — `.mcp.json` remains the source of truth for what the server looks like.
+Resolved on 2026-06-11. `verify.py` now reads the selected AI's native config format and launches the exact configured command through a protocol-level smoke test. The test completes an MCP handshake, confirms the eight expected tools, calls `get_timestamp`, and checks invalid-input and path-traversal rejection.
 
 ### 3. Shell-fallback drift is no longer the primary concern
 
@@ -124,6 +124,6 @@ The settings-check workflow (`workflows/settings-check/scripts/run.py`) can be e
 ## Recommendation
 
 1. **Done:** `mcp_support` flags corrected in verify.py (all 14 AIs now True).
-2. **Next:** Update `AGENT-SETUP.md` per-AI sections to include MCP configuration instructions for each AI's native format.
-3. **Next:** Consider adding project-scoped MCP config files for Gemini CLI (`.gemini/settings.json`), Codex (`.codex/config.toml`), and OpenCode (`opencode.json`) alongside `.mcp.json` so that biblio-tools is pre-configured for those tools on clone.
-4. **Optional:** Extend `verify.py` to also check AI-specific MCP config files (not just `.mcp.json`).
+2. **Done:** `AGENT-SETUP.md` documents each AI's native MCP configuration.
+3. **Done:** Project-scoped configs exist for Gemini CLI, Codex, OpenCode, and Aider alongside `.mcp.json`.
+4. **Done:** `verify.py` validates native config formats and performs an end-to-end MCP smoke test.

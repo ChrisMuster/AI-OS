@@ -6,6 +6,7 @@ Checks every directory (excluding the project root and system dirs) for:
   - Missing CONTEXT.md
   - Missing LOG.md
   - Missing required sections in CONTEXT.md (standard-format dirs only)
+  - Stale or inconsistent CONTEXT.md Last modified and Revision History metadata
   - Contents entries pointing to non-existent paths
   - Subdirectories that exist but are not listed in Contents
 
@@ -14,9 +15,11 @@ Also runs code hygiene checks across all Python scripts in the project:
 
 Usage (run from anywhere):
     python workflows/audit/scripts/run.py [--save]
+    python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
 
 Options:
     --save    Save the full report to workflows/audit/last-report.md
+    --context Check only the named directories and their CONTEXT.md metadata
 """
 
 import re
@@ -56,6 +59,14 @@ REQUIRED_SECTIONS = [
     "Known Issues",
     "Revision History",
 ]
+
+LAST_MODIFIED_RE = re.compile(r"^\*\*Last modified:\*\* (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
+REVISION_ENTRY_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2})\s+.+$", re.MULTILINE)
+ARCHIVE_REFERENCE_RE = re.compile(
+    r"^Earlier history archived to LOG\.md on (\d{4}-\d{2}-\d{2})\.$",
+    re.MULTILINE,
+)
+MAX_REVISION_HISTORY_ENTRIES = 10
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +133,78 @@ def get_contents_paths(content: str) -> list[str]:
         if parts and parts[0] in TOP_LEVEL_DIRS:
             checkable.append(c)
     return checkable
+
+
+def get_revision_history(content: str) -> str | None:
+    """Return the Revision History body, or None when the section is absent."""
+    match = re.search(
+        r"^## Revision History\n(.*?)(?=^## |\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+def check_context_metadata(content: str) -> list[str]:
+    """Check Last modified and Revision History consistency."""
+    warnings = []
+    last_modified_match = LAST_MODIFIED_RE.search(content)
+    if not last_modified_match:
+        warnings.append(
+            "missing or malformed `**Last modified:** YYYY-MM-DD` line"
+        )
+
+    revision_history = get_revision_history(content)
+    if revision_history is None:
+        return warnings
+
+    revision_dates = REVISION_ENTRY_RE.findall(revision_history)
+    archive_dates = ARCHIVE_REFERENCE_RE.findall(revision_history)
+    archive_lines = [
+        line.strip()
+        for line in revision_history.splitlines()
+        if line.strip().startswith("Earlier history archived")
+    ]
+
+    if len(archive_lines) != len(archive_dates):
+        warnings.append(
+            "Revision History archive reference is malformed; expected "
+            "`Earlier history archived to LOG.md on YYYY-MM-DD.`"
+        )
+    if len(archive_dates) > 1:
+        warnings.append("Revision History contains more than one archive reference")
+
+    visible_entries = len(revision_dates) + len(archive_dates)
+    if visible_entries > MAX_REVISION_HISTORY_ENTRIES:
+        warnings.append(
+            f"Revision History has {visible_entries} visible entries "
+            f"(maximum: {MAX_REVISION_HISTORY_ENTRIES})"
+        )
+
+    nonblank_lines = [
+        line.strip() for line in revision_history.splitlines() if line.strip()
+    ]
+    if archive_dates and (
+        not nonblank_lines
+        or not ARCHIVE_REFERENCE_RE.fullmatch(nonblank_lines[0])
+    ):
+        warnings.append(
+            "Revision History archive reference must be the first entry"
+        )
+
+    metadata_dates = [*revision_dates, *archive_dates]
+    if not metadata_dates:
+        warnings.append("Revision History contains no dated entries")
+    elif last_modified_match:
+        newest_metadata_date = max(metadata_dates)
+        last_modified = last_modified_match.group(1)
+        if last_modified != newest_metadata_date:
+            warnings.append(
+                f"Last modified is {last_modified}, but the newest Revision "
+                f"History date is {newest_metadata_date}"
+            )
+
+    return warnings
 
 
 # Stale build-phase phrases that should not appear in a finished CONTEXT.md.
@@ -320,6 +403,10 @@ def audit_directory(directory: Path) -> list[Finding]:
                 if section not in sections:
                     findings.append(("WARN", label, f"CONTEXT.md is missing section: ## {section}"))
 
+            # Last modified and Revision History consistency
+            for msg in check_context_metadata(content):
+                findings.append(("WARN", label, f"CONTEXT.md metadata — {msg}"))
+
             # Contents path existence
             for p in get_contents_paths(content):
                 full = PROJECT_ROOT / p.rstrip("/")
@@ -418,6 +505,32 @@ def run_audit() -> tuple[list[Finding], int]:
     return findings, len(dirs)
 
 
+def resolve_context_targets(raw_targets: list[str]) -> list[Path]:
+    """Resolve project-relative directory or CONTEXT.md targets safely."""
+    targets = []
+    for raw in raw_targets:
+        candidate = (PROJECT_ROOT / raw).resolve()
+        try:
+            candidate.relative_to(PROJECT_ROOT.resolve())
+        except ValueError as exc:
+            raise ValueError(f"Context target is outside the project: {raw}") from exc
+
+        directory = candidate.parent if candidate.name == "CONTEXT.md" else candidate
+        if not directory.is_dir():
+            raise ValueError(f"Context target is not a directory: {raw}")
+        targets.append(directory)
+    return sorted(set(targets))
+
+
+def run_context_audit(raw_targets: list[str]) -> tuple[list[Finding], int]:
+    """Audit only the explicitly named context directories."""
+    targets = resolve_context_targets(raw_targets)
+    findings = []
+    for directory in targets:
+        findings.extend(audit_directory(directory))
+    return findings, len(targets)
+
+
 # ---------------------------------------------------------------------------
 # Report formatting
 # ---------------------------------------------------------------------------
@@ -475,13 +588,37 @@ def main() -> None:
         action="store_true",
         help="Save the full report to workflows/audit/last-report.md",
     )
+    parser.add_argument(
+        "--context",
+        nargs="+",
+        metavar="DIRECTORY",
+        help="Check only the named project-relative directories or CONTEXT.md files",
+    )
     args = parser.parse_args()
 
     ts = now_ts()
 
-    append_log(WORKFLOW_LOG, ts, "started", "Running structural audit of all project directories.")
+    if args.context:
+        start_note = (
+            "Running targeted CONTEXT.md maintenance audit for: "
+            + ", ".join(args.context)
+            + "."
+        )
+    else:
+        start_note = "Running structural audit of all project directories."
+    append_log(WORKFLOW_LOG, ts, "started", start_note)
 
-    findings, dir_count = run_audit()
+    try:
+        if args.context:
+            findings, dir_count = run_context_audit(args.context)
+        else:
+            findings, dir_count = run_audit()
+    except ValueError as exc:
+        note = f"Audit failed: {exc}"
+        append_log(WORKFLOW_LOG, ts, "failed", note)
+        append_log(ROOT_LOG, ts, "failed", f"audit workflow failed. {exc}")
+        parser.error(str(exc))
+
     report = format_report(findings, dir_count)
 
     print(report)
@@ -493,7 +630,11 @@ def main() -> None:
 
     fails = sum(1 for f in findings if f[0] == "FAIL")
     warns = sum(1 for f in findings if f[0] == "WARN")
-    note = f"Audit complete. {dir_count} directories checked. {fails} failure(s), {warns} warning(s)."
+    mode = "targeted context audit" if args.context else "audit"
+    note = (
+        f"{mode.capitalize()} complete. {dir_count} directories checked. "
+        f"{fails} failure(s), {warns} warning(s)."
+    )
 
     append_log(WORKFLOW_LOG, ts, "completed", note)
     append_log(ROOT_LOG, ts, "completed", f"audit workflow ran. {note}")

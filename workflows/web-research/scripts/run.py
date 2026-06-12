@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 _WORKFLOW_DIR = Path(__file__).parent.parent          # workflows/web-research/
 _PROJECT_ROOT = _WORKFLOW_DIR.parent.parent           # AI-OS/
 _SKILL_SCRIPTS = _PROJECT_ROOT / 'skills' / 'web-research' / 'scripts'
+_RUNTIME_SCRIPTS = _PROJECT_ROOT / 'workflows' / 'biblio-tools' / 'scripts'
 
+sys.path.insert(0, str(_RUNTIME_SCRIPTS))
 sys.path.insert(0, str(_SKILL_SCRIPTS))
-
-from research import research  # noqa: E402
 
 
 def main():
@@ -98,6 +98,13 @@ Examples:
     args = parser.parse_args()
 
     if args.check:
+        # Prefer the canonical environment when it exists, but retain the
+        # host-Python diagnostic path for machines where setup has not run.
+        try:
+            from runtime import ensure_project_runtime  # noqa: E402
+            ensure_project_runtime()
+        except RuntimeError:
+            pass
         sys.exit(0 if _run_check() else 1)
 
     if not args.topic:
@@ -138,33 +145,42 @@ Examples:
         print(f'  Report:      {report_path}')
         return
 
+    # Switch into the canonical .venv and import the research engine.
+    # Placed here so --help, --check, and --dry-run work without a .venv.
+    from runtime import ensure_project_runtime  # noqa: E402
+    ensure_project_runtime()
+    from research import research  # noqa: E402
+
     print(f'\nBook Dragon — Web Research')
     print(f'Topic: "{args.topic}"')
     print(f'Sources: up to {args.sources} | Include: {include or "all defaults"} | Exclude: {exclude or "none"}\n')
 
-    # Run research
-    package = research(
-        topic=args.topic,
-        sources=args.sources,
-        include=include,
-        exclude=exclude,
-        rss_category=args.rss_category,
-        scrape_urls=scrape_urls,
-        content_type=args.content_type,
-        words=args.words,
-        tone=args.tone,
-        audience=args.audience,
-        style=args.style,
-        citations=args.citations,
-        confidence_markers=args.confidence_markers,
-        readability_check=args.readability_check,
-        virality=args.virality,
-    )
+    _append_log('started', f'Began research for "{args.topic}".')
+    try:
+        package = research(
+            topic=args.topic,
+            sources=args.sources,
+            include=include,
+            exclude=exclude,
+            rss_category=args.rss_category,
+            scrape_urls=scrape_urls,
+            content_type=args.content_type,
+            words=args.words,
+            tone=args.tone,
+            audience=args.audience,
+            style=args.style,
+            citations=args.citations,
+            confidence_markers=args.confidence_markers,
+            readability_check=args.readability_check,
+            virality=args.virality,
+        )
 
-    # Save package
-    outputs_dir.mkdir(exist_ok=True)
-    with open(package_path, 'w', encoding='utf-8') as f:
-        json.dump(package, f, indent=2, ensure_ascii=False)
+        outputs_dir.mkdir(exist_ok=True)
+        with open(package_path, 'w', encoding='utf-8') as f:
+            json.dump(package, f, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        _append_log('failed', f'Research for "{args.topic}" failed: {exc}')
+        raise
 
     # Print results summary
     print(f'\nResearch complete.')
@@ -269,7 +285,11 @@ Examples:
 
     print('-' * 60)
 
-    _append_log(args.topic, package['source_count'], str(package_path))
+    _append_log(
+        'completed',
+        f'Researched "{args.topic}". {package["source_count"]} sources gathered. '
+        f'Package: {package_path}.',
+    )
 
 
 def _run_check():
@@ -311,7 +331,7 @@ def _run_check():
             print(f'  [MISSING] {pkg_name}')
             all_ok = False
     if not all_ok:
-        print('\n  Fix: pip install -r skills/web-research/scripts/requirements.txt')
+        print('\n  Fix: python workflows/biblio-tools/scripts/setup.py')
 
     # ── .env file ─────────────────────────────────────────────────────────
     print('\n.env file:')
@@ -386,14 +406,10 @@ def _slugify(text):
     return slug[:40].rstrip('-')
 
 
-def _append_log(topic, source_count, package_path):
+def _append_log(action, note):
     log_path = _WORKFLOW_DIR / 'LOG.md'
     timestamp = datetime.now().astimezone().isoformat(timespec='seconds')
-    entry = (
-        f'\n[{timestamp}] | Actor: Biblio | Action: ran | '
-        f'Note: Researched "{topic}". '
-        f'{source_count} sources gathered. Package: {package_path}.'
-    )
+    entry = f'\n[{timestamp}] | Actor: Biblio | Action: {action} | Note: {note}'
     with open(log_path, 'a', encoding='utf-8') as f:
         f.write(entry)
 

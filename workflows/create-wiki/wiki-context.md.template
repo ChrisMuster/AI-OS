@@ -1,18 +1,18 @@
 # LLM Wiki
 
-A personal knowledge base maintained by Claude Code.
+A personal knowledge base maintained by Biblio.
 Based on Andrej Karpathy's LLM Wiki pattern.
 
 ## Purpose
 
 This wiki is a structured, interlinked knowledge base for {{WIKI_TOPIC}}.
-Claude maintains the wiki. The human curates sources, asks questions, and guides the analysis.
+Biblio maintains the wiki. The user curates sources, asks questions, and guides the analysis.
 
 ## Folder structure
 
 ```
 raw/          -- source documents (immutable -- never modify these)
-wiki/         -- markdown pages maintained by Claude
+wiki/         -- markdown pages maintained by Biblio
 wiki/index.md -- table of contents for the entire wiki
 wiki/operations-log.md   -- append-only record of all operations
 ```
@@ -92,4 +92,4 @@ When the user asks you to lint or audit the wiki:
 - Always update `wiki/index.md` and `wiki/operations-log.md` after changes
 - Keep page names lowercase with hyphens (e.g. `machine-learning.md`)
 - Write in clear, plain language
-- When uncertain about how to categorize something, ask the user
+- When uncertain about how to categorise something, ask the user

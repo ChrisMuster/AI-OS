@@ -33,7 +33,6 @@ PYTHON = sys.executable
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
     "biblio-tools",
-    description="Book Dragon project tools — typed wrappers for project scripts.",
 )
 
 

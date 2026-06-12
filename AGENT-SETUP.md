@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-06-11 (session adapters for 9 AI sources; 13 AIs supported)
+**Last updated:** 2026-06-11 (shared PDF extraction; session adapters for 9 AI sources; 13 AIs supported)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -26,9 +26,14 @@ The script checks:
 - The AI's wrapper file exists (if one is needed)
 - `SOUL.md` and `USER.md` exist (USER.md is created during first-run init)
 - `.env` exists (optional — extends web research functionality)
+- The canonical project `.venv` contains every package declared by root `requirements.txt`
+- Shared PDF extraction is installed in the project `.venv`
 - AI-specific configuration files exist
-- MCP configuration (`.mcp.json`) is present with biblio-tools registered (MCP-capable AIs only)
+- The selected AI's native MCP configuration is present and contains biblio-tools
 - The `mcp` Python package is installed (MCP-capable AIs with Python 3.10+ only)
+- The exact configured command starts successfully, completes an MCP handshake, exposes all eight expected tools, calls `get_timestamp`, rejects an invalid month, and blocks path traversal
+
+This proves the checked-in configuration and assembled MCP server work together without requiring the AI application to be installed. It does not prove that an unavailable client application discovers its project-scoped config; confirm that once when the client is first installed using its native MCP status command or interface.
 
 ## Universal requirements
 
@@ -41,6 +46,8 @@ These apply to every AI:
 | `SOUL.md` | Required | Defines the assistant persona. Ships with the repository. |
 | `USER.md` | Created on first run | The AI creates this during first-run initialisation. |
 | `.env` | Optional | Extends web research source coverage. See `workflows/web-research/SETUP.md`. |
+| `pypdf` package | Required for PDF wiki ingestion | Run `python workflows/biblio-tools/scripts/setup.py`. |
+| Project `.venv` | Required for packaged workflows | Created and maintained by one AI-agnostic setup command. |
 
 ## MCP support (biblio-tools)
 
@@ -49,10 +56,38 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | Requirement | Notes |
 |---|---|
 | Python 3.10+ | The MCP SDK requires 3.10+. If running 3.9, MCP is unavailable but everything else works. |
-| `mcp` package | Install: `pip install -r workflows/biblio-tools/requirements.txt` |
+| `mcp` package | Install in the project `.venv`; commands are shown below. |
 | `.mcp.json` | Must exist at project root with biblio-tools registered. Ships with the repository. |
 
 **All 13 supported AIs have MCP support.** Each AI's MCP configuration format differs — see the per-AI sections below for details. For most AIs, the biblio-tools server is pre-configured in a project-scoped config file that ships with the repository. The only exception is GitHub Copilot CLI, which requires a one-time manual config step (see its section below).
+
+Canonical project setup on every operating system:
+
+```
+python workflows/biblio-tools/scripts/setup.py
+```
+
+Check it without making changes:
+
+```
+python workflows/biblio-tools/scripts/setup.py --check
+```
+
+The root `requirements.txt` includes every workflow-specific package manifest. Dependency-bearing workflow entry points automatically switch into `.venv`, so their normal commands work unchanged for Claude, Codex, Gemini and every other supported AI. Global Python packages may still exist, but Book Dragon does not rely on them.
+
+## PDF wiki ingestion
+
+Book Dragon includes an AI-agnostic PDF extractor at `workflows/create-wiki/scripts/extract_pdf.py`. It uses `pypdf` from the shared project `.venv`, preserves page boundaries, and writes extracted JSON only to the operating system's temporary directory. Source files in wiki `raw/` directories are never modified.
+
+Run it directly:
+
+```powershell
+python workflows/create-wiki/scripts/extract_pdf.py wikis/<wiki-name>/raw/<document>.pdf
+```
+
+The command prints a compact JSON result containing the temporary output path, page count, character count, and OCR status. Re-running the same PDF uses the cached extraction. Pass `--force` to rebuild it or `--dry-run` to preview the action.
+
+Text-based PDFs work across all supported AIs, regardless of whether the AI product has native PDF support. Image-only or scanned PDFs are detected and reported as requiring OCR; OCR is not yet included.
 
 ## Background scheduler
 
@@ -82,7 +117,7 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+2. Run the canonical project setup command.
 3. Open the project in Claude Code or Claude Cowork. Both read `CLAUDE.md` and `AGENTS.md` automatically.
 4. The first session triggers first-run initialisation (creates `USER.md`, `LOG.md` files, etc.).
 
@@ -108,7 +143,7 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 
 **Setup steps (Gemini CLI):**
 1. Ensure Python 3.9+ is installed.
-2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+2. Run the canonical project setup command.
 3. Install and configure Gemini CLI per Google's documentation.
 4. Open the project. Gemini reads `GEMINI.md` which imports `AGENTS.md` via `@AGENTS.md`.
 5. The biblio-tools MCP server is pre-configured in `.gemini/settings.json` — no additional MCP setup needed.
@@ -121,6 +156,8 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 4. MCP setup: pending — `.agents/mcp_config.json` config file needs to be created. See transition notice above.
 
 **MCP config location:** Gemini CLI: `.gemini/settings.json` (project-scoped, ships with the repository). Antigravity CLI: `.agents/mcp_config.json` (workspace-scoped) and `~/.gemini/antigravity-cli/mcp_config.json` (global). Migration from inline `settings.json` to dedicated `mcp_config.json` is pending.
+
+Running `verify.py --ai "Antigravity CLI"` currently returns a deliberate failure explaining this pending migration. This prevents Antigravity from being reported as ready before its native configuration and live transcript format have been verified.
 
 ### GitHub Copilot
 
@@ -136,7 +173,7 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+2. Run the canonical project setup command.
 3. Install the GitHub Copilot extension in VS Code or JetBrains (requires a Copilot subscription).
 4. Open the project. Copilot reads `.github/copilot-instructions.md` and `AGENTS.md` automatically.
 5. **MCP setup (one-time):** Add the biblio-tools server to your Copilot CLI config. Run `/mcp add` in the Copilot CLI, or manually add the following to `~/.copilot/mcp-config.json`:
@@ -145,7 +182,10 @@ The scheduler is PID-file-guarded — only one instance runs at a time. It auto-
      "mcpServers": {
        "biblio-tools": {
          "command": "python",
-         "args": ["workflows/biblio-tools/scripts/server.py"]
+           "args": [
+             "workflows/biblio-tools/scripts/launch.py",
+             "workflows/biblio-tools/scripts/server.py"
+           ]
        }
      }
    }
@@ -255,7 +295,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+2. Run the canonical project setup command.
 3. Install Aider per its documentation.
 4. Open the project. Aider reads `.aider.conf.yml` which loads `AGENTS.md` into context.
 5. The biblio-tools MCP server is pre-configured in `.aider.conf.yml` under `mcp-server` — no additional MCP setup needed.
@@ -276,12 +316,12 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+2. Run the canonical project setup command.
 3. Install the tool per OpenAI's documentation.
 4. Open the project. Codex reads `AGENTS.md` automatically — no wrapper file needed.
 5. The biblio-tools MCP server is pre-configured in `.codex/config.toml` — no additional MCP setup needed.
 
-**Note:** Codex CLI, Codex Desktop, and the Codex IDE extension share MCP settings. The project-scoped `.codex/config.toml` is picked up by all three surfaces. You can also manage servers via the `codex mcp` CLI commands.
+**Note:** Codex CLI, Codex Desktop, and the Codex IDE extension share MCP settings. The project-scoped `.codex/config.toml` is picked up by all three surfaces and uses `workflows/biblio-tools/scripts/launch.py` to select the platform-appropriate `.venv` interpreter. You can also manage servers via the `codex mcp` CLI commands.
 
 ### OpenCode
 
@@ -297,10 +337,10 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
-2. Install MCP package: `pip install -r workflows/biblio-tools/requirements.txt`
+2. Run the canonical project setup command.
 3. Install OpenCode per its documentation.
 4. Open the project. OpenCode reads `AGENTS.md` automatically — no wrapper file needed.
-5. The biblio-tools MCP server is pre-configured in `opencode.json` — no additional MCP setup needed.
+5. The biblio-tools MCP server is pre-configured in `opencode.json` using OpenCode's local command-array format — no additional MCP setup needed.
 
 **Note:** Project-scoped `opencode.json` has the highest precedence among OpenCode config files. It merges with (rather than replacing) global config at `~/.config/opencode/opencode.json`.
 

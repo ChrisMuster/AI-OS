@@ -1,6 +1,6 @@
 # Session Search — Adapters
 
-**Last modified:** 2026-06-11 (Item 4 expansion)
+**Last modified:** 2026-06-12
 
 ## Purpose
 Session transcript adapters for each AI source supported by session-search. Each adapter reads transcripts from an AI tool's specific cache format and yields normalised records in the Book Dragon archive format. Adapters are used by archive.py for both ongoing archiving (--all mode iterates all registered adapters) and historical imports.
@@ -51,3 +51,4 @@ N/A. Adapters are called programmatically by archive.py (both --all and --hook m
 - 2026-06-11 — Added Codex CLI/Desktop adapter (codex.py). archive.py refactored to use adapter registry for all discovery and parsing (inline parsers removed). Adapters are now the primary parse layer, not just historical import tools.
 - 2026-06-11 — Added 6 new adapters: Copilot CLI (copilot.py), Gemini CLI (gemini_cli.py), Continue.dev (continue_dev.py), OpenCode (opencode.py), Cursor (cursor.py), Cline (cline.py). Total adapters: 9. Two AIs have no adapter: Aider (git-based, no transcript files) and Windsurf/Devin Desktop (no documented local transcript storage).
 - 2026-06-11 — Updated gemini_cli.py to also discover Antigravity CLI sessions at `~/.gemini/antigravity/brain/`. Gemini CLI is sunsetting June 18 2026; Antigravity CLI is the replacement.
+- 2026-06-12 — Normalised the Last modified field to the required date-only format.

@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 10 June 2026
+**Last updated:** 11 June 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -10,7 +10,7 @@ The system is modular, organised into workflows, wikis, skills, and other tools 
 
 ## Requirements
 
-**Python 3.9+** is the only current system-level requirement. See `REQUIREMENTS.md` for full details including per-workflow package requirements and API key setup.
+**Python 3.9+** is the only system-level requirement. Run `python workflows/biblio-tools/scripts/setup.py` once to create Book Dragon's shared project environment and install all workflow packages. See `REQUIREMENTS.md` for full details and API key setup.
 
 **Supported AIs:** Book Dragon works with any AI that reads `AGENTS.md`. Currently supported via thin wrapper files: Claude Code, Claude Cowork, GitHub Copilot, Gemini CLI, Cursor, Windsurf, Cline, Continue.dev, and Aider. Codex CLI, Codex Desktop, and OpenCode read `AGENTS.md` natively with no wrapper needed. See `AGENT-SETUP.md` for per-AI setup instructions.
 

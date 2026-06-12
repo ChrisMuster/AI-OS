@@ -1,15 +1,15 @@
 # Audit
 
-**Last modified:** 2026-06-09
+**Last modified:** 2026-06-12
 
 ## Purpose
-Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, broken Contents paths, unlisted subdirectories, and dead Obsidian [[links]]. Also checks that AGENTS.md has not exceeded its line-count threshold (600 lines), and runs code hygiene checks across all Python scripts (currently: strftime calls with time but no timezone). Produces a report of failures and warnings for review.
+Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, inconsistent Last modified and Revision History metadata, broken Contents paths, unlisted subdirectories, and dead Obsidian [[links]]. It can also run a lightweight targeted check against named directories immediately after context maintenance. The full audit checks that AGENTS.md has not exceeded its line-count threshold (600 lines) and runs code hygiene checks across all Python scripts.
 
 ## Contents
 - scripts/ — `workflows/audit/scripts/` [[workflows/audit/scripts/CONTEXT]] — Automation scripts for this workflow; run.py is the main audit entry point.
 
 ## Inputs
-No inputs required. The script reads the existing project structure and CONTEXT.md files.
+No inputs are required for a full audit. Targeted mode accepts one or more project-relative directories or CONTEXT.md paths after `--context`.
 
 ## Outputs
 - Audit report printed to stdout.
@@ -18,8 +18,10 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 ## Steps
 1. Run the audit script from anywhere:
    `python workflows/audit/scripts/run.py [--save]`
-2. Review the report. Failures (missing files) must be fixed. Warnings (missing sections, broken paths, unlisted dirs) should be investigated.
-3. Fix any real issues found, then re-run to confirm clean.
+2. After changing CONTEXT.md files during normal work, run:
+   `python workflows/audit/scripts/run.py --context <directory> [<directory> ...]`
+3. Review the report. Failures must be fixed; warnings should be investigated.
+4. Fix any real issues found, then re-run the same mode to confirm clean.
 
 ## Dependencies
 - `AGENTS.md` [[AGENTS]] (root) — Defines the structural rules (CONTEXT.md schema, LOG.md requirement) that this workflow audits against.
@@ -38,3 +40,4 @@ No inputs required. The script reads the existing project structure and CONTEXT.
 - 2026-06-08 — Added code hygiene check: scans all project Python scripts for strftime calls with time components but no timezone offset. Fixed format_report to use isoformat (was itself a timezone-less timestamp).
 - 2026-06-09 — Line-count check updated from CLAUDE.md to AGENTS.md. Dependencies updated. AGENTS added to dead-link root stems.
 - 2026-06-09 — GEMINI added to dead-link root stems (Phase 2 AI-agnostic transition).
+- 2026-06-12 — Added deterministic Last modified and Revision History checks plus targeted `--context` mode for immediate context maintenance.

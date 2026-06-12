@@ -55,13 +55,27 @@ def _read_pid() -> int | None:
 def _is_process_alive(pid: int) -> bool:
     """Check whether a process with the given PID is still running."""
     if sys.platform == "win32":
-        # Use tasklist to check — os.kill(pid, 0) is unreliable on Windows
+        # Query the process directly. tasklist can be blocked by app sandboxes.
         try:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-                capture_output=True, text=True, timeout=5,
+            import ctypes
+            from ctypes import wintypes
+
+            process = ctypes.windll.kernel32.OpenProcess(
+                0x1000,  # PROCESS_QUERY_LIMITED_INFORMATION
+                False,
+                pid,
             )
-            return str(pid) in result.stdout
+            if not process:
+                return False
+            try:
+                exit_code = wintypes.DWORD()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(
+                    process, ctypes.byref(exit_code)
+                ):
+                    return False
+                return exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(process)
         except Exception:
             return False
     else:

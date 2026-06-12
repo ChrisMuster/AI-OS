@@ -1,6 +1,6 @@
 # Book Dragon — Agent Instructions
 
-**Last updated:** 2026-06-11
+**Last updated:** 2026-06-12
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -57,7 +57,14 @@ Once the task is known and context is read (steps 9–10), confirm your understa
 
 Never begin building, creating files, making changes, or running anything with side effects based on a prompt, plan, context, or detailed description alone. Receiving a prompt file, a specification, or a clear explanation of a task is not permission to begin executing it.
 
-The correct sequence is: read and understand the task, summarise your understanding and proposed approach to the user, then wait for an explicit instruction to proceed (for example: "go ahead", "yes do that", "build it"). If the scope or approach is unclear, ask one clarifying question. Do not start work while waiting for the answer.
+The correct sequence is:
+
+1. Read and understand the task, including the relevant project context.
+2. Summarise the task as understood and present an overall implementation plan.
+3. Wait for an explicit instruction to proceed (for example: "go ahead", "yes do that", "build it").
+4. Once permission is given, carry out the approved plan without requesting separate approval for every file or individual step.
+
+Permission applies to the overall task and agreed plan, not to each file change within it. If the scope or approach is unclear, ask one clarifying question before presenting the plan. If the scope changes materially after approval, stop, explain the revised plan, and wait for fresh permission before continuing with the expanded or changed work.
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
@@ -73,25 +80,51 @@ Before making any changes to a directory, Biblio must read that directory's `CON
 
 This rule exists to ensure Biblio is never editing files without understanding the current state of that directory.
 
-### Build close-out
+### Work maintenance and close-out
 
-At the end of any multi-step build — any work that spans more than one step or more than 3 file changes — Biblio must perform a close-out pass before the work is considered complete.
+Routine maintenance belongs to the work itself and must not be deferred until Git close-out:
 
-The close-out pass covers every `CONTEXT.md` that was created or modified during the build. For each one, ask:
+1. When work meaningfully changes a directory, update its `CONTEXT.md` and any parent context required by the propagation rules as part of that approved task. In the same edit, set `Last modified` to the current date and add the required Revision History entry; never leave either update for close-out.
+2. Record completed changes in the appropriate `LOG.md` as soon as that piece of work is finished. Workflow runs must still be logged at both ends as required by the LOG.md rules.
+3. After finishing a task that changed one or more `CONTEXT.md` files, run the targeted metadata check for the affected directories: `python workflows/audit/scripts/run.py --context <directory> [<directory> ...]`. Fix any findings immediately. This is a focused maintenance check, not full close-out.
+4. Do not run the full link, audit, lint, test, or close-out suite merely because an individual file edit or task step has finished.
+
+A body of work may remain in progress across several edits, tasks, or sessions without being prepared for Git. Full close-out begins only when one of these triggers occurs:
+
+1. The user says the current body of work is ready to prepare for staging and committing.
+2. The user explicitly asks for close-out checks at another point.
+3. At the natural end of a completed task, Biblio offers to prepare the work for staging and committing, and the user accepts.
+4. A supported session-close mechanism explicitly triggers close-out. When this happens, complete the applicable checks and ensure outstanding logs are current before the session ends.
+
+At the natural end of a task, Biblio may ask whether the user wants to prepare the work for staging and committing. Do not treat task completion alone as permission to begin full close-out.
+
+During close-out:
+
+1. Confirm all work required by the approved plan is complete.
+2. Confirm every required `LOG.md` is current.
+3. Review affected `CONTEXT.md` files and complete any missing propagation.
+4. Perform the CONTEXT.md close-out review below.
+5. Run the link pass, structural audit, and any applicable lint or test commands.
+6. Fix any failures or warnings that mean the work is not ready, then rerun the relevant checks.
+7. Report the completed changes and check results to the user for review.
+
+The CONTEXT.md close-out review covers every `CONTEXT.md` created or modified in the body of work. For each one, ask:
 
 1. **Staleness** — does any text describe planned work that has since been completed? Phrases such as "future steps will...", "will be added", "added in later steps", or "Step N:" references in prose are signals that language was written during construction and never updated to reflect the finished state. Rewrite to describe current state only.
 2. **Contents accuracy** — does the Contents section reflect what actually exists in the directory now, including any files added during the build?
 3. **Revision History completeness** — does the Revision History have an entry for every meaningful change made during this build, including changes to child directories that are significant at the parent level? A change is significant at the parent level if it affects what the parent's Contents section describes — a file added, removed, renamed, or its purpose changed. Internal implementation details (e.g. a comment fixed inside a script) are not significant at the parent level.
 4. **Path format** — are all paths project-root-relative? No `../` references anywhere in the file.
 
-After the close-out pass:
+After the CONTEXT.md close-out review:
 
 1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run — it is idempotent and only adds links that are not already present.
 2. Run the structural audit (`python workflows/audit/scripts/run.py`) to confirm nothing structural was missed.
 
-A clean audit after a clean close-out pass is the definition of "done".
+A clean audit and all other applicable checks are required before the work is ready for staging.
 
-This pass is separate from reading context before working. Reading context is what you do before you start; the close-out pass is what you do before you finish.
+After the user reviews the close-out report, staging requires a separate explicit instruction. Committing requires another explicit instruction after staging. Never treat approval to implement a task, run close-out, or stage files as approval for a later Git step.
+
+Close-out is separate from reading context before working. Reading context happens before changes begin; close-out happens only at one of the triggers above.
 
 ---
 

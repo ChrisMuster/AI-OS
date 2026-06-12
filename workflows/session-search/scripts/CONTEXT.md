@@ -49,3 +49,4 @@ N/A. Scripts are invoked individually; see each script's module docstring for us
 - 2026-06-08 — Initial creation.
 - 2026-06-11 — Added scheduler.py for background hourly archiving (non-Claude AIs).
 - 2026-06-11 — Refactored archive.py to use adapter registry (inline parsers removed). Added Codex adapter to registry.
+- 2026-06-11 — Replaced the Windows tasklist liveness check with a direct process query so status works inside app sandboxes.

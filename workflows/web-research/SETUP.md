@@ -42,7 +42,7 @@ Three additional sources become available with API keys. Each has a free or low-
 
 Install the web-research Python packages once before using the workflow. Run this from the project root:
 
-    pip install -r skills/web-research/scripts/requirements.txt
+    python workflows/biblio-tools/scripts/setup.py
 
 You only need to run this once.
 

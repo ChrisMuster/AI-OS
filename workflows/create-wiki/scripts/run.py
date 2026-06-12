@@ -3,7 +3,7 @@
 run.py — Scaffolds a new wiki directory in wikis/.
 
 Safe to re-run: skips files and directories that already exist and skips
-README/CONTEXT updates if the entry is already present.
+the wikis/CONTEXT.md update if the entry is already present.
 
 Usage (run from anywhere — paths are resolved relative to this script):
     python workflows/create-wiki/scripts/run.py <wiki-name> "<topic description>"
@@ -37,7 +37,6 @@ WIKIS_DIR     = PROJECT_ROOT / "wikis"
 WORKFLOW_DIR  = PROJECT_ROOT / "workflows" / "create-wiki"
 TEMPLATE_PATH = WORKFLOW_DIR / "wiki-context.md.template"
 WIKIS_CONTEXT = WIKIS_DIR / "CONTEXT.md"
-ROOT_README   = PROJECT_ROOT / "README.md"
 WORKFLOW_LOG  = WORKFLOW_DIR / "LOG.md"
 ROOT_LOG      = PROJECT_ROOT / "LOG.md"
 
@@ -52,12 +51,6 @@ def now_ts() -> str:
 def now_date() -> str:
     """YYYY-MM-DD date string."""
     return datetime.now().strftime("%Y-%m-%d")
-
-
-def now_display() -> str:
-    """Human-readable date with no leading zero, e.g. '27 May 2026'."""
-    n = datetime.now()
-    return f"{n.day} {n.strftime('%B %Y')}"
 
 
 def title(wiki_name: str) -> str:
@@ -305,50 +298,6 @@ def update_wikis_context(wiki_name: str, wiki_topic: str, d: str, dry_run: bool)
     print(f"  [~] wikis/CONTEXT.md updated")
 
 
-def update_readme(wiki_name: str, wiki_topic: str, dry_run: bool) -> None:
-    """
-    Insert a new entry into the Wikis section of README.md.
-    Skips silently if the wiki is already listed.
-    """
-    content = ROOT_README.read_text(encoding="utf-8")
-
-    # Idempotency guard — skip if already listed
-    if f"`wikis/{wiki_name}/`" in content:
-        print(f"  [=] README.md — {wiki_name} already listed, skipping")
-        return
-
-    if dry_run:
-        print(f"  [DRY RUN] would add {title(wiki_name)} entry to README.md")
-        return
-
-    lines = content.splitlines()
-    dname      = title(wiki_name)
-    topic_str  = wiki_topic.rstrip(".")
-    new_entry  = f"- **{dname}** — {topic_str}. `wikis/{wiki_name}/` `[active]`"
-
-    result        = []
-    in_wikis      = False
-    last_item_idx = -1
-
-    for line in lines:
-        if line.startswith("**Last updated:**"):
-            result.append(f"**Last updated:** {now_display()}")
-            continue
-        if line.strip() == "## Wikis":
-            in_wikis = True
-        elif in_wikis and line.startswith("## "):
-            in_wikis = False
-        if in_wikis and line.startswith("- "):
-            last_item_idx = len(result)
-        result.append(line)
-
-    if last_item_idx >= 0:
-        result.insert(last_item_idx + 1, new_entry)
-
-    ROOT_README.write_text("\n".join(result) + "\n", encoding="utf-8")
-    print(f"  [~] README.md updated")
-
-
 # ---------------------------------------------------------------------------
 # Main scaffold
 # ---------------------------------------------------------------------------
@@ -414,13 +363,12 @@ def scaffold_wiki(wiki_name: str, wiki_topic: str, dry_run: bool) -> None:
 
     # --- Update existing files ---
     update_wikis_context(wiki_name, wiki_topic, d, dry_run)
-    update_readme(wiki_name, wiki_topic, dry_run)
 
     # --- Log completed (skipped on dry run) ---
     if not dry_run:
         note = (
             f"Scaffolded {wiki_name} wiki at wikis/{wiki_name}/. "
-            "wikis/CONTEXT.md and README.md updated."
+            "wikis/CONTEXT.md updated; README.md left generic by design."
         )
         append_log(WORKFLOW_LOG, ts, "completed", note)
         append_log(ROOT_LOG, ts, "completed",

@@ -1,6 +1,6 @@
 # Web Research (Skill)
 
-**Last modified:** 2026-05-29
+**Last modified:** 2026-06-11
 
 ## Purpose
 Shared research engine for Book Dragon. Fetches content from multiple free and paid web sources, deduplicates and tiers the results by credibility, and returns a structured research package. Any workflow that needs to research a topic before acting imports this skill rather than building its own search logic.
@@ -35,7 +35,7 @@ When called via the workflow CLI, the package is also saved as a JSON file in `w
 N/A. This is a shared skill module, not a standalone workflow. See `workflows/web-research/` [[workflows/web-research/CONTEXT]] for the user-facing CLI wrapper that orchestrates the full research-to-report flow.
 
 ## Dependencies
-- Python 3.8+ with packages listed in `skills/web-research/scripts/requirements.txt` [[skills/web-research/scripts/CONTEXT]].
+- Book Dragon's canonical `.venv`, populated from root `requirements.txt` by `workflows/biblio-tools/scripts/setup.py` [[workflows/biblio-tools/scripts/CONTEXT]].
 - Free sources (no keys required): wikipedia, hackernews, reddit, arxiv, semantic_scholar, stackexchange, devto, rss, scraper.
 - Keyed sources (API keys in `.env` at project root): tavily (TAVILY_API_KEY), brave (BRAVE_API_KEY), guardian (GUARDIAN_API_KEY). All three are active.
 - `workflows/web-research/config/rss_feeds.yaml` is not used by this skill directly — RSS config lives at `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]].
@@ -52,3 +52,4 @@ N/A. This is a shared skill module, not a standalone workflow. See `workflows/we
 - 2026-05-29 — Step 3: brave_source.py added. BRAVE_API_KEY wired via .env. Brave registered as default Tier 2 source.
 - 2026-05-29 — Step 4: guardian_source.py added. GUARDIAN_API_KEY wired via .env. All 12 sources now active.
 - 2026-05-29 — Step 5: exceptions.py added with typed exception classes and check_response() helper. All source adapters updated to raise typed exceptions. research.py updated to track source_status and quality_flags per run.
+- 2026-06-11 — Dependencies are now installed through the canonical root setup command rather than per-workflow pip commands.

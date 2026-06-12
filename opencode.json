@@ -3,8 +3,12 @@
   "mcp": {
     "biblio-tools": {
       "type": "local",
-      "command": "python",
-      "args": ["workflows/biblio-tools/scripts/server.py"]
+      "command": [
+        "python",
+        "workflows/biblio-tools/scripts/launch.py",
+        "workflows/biblio-tools/scripts/server.py"
+      ],
+      "enabled": true
     }
   }
 }

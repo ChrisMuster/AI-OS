@@ -1,16 +1,18 @@
 # Scripts
 
-**Last modified:** 2026-06-06
+**Last modified:** 2026-06-11
 
 ## Purpose
-Contains the automation script for the create-wiki workflow. Handles all deterministic file creation when scaffolding a new wiki — the 90% that does not need an AI.
+Contains deterministic wiki scaffolding and PDF extraction scripts.
 
 ## Contents
-- run.py — `workflows/create-wiki/scripts/run.py` [[workflows/create-wiki/scripts/CONTEXT]] — Main scaffold script. Creates all wiki directories and files, updates wikis/CONTEXT.md and README.md, and appends to LOG files.
+- run.py — `workflows/create-wiki/scripts/run.py` [[workflows/create-wiki/scripts/CONTEXT]] — Main scaffold script. Creates all wiki directories and files, updates wikis/CONTEXT.md, and appends to LOG files.
+- extract_pdf.py — `workflows/create-wiki/scripts/extract_pdf.py` [[workflows/create-wiki/scripts/CONTEXT]] — Extracts a project PDF into page-preserving temporary JSON and reports OCR requirements.
 
 ## Inputs
 - `wiki_name` (command-line argument) — Lowercase with hyphens, e.g. `react-patterns`.
 - `wiki_topic` (command-line argument) — One-line plain-language description of what the wiki covers.
+- `pdf` (extract_pdf.py argument) — Project-root-relative path to a PDF source.
 
 ## Outputs
 - `wikis/<wiki-name>/` — Fully scaffolded wiki directory containing:
@@ -19,9 +21,9 @@ Contains the automation script for the create-wiki workflow. Handles all determi
   - `raw/` — Empty source document store with CONTEXT.md and LOG.md.
   - `wiki/` — Empty wiki pages store with CONTEXT.md, LOG.md, index.md, and operations-log.md.
 - Updated `wikis/CONTEXT.md` [[wikis/CONTEXT]] — New wiki entry added to Contents section.
-- Updated `README.md` [[README]] — New wiki entry added to Wikis section, Last updated date refreshed.
 - Updated `workflows/create-wiki/LOG.md` — Started and completed entries appended.
 - Updated root `LOG.md` — Completed entry appended.
+- Temporary page-preserving JSON extraction for PDF sources.
 
 ## Steps
 Run from anywhere (paths are resolved relative to the script, not the CWD):
@@ -30,16 +32,27 @@ Run from anywhere (paths are resolved relative to the script, not the CWD):
 python workflows/create-wiki/scripts/run.py <wiki-name> "<topic description>"
 ```
 
+For PDF extraction:
+
+```
+python workflows/create-wiki/scripts/extract_pdf.py wikis/<wiki-name>/raw/<document>.pdf
+```
+
 ## Dependencies
 - `workflows/create-wiki/wiki-context.md.template` [[workflows/create-wiki/CONTEXT]] — Template used to generate the new wiki's root CONTEXT.md.
 - `wikis/CONTEXT.md` [[wikis/CONTEXT]] — Updated by the script on every run.
-- `README.md` [[README]] (root) — Updated by the script on every run.
 - `workflows/create-wiki/LOG.md` — Appended by the script on every run.
 - `LOG.md` (root) — Appended by the script on every run.
+- `workflows/create-wiki/requirements.txt` [[workflows/create-wiki/CONTEXT]] — Provides pypdf for text-based PDF extraction.
+- `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Automatically re-runs extraction with the canonical project `.venv`.
 
 ## Known Issues
-- The update logic for wikis/CONTEXT.md and README.md relies on their current markdown structure (section heading names, list item format). If those files are restructured, the insertion logic may place entries incorrectly.
+- The update logic for wikis/CONTEXT.md relies on its current markdown structure (section heading names and list item format). If that file is restructured, the insertion logic may place entries incorrectly.
+- extract_pdf.py detects image-only PDFs but does not provide OCR.
 
 ## Revision History
 - 2026-05-27 — Initial creation. Implements the 90-10 protocol for the create-wiki workflow.
 - 2026-06-06 — Fixed generated Dependencies paths in raw_context() and wiki_subdir_context(): replaced `../CONTEXT.md` and `../raw/` with project-root-relative paths (`wikis/{wiki_name}/CONTEXT.md`, etc.).
+- 2026-06-11 — Stopped adding individual personal wikis to README.md; wikis/CONTEXT.md remains the authoritative wiki list.
+- 2026-06-11 — Added extract_pdf.py for shared page-preserving PDF extraction with OCR detection.
+- 2026-06-11 — Made extract_pdf.py enter the canonical project runtime automatically.

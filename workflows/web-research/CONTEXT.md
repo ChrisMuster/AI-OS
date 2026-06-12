@@ -1,6 +1,6 @@
 # Web Research (Workflow)
 
-**Last modified:** 2026-06-06
+**Last modified:** 2026-06-12
 
 ## Purpose
 User-facing CLI workflow for researching a topic and saving a research package ready for Biblio to turn into a report. Thin wrapper around the shared `skills/web-research/` [[skills/web-research/CONTEXT]] engine — all source logic lives in the skill; this workflow provides the command-line interface, output management, and report brief.
@@ -57,7 +57,8 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 
 ## Dependencies
 - `skills/web-research/` [[skills/web-research/CONTEXT]] — Core research engine; all source adapters and compile logic.
-- `skills/web-research/scripts/requirements.txt` [[skills/web-research/scripts/CONTEXT]] — Python dependencies (install once).
+- Root `requirements.txt` — Installs the skill's workflow-specific manifest through the canonical setup command.
+- `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Automatically runs the workflow inside the canonical project `.venv`.
 - `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] — RSS feed list used by the rss source.
 - `skills/image-prompt/` [[skills/image-prompt/CONTEXT]] — Image prompt skill; invoked when `--image-prompt` flag is passed.
 - Python 3.9+ on the host machine (project minimum; see `REQUIREMENTS.md`).
@@ -73,3 +74,6 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 - 2026-06-05 — Added SETUP.md: full setup guide covering free-tier sources, API key acquisition for Tavily, Brave Search, and The Guardian, .env configuration, and verification.
 - 2026-06-05 — Added --check flag to scripts/run.py: static pre-flight check covering Python version, required packages, .env presence, and API key status. No network calls or credits used.
 - 2026-06-06 — Added subscription sites / paywalled content support. SUBSCRIBED_DOMAINS added to .env; scraper detects paywalled responses from subscribed domains and flags them; run.py surfaces flagged URLs in the summary and Biblio brief; --check shows configured domains. SETUP.md updated with configuration guide.
+- 2026-06-11 — Standardised execution on Book Dragon's canonical `.venv`; direct workflow commands now work consistently across AI clients.
+- 2026-06-11 — Updated run logging to record started and completed or failed entries for every research execution.
+- 2026-06-12 — Corrected the static pre-flight check to inspect the canonical project runtime when it exists.
