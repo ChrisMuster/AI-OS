@@ -59,11 +59,14 @@ These are the Claude Code tools that map to the abstract tool references in AGEN
 
 ### Permission prompt handling
 
-If a Bash command triggers a permission prompt, you are likely violating a project rule. Before asking the user:
-1. Check whether you used an absolute path (should be relative).
-2. Check whether you used Bash for an operation that has a dedicated tool (Read, Edit, Glob, Grep).
-3. Check whether the command matches an existing allowlist pattern in `.claude/settings.json`.
-If a rule-compliant alternative exists, use it without prompting. Only ask the user if no alternative exists.
+A permission prompt is a rule enforcement signal, not friction to push through. If a command triggers a permission prompt, stop immediately. Do not ask the user to approve it. Instead, treat it as evidence that you are about to break a rule, and investigate before continuing.
+
+Check in this order:
+1. Did you use Bash for an operation that has a dedicated tool (Read, Edit, Glob, Grep)? The Read tool handles PDFs natively — never use pypdf or other libraries via Bash to read files.
+2. Did you use an absolute path (should be relative)?
+3. Does the command match an existing allowlist pattern in `.claude/settings.json`?
+
+If a rule-compliant alternative exists, switch to it silently. Only escalate to the user if you have checked all three points and genuinely cannot find a compliant alternative. The default assumption is that the permission prompt is correct and your approach is wrong — not the other way around.
 
 ### LOG.md writes
 

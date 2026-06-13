@@ -72,7 +72,7 @@ This rule applies from the very first message of a session. It is not suspended 
 
 ### Self-correction on tool errors
 
-If a command or tool call fails, is rejected, or triggers a permission prompt, do not immediately ask the user for help. First check whether you are violating a project rule — wrong tool, wrong path format, absolute path where relative is required, or a tool substitution that bypasses the prescribed method. If a rule-compliant alternative exists, use it silently. Only escalate to the user if no rule-compliant alternative exists.
+If a command or tool call fails, is rejected, or triggers a permission prompt, do not push through it or ask the user to approve it. A rejection or permission prompt is a guardrail, not friction — the default assumption is that the guardrail is correct and your approach is wrong. Stop, check whether you are violating a project rule — wrong tool, wrong path format, absolute path where relative is required, or a tool substitution that bypasses the prescribed method. If a rule-compliant alternative exists, switch to it silently. Only escalate to the user if you have checked all applicable rules and genuinely cannot find a compliant alternative.
 
 ### Reading context before working
 
