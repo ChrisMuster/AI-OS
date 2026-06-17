@@ -64,6 +64,11 @@ workflows/session-search/data/*
 !workflows/session-search/data/.gitkeep
 !workflows/session-search/data/CONTEXT.md
 
+# Reddit collector — downloaded posts and state are personal/machine-specific content
+workflows/reddit-collector/collections/
+workflows/reddit-collector/config/feeds.json
+workflows/reddit-collector/state/
+
 # OS
 .DS_Store
 Thumbs.db

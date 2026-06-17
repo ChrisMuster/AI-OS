@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-06-12
+**Last modified:** 2026-06-17
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -14,6 +14,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - Session Search — `workflows/session-search/` [[workflows/session-search/CONTEXT]] — Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database; provides a skill for searching session history.
 - Settings Check — `workflows/settings-check/` [[workflows/settings-check/CONTEXT]] — Validates that all automated commands (hooks and scheduled tasks) are covered by allowlist entries in `.claude/settings.json`.
 - Biblio Tools — `workflows/biblio-tools/` [[workflows/biblio-tools/CONTEXT]] — MCP server exposing project scripts as typed, callable tools for any AI that supports the Model Context Protocol.
+- Reddit Collector — `workflows/reddit-collector/` [[workflows/reddit-collector/CONTEXT]] — Downloads posts from configured subreddits, saves as Markdown, detects multi-part series and groups them with navigable indexes.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -32,8 +33,7 @@ N/A. This is a container directory, not a workflow itself.
 - The Contents section of this file must be updated every time a new workflow is added or removed. Container directories are easy to forget when the focus is on the new subdirectory itself.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-06-12.
-- 2026-05-27 — Added audit workflow to Contents. Removed long-standing TODO (audit workflow now built).
+Earlier history archived to LOG.md on 2026-06-17.
 - 2026-05-29 — Added web-research workflow to Contents.
 - 2026-06-03 — Added link-check workflow to Contents.
 - 2026-06-03 — Added weather workflow to Contents.
@@ -42,3 +42,4 @@ Earlier history archived to LOG.md on 2026-06-12.
 - 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).
 - 2026-06-10 — Added biblio-tools MCP server to Contents (Phase 3, AI-agnostic transition).
 - 2026-06-12 — Updated the Audit entry to include targeted CONTEXT.md metadata checks.
+- 2026-06-15 — Added reddit-collector workflow to Contents.

@@ -4,3 +4,4 @@
 -r workflows/create-wiki/requirements.txt
 -r skills/web-research/scripts/requirements.txt
 -r workflows/biblio-tools/requirements.txt
+-r workflows/reddit-collector/requirements.txt

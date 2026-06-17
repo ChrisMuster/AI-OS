@@ -1,6 +1,6 @@
 # Book Dragon — Agent Instructions
 
-**Last updated:** 2026-06-12
+**Last updated:** 2026-06-15
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -33,12 +33,13 @@ At the start of every new session, before doing anything else:
    b. **Next month** — first establish today's date. Count the days remaining in the current month. Only if today falls within the last 7 days of the current month, check whether next month's file exists. If it does not exist, run: `python journal/scripts/new-month.py --month YYYY-MM` (substituting next month's year and month). If today is not within the last 7 days of the current month, skip this step entirely — do not run the command. The script enforces this gate independently and will also refuse if the condition is not met.
    Do not mention this to the user unless a file was actually just created, in which case tell the user in a single sentence that it has been created.
 8. Scan journal entries for USER.md updates — read the current month's journal file (and the previous month's if today is within the first 7 days of the month). Check for any information matching USER.md tracked categories that is not already recorded there. Tracked categories are listed in `journal/CONTEXT.md`. If anything new is found, include it in the opening greeting message, after the greeting and before asking what they want to work on — do not wait for the user to respond first: "I noticed [X] in your journal — should I add that to USER.md?" Wait for confirmation before making any change. If nothing new is found, say nothing.
-9. Wait for the user to say what they want to work on.
-10. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
+9. **Backlog review** — read `memory/backlog.md` silently. Check each Active item against recent git history and session context. If any item appears to have been completed, flag it to the user: "[X] looks like it may be done — should I move it to Completed?" Do not move items without confirmation. If nothing is stale, say nothing. This check is silent unless it finds something.
+10. Wait for the user to say what they want to work on.
+11. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
 
-Do not skip step 0 or steps 1–8. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–8, greet the user by name (from `USER.md`) and ask what they want to work on today.
+Do not skip step 0 or steps 1–9. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–9, greet the user by name (from `USER.md`) and ask what they want to work on today.
 
-Once the task is known and context is read (steps 9–10), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
+Once the task is known and context is read (steps 10–11), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
 
 ## Directory structure
 
@@ -68,7 +69,7 @@ Permission applies to the overall task and agreed plan, not to each file change 
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
-**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
+**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), the backlog review (step 9), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
 
 ### Self-correction on tool errors
 
@@ -87,7 +88,11 @@ Routine maintenance belongs to the work itself and must not be deferred until Gi
 1. When work meaningfully changes a directory, update its `CONTEXT.md` and any parent context required by the propagation rules as part of that approved task. In the same edit, set `Last modified` to the current date and add the required Revision History entry; never leave either update for close-out.
 2. Record completed changes in the appropriate `LOG.md` as soon as that piece of work is finished. Workflow runs must still be logged at both ends as required by the LOG.md rules.
 3. After finishing a task that changed one or more `CONTEXT.md` files, run the targeted metadata check for the affected directories: `python workflows/audit/scripts/run.py --context <directory> [<directory> ...]`. Fix any findings immediately. This is a focused maintenance check, not full close-out.
-4. Do not run the full link, audit, lint, test, or close-out suite merely because an individual file edit or task step has finished.
+4. **Backlog check** — at the natural end of a task (whether or not close-out follows), perform these sub-steps:
+   a. Read `memory/backlog.md`. If the task just completed matches an Active item, move it to Completed with today's date.
+   b. Review the session for any work that was discussed and deferred — ideas raised but not acted on, future projects mentioned, things explicitly set aside. Flag each one to the user: "Should I add [X] to the backlog?" Add only what the user confirms.
+   c. Present the remaining Active items as a short numbered list so the user can see what's available next.
+5. Do not run the full link, audit, lint, test, or close-out suite merely because an individual file edit or task step has finished.
 
 A body of work may remain in progress across several edits, tasks, or sessions without being prepared for Git. Full close-out begins only when one of these triggers occurs:
 
@@ -494,7 +499,7 @@ This pass runs only once. On every subsequent session, `USER.md` and all `LOG.md
 
 The canonical memory location for this project is `memory/` at the project root. All AIs working in this project must use this location for persistent memory. If an AI has its own default memory cache location, the project `memory/` directory takes precedence. Memory written to a per-AI cache is local only and should be treated as stale if it conflicts with what is in `memory/`.
 
-**Reading memory:** Step 4 of session startup loads `memory/MEMORY.md`. Once the task is known (step 10), read the MEMORY.md index and pull any individual memory files whose topics relate to the current task before beginning work. Do not defer this until mid-session.
+**Reading memory:** Step 4 of session startup loads `memory/MEMORY.md`. Once the task is known (step 11), read the MEMORY.md index and pull any individual memory files whose topics relate to the current task before beginning work. Do not defer this until mid-session.
 
 **When to write a memory:**
 - The user corrects an approach, or confirms a non-obvious approach worked.
