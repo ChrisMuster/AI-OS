@@ -1,6 +1,6 @@
 # Biblio Tools Scripts
 
-**Last modified:** 2026-06-11
+**Last modified:** 2026-06-17
 
 ## Purpose
 Contains the canonical project-runtime setup and hand-off helpers, MCP server, setup verification, launcher, and protocol smoke-test scripts.
@@ -10,8 +10,9 @@ Contains the canonical project-runtime setup and hand-off helpers, MCP server, s
 - verify.py — `workflows/biblio-tools/scripts/verify.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Setup verification script (doctor pattern). Checks environment configuration and shared PDF ingestion for any supported AI. Standard library only — works on Python 3.9+.
 - launch.py — `workflows/biblio-tools/scripts/launch.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Cross-platform launcher that uses the project `.venv` interpreter when available.
 - mcp_smoke.py — `workflows/biblio-tools/scripts/mcp_smoke.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Connects to a configured stdio server, completes the MCP handshake, confirms the eight-tool inventory, calls a read-only tool, and checks input/path rejection.
+- lifecycle_check.py — `workflows/biblio-tools/scripts/lifecycle_check.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Verifies helper-process lifecycle safeguards: MCP handshake, parent-death cleanup, and reader stale-PID safety.
 - setup.py — `workflows/biblio-tools/scripts/setup.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Creates or repairs the canonical `.venv`, installs the root dependency manifest, and verifies package availability.
-- runtime.py — `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Hands dependency-bearing entry points to the canonical `.venv` without changing their documented commands.
+- runtime.py — `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Shared project-runtime helpers: `.venv` discovery, process liveness checking (cross-platform), and runtime hand-off for dependency-bearing entry points.
 
 ## Inputs
 None. The server is started by the AI's MCP client.
@@ -34,11 +35,11 @@ N/A. The server is started automatically by the MCP client, not run manually.
 None.
 
 ## Revision History
-- 2026-06-10 — Initial creation.
-- 2026-06-10 — Added verify.py (setup verification script).
-- 2026-06-10 — verify.py: Python 3.9.x now returns WARN with upgrade advisory instead of PASS.
+Earlier history archived to LOG.md on 2026-06-17.
 - 2026-06-11 — Added cross-platform `.venv` launcher and taught verify.py to detect MCP installed in the local environment.
 - 2026-06-11 — Updated server initialisation for the current MCP SDK and made local-environment verification resilient to launch errors.
 - 2026-06-11 — Added per-AI native config parsing and protocol-level MCP smoke tests; all supported profiles now verify their exact configured launch command.
 - 2026-06-11 — Added a universal check for pypdf and the shared Create Wiki PDF extractor.
 - 2026-06-11 — Added setup.py and runtime.py to provide one shared runtime and command path for every AI client.
+- 2026-06-17 — Orphan prevention: server.py gains stdin watchdog + idle timeout (4h); launch.py gains parent-PID monitoring. Processes now self-terminate when the parent session ends.
+- 2026-06-17 — Hardened orphan-process cleanup: launch.py now owns parent-death cleanup with Windows-safe liveness checks, server.py focuses on stdin/idle shutdown, and lifecycle_check.py verifies the lifecycle safeguards.

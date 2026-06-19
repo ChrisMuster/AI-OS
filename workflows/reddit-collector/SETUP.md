@@ -99,6 +99,26 @@ The collector uses two data sources and automatically selects the best available
 
 The client tries the JSON API first on each incremental run. If it gets a 403 (unauthenticated access blocked), it falls back to RSS for the rest of that run. When OAuth credentials are added, the JSON API starts working and RSS is never used.
 
+## Reader server
+
+After collecting posts, you can browse them locally in your browser:
+
+```
+python workflows/reddit-collector/scripts/run.py --subreddit hfy --build-reader
+```
+
+The reader server runs on `http://127.0.0.1:8080` and opens your browser automatically. It includes built-in orphan prevention — if you start it again while it's already running, it detects the existing server and opens your browser to it instead of starting a duplicate.
+
+To stop the server, either press Ctrl+C in the terminal or run:
+
+```
+python workflows/reddit-collector/scripts/build_reader.py --stop
+```
+
+The `/shutdown` endpoint is protected by a local instance token and is used by the stop command rather than called directly.
+
+If you want clickable start/stop scripts for your platform instead of using the command line, ask Biblio to create them for you.
+
 ## Upgrading to OAuth (optional, future)
 
 Adding Reddit OAuth will give incremental runs full metadata (scores, flair, comment counts). The upgrade is isolated to configuration — no script changes needed.

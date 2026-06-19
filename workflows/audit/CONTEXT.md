@@ -1,6 +1,6 @@
 # Audit
 
-**Last modified:** 2026-06-12
+**Last modified:** 2026-06-17
 
 ## Purpose
 Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, inconsistent Last modified and Revision History metadata, broken Contents paths, unlisted subdirectories, and dead Obsidian [[links]]. It can also run a lightweight targeted check against named directories immediately after context maintenance. The full audit checks that AGENTS.md has not exceeded its line-count threshold (600 lines) and runs code hygiene checks across all Python scripts.
@@ -28,9 +28,9 @@ No inputs are required for a full audit. Targeted mode accepts one or more proje
 - `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] — The automation script that performs all checks.
 
 ## Known Issues
-- Wiki-root directories use a non-standard CONTEXT.md format and are excluded from section checks. They will appear in the report as INFO entries.
 - The audit is read-only — it reports issues but does not fix them. Fixing is a manual step.
 - last-report.md is not listed in Contents because it only exists after the first --save run. If it exists, it is the saved output of the most recent audit.
+- Requires git to be available for gitignore-aware directory pruning. Falls back to auditing all directories if git is not found.
 
 ## Revision History
 - 2026-05-27 — Initial creation. Resolves the long-standing TODO in workflows/CONTEXT.md Known Issues.
@@ -41,3 +41,4 @@ No inputs are required for a full audit. Targeted mode accepts one or more proje
 - 2026-06-09 — Line-count check updated from CLAUDE.md to AGENTS.md. Dependencies updated. AGENTS added to dead-link root stems.
 - 2026-06-09 — GEMINI added to dead-link root stems (Phase 2 AI-agnostic transition).
 - 2026-06-12 — Added deterministic Last modified and Revision History checks plus targeted `--context` mode for immediate context maintenance.
+- 2026-06-17 — Replaced `rglob` tree walk with `os.walk` and `git check-ignore` pruning. Gitignored directories (collections, state, wiki content) are now skipped entirely — eliminates false positives and avoids traversing large data directories.

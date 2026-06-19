@@ -13,8 +13,11 @@ for AIs without MCP support.
 """
 
 import asyncio
+import os
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -29,6 +32,34 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 PYTHON = sys.executable
 
 # ---------------------------------------------------------------------------
+# Lifecycle — watchdog for orphan prevention
+# ---------------------------------------------------------------------------
+_last_activity = time.monotonic()
+_IDLE_TIMEOUT_SECS = 4 * 3600  # 4 hours
+
+def _touch_activity():
+    global _last_activity
+    _last_activity = time.monotonic()
+
+
+def _stdin_watchdog():
+    """Exit if stdin closes or no tool calls arrive before the idle timeout."""
+    while True:
+        time.sleep(10)
+        try:
+            if sys.stdin.closed:
+                os._exit(0)
+            if hasattr(sys.stdin, "buffer") and sys.stdin.buffer.closed:
+                os._exit(0)
+        except Exception:
+            os._exit(0)
+        if time.monotonic() - _last_activity > _IDLE_TIMEOUT_SECS:
+            os._exit(0)
+
+
+threading.Thread(target=_stdin_watchdog, daemon=True).start()
+
+# ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
@@ -41,6 +72,7 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 async def _run_script(cmd: list[str]) -> dict:
     """Run a project script and return structured output."""
+    _touch_activity()
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -207,6 +239,7 @@ async def get_timestamp() -> str:
     Returns a string like "2026-06-09T23:20:28+01:00".
     Cross-platform replacement for date +"%Y-%m-%dT%H:%M:%S%:z".
     """
+    _touch_activity()
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
@@ -233,6 +266,7 @@ async def append_log(
         action: One of: created, modified, started, completed, failed, archived.
         note: Short description of what happened.
     """
+    _touch_activity()
     # Resolve and validate path
     if directory == ".":
         log_path = PROJECT_ROOT / "LOG.md"

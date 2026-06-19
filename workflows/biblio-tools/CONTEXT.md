@@ -1,12 +1,12 @@
 # Biblio Tools
 
-**Last modified:** 2026-06-11
+**Last modified:** 2026-06-17
 
 ## Purpose
 Provides Book Dragon's canonical Python runtime, setup verification, cross-platform workflow launcher, and MCP (Model Context Protocol) server. The same project commands work for every AI; MCP-capable clients additionally receive typed tools, while other clients run the underlying scripts directly.
 
 ## Contents
-- scripts/ — `workflows/biblio-tools/scripts/` [[workflows/biblio-tools/scripts/CONTEXT]] — Shared runtime setup and hand-off helpers, MCP server, per-AI verification, launcher, and protocol smoke tests.
+- scripts/ — `workflows/biblio-tools/scripts/` [[workflows/biblio-tools/scripts/CONTEXT]] — Shared runtime setup and hand-off helpers, MCP server, per-AI verification, launcher, protocol smoke tests, and lifecycle checks.
 - requirements.txt — `workflows/biblio-tools/requirements.txt` [[workflows/biblio-tools/CONTEXT]] — MCP dependency included by the root project manifest.
 
 ## Inputs
@@ -41,11 +41,11 @@ Each tool returns structured output: success status, stdout, stderr, and return 
 - A successful standalone handshake proves that the checked-in config launches the server correctly. Each client still needs one live confirmation that it discovers its project-scoped config.
 
 ## Revision History
-- 2026-06-10 — Initial creation. Seven tools: run_audit, run_link_check, run_new_month, run_session_search_index, run_settings_check, get_timestamp, append_log (Phase 3, AI-agnostic transition).
-- 2026-06-10 — Added verify.py (setup verification script) and verify_setup MCP tool. Eight tools total (Phase 4, AI-agnostic transition).
-- 2026-06-10 — verify.py: Python 3.9.x now returns WARN with upgrade advisory. AGENT-SETUP.md: added "Adding a new AI" section.
+Earlier history archived to LOG.md on 2026-06-17.
 - 2026-06-11 — Added project-local `.venv` support through a cross-platform launcher and updated setup verification.
 - 2026-06-11 — Updated the MCP server for compatibility with the current SDK.
 - 2026-06-11 — Standardised checked-in MCP configs on the `.venv` launcher and added native-config handshake verification for all supported AI profiles.
 - 2026-06-11 — Added universal setup verification for the shared Create Wiki PDF extractor.
 - 2026-06-11 — Added one canonical setup command and root dependency manifest for all AI clients and dependency-bearing workflows.
+- 2026-06-17 — Orphan prevention: server.py and launch.py now detect parent session death and self-terminate. Fixes accumulation of stale MCP server processes across sessions.
+- 2026-06-17 — Hardened orphan-process lifecycle handling: launch.py now owns parent-death cleanup with Windows-safe liveness checks, server.py focuses on stdin/idle shutdown, and lifecycle_check.py verifies cleanup behaviour.

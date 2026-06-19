@@ -22,8 +22,10 @@ Options:
     --context Check only the named directories and their CONTEXT.md metadata
 """
 
+import os
 import re
 import argparse
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -450,35 +452,86 @@ NO_RECURSE_DIRS = {"raw", "data"}
 
 
 # ---------------------------------------------------------------------------
+# Gitignore helpers
+# ---------------------------------------------------------------------------
+def _git_check_ignored(parent_rel: str, subdirs: list[str]) -> set[str]:
+    """Return the subset of subdirs that git would ignore.
+
+    Passes paths as command-line arguments to ``git check-ignore`` in a
+    single subprocess call.  Falls back to an empty set if git is
+    unavailable or the project is not a repository.
+    """
+    if not subdirs:
+        return set()
+
+    if parent_rel == ".":
+        candidates = {d: d for d in subdirs}
+    else:
+        candidates = {d: f"{parent_rel}/{d}" for d in subdirs}
+
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", *candidates.values()],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+        )
+        ignored_paths = {line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()}
+        return {d for d, path in candidates.items() if path in ignored_paths}
+    except Exception:
+        return set()
+
+
+# ---------------------------------------------------------------------------
 # Full tree walk
 # ---------------------------------------------------------------------------
 def collect_dirs() -> list[Path]:
     """
     Walk the project tree and return all auditable directories.
 
-    Directories named in NO_RECURSE_DIRS are included themselves but their
-    contents are not walked — they are source-data boundaries.
+    Uses os.walk() with in-place pruning so that gitignored, hidden, and
+    no-recurse directories are never entered — avoiding traversal into large
+    data directories such as collections/.
     """
-    dirs = []
-    for p in sorted(PROJECT_ROOT.rglob("*")):
-        if not p.is_dir():
-            continue
-        if p == PROJECT_ROOT:
+    auditable: list[Path] = []
+
+    for root, subdirs, _files in os.walk(PROJECT_ROOT):
+        root_path = Path(root)
+
+        # --- Prune subdirs in-place to control recursion ---
+
+        # 1. Remove SKIP_DIRS and hidden directories
+        subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith(".")]
+
+        # 2. Remove gitignored directories
+        if subdirs:
+            try:
+                parent_rel = str(root_path.relative_to(PROJECT_ROOT)).replace("\\", "/")
+            except ValueError:
+                parent_rel = "."
+            ignored = _git_check_ignored(parent_rel, subdirs)
+            if ignored:
+                subdirs[:] = [d for d in subdirs if d not in ignored]
+
+        # 3. If current dir is a no-recurse boundary, audit it but stop recursion
+        if root_path != PROJECT_ROOT and root_path.name in NO_RECURSE_DIRS:
+            auditable.append(root_path)
+            subdirs.clear()
             continue
 
-        parts = p.relative_to(PROJECT_ROOT).parts
-
-        # Skip if any component is in SKIP_DIRS or is hidden
-        if any(part in SKIP_DIRS or part.startswith(".") for part in parts):
+        # Skip the project root itself
+        if root_path == PROJECT_ROOT:
             continue
 
-        # Skip if any ANCESTOR component is a no-recurse dir
-        # (keeps raw/ itself but drops everything inside it)
-        if any(part in NO_RECURSE_DIRS for part in parts[:-1]):
+        # Defensive: skip if an ancestor is a no-recurse dir
+        rel_parts = root_path.relative_to(PROJECT_ROOT).parts
+        if any(part in NO_RECURSE_DIRS for part in rel_parts[:-1]):
+            subdirs.clear()
             continue
 
-        dirs.append(p)
-    return dirs
+        auditable.append(root_path)
+
+    return sorted(auditable)
 
 
 def run_audit() -> tuple[list[Finding], int]:

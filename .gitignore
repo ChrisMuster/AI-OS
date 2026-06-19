@@ -68,6 +68,10 @@ workflows/session-search/data/*
 workflows/reddit-collector/collections/
 workflows/reddit-collector/config/feeds.json
 workflows/reddit-collector/state/
+workflows/reddit-collector/Read *.bat
+workflows/reddit-collector/Stop *.bat
+workflows/reddit-collector/.reader_server.pid
+workflows/reddit-collector/HANDOVER.md
 
 # OS
 .DS_Store

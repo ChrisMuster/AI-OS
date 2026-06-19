@@ -6,9 +6,12 @@ saves as Markdown, detects multi-part series and groups them.
 
 import argparse
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -76,6 +79,55 @@ def append_log(action, note):
         f.write(entry)
 
 
+# ─── Filesystem helpers ──────────────────────────────────────────────────────
+
+def _robust_rmtree(path, attempts=5, delay=0.5):
+    """Delete a directory tree, tolerant of Windows AV/indexer locks.
+
+    Retries with backoff on transient OSErrors (e.g. [Errno 22] / [WinError 5])
+    and clears the read-only bit before retrying a failed removal.
+    """
+    path = Path(path)
+    if not path.exists():
+        return
+
+    def _clear_readonly(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+
+    for attempt in range(attempts):
+        try:
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(path, onexc=_clear_readonly)
+            else:  # pragma: no cover - legacy interpreters
+                shutil.rmtree(
+                    path,
+                    onerror=lambda f, p, info: _clear_readonly(f, p, info[1]),
+                )
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
+def _robust_replace(src, dst, attempts=8, delay=1.0):
+    """Rename src to dst, tolerant of transient Windows locks.
+
+    Directory renames can fail with [WinError 5] (access denied) while an
+    antivirus or the search indexer holds a handle on the freshly written
+    tree. Retry with backoff rather than failing the whole reindex.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
 # ─── Config loading ─────────────────────────────────────────────────────────
 
 def load_feeds():
@@ -119,7 +171,7 @@ def make_save_post_fn(subreddit, dry_run=False):
             print(f"  [DRY RUN] Would save: {post['title'][:80]}")
             return True
         content = format_post(post)
-        filepath.write_text(content, encoding="utf-8")
+        filepath.write_text(content, encoding="utf-8", newline="\n")
         return True
 
     return save
@@ -197,8 +249,16 @@ def cmd_backfill(feed_key, feed_config, dry_run=False):
 
 
 def cmd_reindex_series(feed_key, feed_config, dry_run=False):
-    """Rebuild series indexes from downloaded posts."""
-    from series_detector import detect_series, build_series_indexes
+    """Rebuild series indexes from downloaded posts.
+
+    The new index tree is built into a temporary directory and swapped in via
+    fast directory renames, so the live `series/` tree stays intact until the
+    rebuild succeeds and is never left half-written if the build fails.
+    """
+    from series_detector import (
+        detect_series, build_series_indexes,
+        detect_series_groups, write_groups,
+    )
 
     subreddit = feed_config["subreddit"]
     sub_dir = COLLECTIONS / subreddit.lower()
@@ -221,7 +281,37 @@ def cmd_reindex_series(feed_key, feed_config, dry_run=False):
             print(f"  {series['name']} — {len(series['parts'])} parts ({series['detection_method']})")
         return series_map
 
-    build_series_indexes(series_map, sub_dir)
+    final_dir = sub_dir / "series"
+    tmp_dir = sub_dir / "series.tmp"
+    old_dir = sub_dir / "series.old"
+
+    # Clear any leftovers from a previously interrupted run.
+    _robust_rmtree(tmp_dir)
+    _robust_rmtree(old_dir)
+
+    print("  Building new series index into a temporary directory...", flush=True)
+    build_series_indexes(series_map, sub_dir, series_dir=tmp_dir)
+
+    groups = detect_series_groups(series_map)
+    write_groups(groups, tmp_dir)
+    print(f"  {len(groups)} series groups detected.", flush=True)
+
+    # Swap with the smallest possible window: rename the live tree aside, move
+    # the new tree into place, then delete the old tree (now that it is live).
+    print("  Swapping in the new series directory...", flush=True)
+    swapped_aside = False
+    if final_dir.exists():
+        _robust_replace(final_dir, old_dir)
+        swapped_aside = True
+    try:
+        _robust_replace(tmp_dir, final_dir)
+    except OSError:
+        # Roll back so the live series/ tree is never left missing.
+        if swapped_aside and not final_dir.exists():
+            _robust_replace(old_dir, final_dir)
+        raise
+    _robust_rmtree(old_dir)
+
     print(f"\n{len(series_map)} series detected and indexed:")
     for slug, series in sorted(series_map.items()):
         print(f"  {series['name']} — {len(series['parts'])} parts ({series['detection_method']})")
@@ -281,6 +371,7 @@ Examples:
   python run.py --subreddit hfy --reindex-series Rebuild series indexes
   python run.py --all                            Collect from all enabled feeds
   python run.py --subreddit hfy --dry-run        Preview without downloading
+  python run.py --subreddit hfy --build-reader   Open reader in browser
   python run.py --check                          Validate config and connectivity
 """,
     )
@@ -292,6 +383,8 @@ Examples:
                         help="Run full historical backfill (uses Arctic Shift)")
     parser.add_argument("--reindex-series", action="store_true",
                         help="Rebuild series indexes from downloaded posts")
+    parser.add_argument("--build-reader", action="store_true",
+                        help="Start local reader server for browsing posts")
     parser.add_argument("--check", action="store_true",
                         help="Pre-flight check: validate config and test connectivity")
     parser.add_argument("--dry-run", action="store_true",
@@ -328,7 +421,10 @@ Examples:
             sys.exit(1)
 
         subreddit = feed_config["subreddit"]
-        mode = "backfill" if args.backfill else "reindex-series" if args.reindex_series else "collect"
+        mode = ("backfill" if args.backfill
+                else "reindex-series" if args.reindex_series
+                else "build-reader" if args.build_reader
+                else "collect")
         append_log("started", f"Reddit collector {mode} for r/{subreddit}.")
 
         try:
@@ -344,6 +440,10 @@ Examples:
             elif args.reindex_series:
                 series_map = cmd_reindex_series(feed_key, feed_config, args.dry_run)
                 note = f"Series reindex completed for r/{subreddit}. {len(series_map)} series detected."
+            elif args.build_reader:
+                from build_reader import serve
+                serve(subreddit)
+                note = f"Reader server stopped for r/{subreddit}."
             else:
                 collected, skipped = cmd_collect(feed_key, feed_config, args.dry_run)
                 if feed_config.get("detect_series") and collected > 0 and not args.dry_run:
@@ -362,8 +462,19 @@ Examples:
             print("\nInterrupted by user.")
             sys.exit(130)
         except Exception as exc:
-            append_log("failed", f"Reddit collector failed for r/{subreddit}: {exc}")
+            import traceback
+            tb = traceback.extract_tb(sys.exc_info()[2])
+            loc = ""
+            if tb:
+                last = tb[-1]
+                loc = f" at {Path(last.filename).name}:{last.lineno} in {last.name}()"
+            append_log(
+                "failed",
+                f"Reddit collector failed for r/{subreddit}: "
+                f"{type(exc).__name__}: {exc}{loc}",
+            )
             print(f"\nError: {exc}", file=sys.stderr)
+            traceback.print_exc()
             sys.exit(1)
 
 
