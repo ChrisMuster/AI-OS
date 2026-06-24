@@ -51,6 +51,7 @@ def package_status(python: Path) -> dict:
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     if result.returncode != 0:

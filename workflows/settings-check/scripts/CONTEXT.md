@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-08
+**Last modified:** 2026-06-24
 
 ## Purpose
 Contains the health validator script for the settings-check workflow. Runs four checks: permission coverage across project and global settings, script existence, Python syntax, and absolute path audit on tracked files.
@@ -39,3 +39,4 @@ python workflows/settings-check/scripts/run.py [--verbose]
 ## Revision History
 - 2026-06-08 — Initial creation.
 - 2026-06-08 — Extended run.py with global settings coverage, script existence, Python syntax, and absolute path audit checks.
+- 2026-06-24 - Encoding hardening: pinned `encoding="utf-8"` on the `git ls-files` `subprocess.run` call so it decodes as UTF-8 rather than the Windows cp1252 default. No behavioural change.

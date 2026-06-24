@@ -123,7 +123,7 @@ The CONTEXT.md close-out review covers every `CONTEXT.md` created or modified in
 After the CONTEXT.md close-out review:
 
 1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run — it is idempotent and only adds links that are not already present.
-2. Run the structural audit (`python workflows/audit/scripts/run.py`) to confirm nothing structural was missed.
+2. Run the structural audit (`python workflows/audit/scripts/run.py`) to confirm nothing structural was missed. A full audit also validates the structural knowledge graph, surfacing any graph regression (broken reference, orphan, uncontained directory) under a `knowledge-graph` label.
 
 A clean audit and all other applicable checks are required before the work is ready for staging.
 
@@ -364,9 +364,21 @@ The original workflow-scoped copy must be removed and replaced with a reference 
 
 When creating skills, vibe-coded apps, or writing any code within this project, always use relative paths. Never use absolute paths. All paths should be relative to the AI-OS directory (the root level of this project). This applies to file references, imports, links, configuration files, scripts, and any other path usage in code or documentation.
 
+### Encoding and text I/O
+
+All text in this project is UTF-8 with LF line endings. Encoding glitches (mojibake, stray Windows-1252 bytes, accidental BOMs) are a recurring failure mode on Windows, so encoding is enforced in code, not left to chance:
+
+- Every file read or write must pass `encoding="utf-8"` explicitly (`open(...)`, `read_text`, `write_text`). Never rely on the platform default.
+- Every `subprocess` call that captures text (`text=True`) must also pass `encoding="utf-8"`. On Windows the default is cp1252, which silently corrupts or fails on non-ASCII output.
+- Any script that prints a report to stdout must reconfigure it first: `sys.stdout.reconfigure(encoding="utf-8")`.
+- The `encoding-guard` workflow [[workflows/encoding-guard/CONTEXT]] enforces all of the above. Run `python workflows/encoding-guard/scripts/run.py --check` to scan and `--fix` to repair; the full audit runs the check automatically.
+- Scraped or imported third-party data (under `raw/` or `collections/`) is exempt and preserved verbatim.
+
 ### Writing style and locale
 
 Use the writing style and locale specified in `USER.md`. If not specified, default to UK English spelling and grammar. This applies to documentation, code comments, commit messages, spell checking, and any other written output (e.g. "colour" not "color", "organised" not "organized", "centre" not "center").
+
+Avoid em dashes in authored content wherever a comma, parenthesis, hyphen, or full stop reads as well. They are an AI writing artifact and a frequent source of encoding corruption. This applies going forward to new and edited content (documentation, code comments, commit messages, CONTEXT.md prose); it does not require rewriting existing text, and it never applies to third-party data preserved verbatim (e.g. Reddit post titles or quoted source material).
 
 ### Personal data isolation
 
@@ -374,7 +386,7 @@ All content written into tracked files — CONTEXT.md files, scripts, README.md,
 
 The authoritative list of what is and isn't committed to git is `.gitignore` at the project root. Personal files excluded from git — `USER.md`, `LOG.md` files, `memory/` contents, `journal/entries/`, `.env` — may contain personal content. Everything else is tracked and must follow these rules.
 
-Five rules, no exceptions:
+Six rules, no exceptions:
 
 1. **No personal names or identifiers.** Use "the user" instead of a name. Never write a person's name, email address, or any other identifying detail into a tracked file. Personal details belong exclusively in `USER.md` (excluded from git) or `.env` (excluded from git).
 
@@ -385,6 +397,8 @@ Five rules, no exceptions:
 4. **Commit messages describe structure, not personal context.** Git history is visible to anyone who clones the repository. Commit messages must describe the structural or technical change made, not the personal work behind it. Wrong: "add wiki for Chris's Facebook data". Right: "add Facebook archive wiki scaffold".
 
 5. **CONTEXT.md Contents sections never list individual personal files.** In directories that hold personal content — `wikis/`, `conversations/`, `journal/entries/`, or any future personal archive — the Contents section must describe the file naming convention and format only. Never list individual filenames or their descriptions. Wrong: listing `2026-06-03-biblio-ui-planning.md` with a description. Right: "Saved conversation files, named `YYYY-MM-DD-topic-slug.md`. Individual files are not listed here as they are personal content." When Biblio needs to know what files exist in such a directory, it lists the directory's contents directly rather than relying on CONTEXT.md. The filesystem is always the authoritative source; CONTEXT.md describes structure and conventions only.
+
+6. **Design-time documents are personal, never tracked.** Planning, handover, proposal, and roadmap documents (`*-PLAN.md`, `HANDOVER.md`, `PROPOSAL.md`, `ROADMAP.md`) are personal working artifacts: they routinely capture session-, machine-, and user-specific context. They are gitignored and must never be staged or committed, nor listed in a tracked `CONTEXT.md` Contents section. Durable, generic design decisions belong in the tracked `CONTEXT.md` and `README.md` instead. The choice is by category, not by case-by-case judgement: it is safer to keep every design-time doc local than to decide per file whether one is "clean enough" to commit. A genuinely generic forward-looking design doc may be tracked only as a deliberate opt-in — authored with no personal data and explicitly un-ignored.
 
 ### 90-10 Protocol
 
@@ -524,6 +538,8 @@ The canonical memory location for this project is `memory/` at the project root.
    - **user**: state the trait plainly. No required sub-sections.
 3. Add or update the entry in `memory/MEMORY.md`. One line, under 150 chars, enough signal to decide relevance in future sessions.
 4. Append an entry to `memory/LOG.md`.
+
+**Cross-linking memories:** Link related memories in the body with `[[filename-stem]]` — the target memory's filename without the `.md` extension (e.g. `[[feedback_wait_for_permission]]`, `[[backlog]]`). The filename stem is the canonical link identifier in this project: it is what `MEMORY.md` entries and the knowledge-graph memory layer resolve against. The frontmatter `name:` slug is descriptive metadata used by recall, **not** the link key. This project rule deliberately overrides the built-in memory default of linking by the `name:` slug, so that the documented convention matches actual practice and no drift accumulates. A link to a memory that does not exist yet is allowed — it marks something worth writing later.
 
 ### General guidelines
 

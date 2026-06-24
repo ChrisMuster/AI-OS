@@ -11,9 +11,11 @@ Usage:
   python search.py "journal" --source claude-code
   python search.py "session" --hostname DESKTOP-XXXXX
   python search.py "audit" --ai "Claude Code"
+  python search.py "audit" --json          # machine-readable output for callers
 """
 
 import argparse
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -58,7 +60,8 @@ def search(
     Search across all shards and return merged results sorted by FTS5 rank.
 
     Returns a list of dicts, each containing:
-        snippet, hostname, source, session_id, session_title, timestamp, role, rank
+        snippet, hostname, source, session_id, session_title, ai_identity,
+        timestamp, role, rank
     """
     shards = find_shards()
     if not shards:
@@ -113,11 +116,12 @@ def search(
             conn.close()
 
         except sqlite3.OperationalError as e:
-            # FTS5 query syntax error or missing table
-            print(f'  [WARNING] Query error on {shard.name}: {e}')
+            # FTS5 query syntax error or missing table. Warn on stderr so that
+            # --json callers receive clean JSON on stdout regardless.
+            print(f'  [WARNING] Query error on {shard.name}: {e}', file=sys.stderr)
             continue
         except Exception as e:
-            print(f'  [WARNING] Could not query {shard.name}: {e}')
+            print(f'  [WARNING] Could not query {shard.name}: {e}', file=sys.stderr)
             continue
 
     # Merge and re-rank across shards; lower rank = better match in FTS5
@@ -157,12 +161,6 @@ def format_results(results: list) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    shards = find_shards()
-    if not shards:
-        print('No session database found.')
-        print('Run: python workflows/session-search/scripts/index.py')
-        return
-
     parser = argparse.ArgumentParser(
         description='Search Book Dragon session history',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -179,9 +177,12 @@ def main() -> None:
                         help='Limit results to a specific source')
     parser.add_argument('--ai',       metavar='NAME',
                         help='Limit results to a specific AI (e.g. "Claude Code")')
+    parser.add_argument('--json',     action='store_true',
+                        help='Emit results as a JSON list on stdout (for '
+                             'programmatic consumers). Suppresses all human text; '
+                             'an absent index yields an empty list, not an error.')
     args = parser.parse_args()
 
-    print(f'Searching {len(shards)} shard(s) for: {args.query!r}')
     results = search(
         args.query,
         limit=args.limit,
@@ -190,6 +191,21 @@ def main() -> None:
         source_filter=args.source,
         ai_filter=args.ai,
     )
+
+    # JSON mode is the contract consumed by the knowledge-graph `sessions`
+    # command: a bare JSON list on stdout, nothing else. find_shards() already
+    # guarantees an empty list when no index is present, so this never errors.
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False))
+        return
+
+    shards = find_shards()
+    if not shards:
+        print('No session database found.')
+        print('Run: python workflows/session-search/scripts/index.py')
+        return
+
+    print(f'Searching {len(shards)} shard(s) for: {args.query!r}')
     format_results(results)
 
 

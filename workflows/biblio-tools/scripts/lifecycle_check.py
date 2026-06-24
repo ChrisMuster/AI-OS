@@ -21,6 +21,7 @@ def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=timeout,
     )
 
@@ -70,6 +71,7 @@ print(child.pid, flush=True)
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
     )
     stdout, stderr = parent.communicate(timeout=10)
     if parent.returncode != 0:

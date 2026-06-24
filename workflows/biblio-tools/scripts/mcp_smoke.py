@@ -12,7 +12,9 @@ from mcp.client.stdio import stdio_client
 
 EXPECTED_TOOLS = {
     "append_log",
+    "build_knowledge_graph",
     "get_timestamp",
+    "query_knowledge_graph",
     "run_audit",
     "run_link_check",
     "run_new_month",
@@ -20,6 +22,12 @@ EXPECTED_TOOLS = {
     "run_settings_check",
     "verify_setup",
 }
+
+
+def _has_saved_knowledge_graph_index(cwd: Path) -> bool:
+    """True when the saved graph index exists and can be used for a fast smoke."""
+    index_dir = cwd / "workflows" / "knowledge-graph" / "index"
+    return (index_dir / "nodes.json").is_file() and (index_dir / "edges.json").is_file()
 
 
 async def run_smoke(command: str, args: list[str], cwd: Path) -> dict:
@@ -57,6 +65,32 @@ async def run_smoke(command: str, args: list[str], cwd: Path) -> dict:
             if "Path traversal detected" not in traversal_payload.get("error", ""):
                 raise RuntimeError("append_log did not reject path traversal")
 
+            if _has_saved_knowledge_graph_index(cwd):
+                kg_stats = await session.call_tool(
+                    "query_knowledge_graph",
+                    {"command": "stats", "from_index": True},
+                )
+                kg_stats_payload = json.loads(kg_stats.content[0].text)
+                if not kg_stats_payload.get("success"):
+                    raise RuntimeError(
+                        f"query_knowledge_graph stats failed: {kg_stats_payload}"
+                    )
+                if "node_count" not in kg_stats_payload.get("result", {}):
+                    raise RuntimeError(
+                        "query_knowledge_graph stats result missing node_count"
+                    )
+                kg_status = "PASS"
+            else:
+                kg_arg_check = await session.call_tool(
+                    "query_knowledge_graph", {"command": "node"}
+                )
+                kg_arg_payload = json.loads(kg_arg_check.content[0].text)
+                if kg_arg_payload.get("success") is not False:
+                    raise RuntimeError(
+                        "query_knowledge_graph accepted a node query without an id"
+                    )
+                kg_status = "PASS_NO_INDEX"
+
             return {
                 "success": not missing,
                 "protocol_version": initialised.protocolVersion,
@@ -66,6 +100,7 @@ async def run_smoke(command: str, args: list[str], cwd: Path) -> dict:
                 "get_timestamp": "PASS",
                 "invalid_month_rejected": "PASS",
                 "path_traversal_rejected": "PASS",
+                "knowledge_graph_stats": kg_status,
             }
 
 

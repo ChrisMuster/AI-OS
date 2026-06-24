@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-06-11 (shared PDF extraction; session adapters for 9 AI sources; 13 AIs supported)
+**Last updated:** 2026-06-24 (Codex Desktop MCP availability note)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -31,7 +31,7 @@ The script checks:
 - AI-specific configuration files exist
 - The selected AI's native MCP configuration is present and contains biblio-tools
 - The `mcp` Python package is installed (MCP-capable AIs with Python 3.10+ only)
-- The exact configured command starts successfully, completes an MCP handshake, exposes all eight expected tools, calls `get_timestamp`, rejects an invalid month, and blocks path traversal
+- The exact configured command starts successfully, completes an MCP handshake, exposes all ten expected tools, calls `get_timestamp`, rejects an invalid month, blocks path traversal, and verifies the knowledge-graph query tool without forcing a full graph rebuild during setup
 
 This proves the checked-in configuration and assembled MCP server work together without requiring the AI application to be installed. It does not prove that an unavailable client application discovers its project-scoped config; confirm that once when the client is first installed using its native MCP status command or interface.
 
@@ -60,6 +60,23 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | `.mcp.json` | Must exist at project root with biblio-tools registered. Ships with the repository. |
 
 **All 13 supported AIs have MCP support.** Each AI's MCP configuration format differs — see the per-AI sections below for details. For most AIs, the biblio-tools server is pre-configured in a project-scoped config file that ships with the repository. The only exception is GitHub Copilot CLI, which requires a one-time manual config step (see its section below).
+
+**Tools exposed (ten):**
+
+| Tool | What it does |
+|---|---|
+| `run_audit` | Run the structural audit across all project directories. |
+| `run_link_check` | Manage Obsidian wiki links in CONTEXT.md files (link / audit / fix). |
+| `run_new_month` | Create the journal entry file for a specified month. |
+| `run_session_search_index` | Archive completed sessions and refresh the session search index. |
+| `run_settings_check` | Validate that automated commands are covered by allowlist entries. |
+| `verify_setup` | Run deterministic setup verification for a given AI. |
+| `build_knowledge_graph` | Build (or rebuild) the structural knowledge-graph index; logs both ends. |
+| `query_knowledge_graph` | Query/traverse the knowledge graph — a dispatcher over the ten read-only commands (validate, node, neighbors, impact, path, subtree, stats, orphans, broken, sessions), returning parsed JSON. |
+| `get_timestamp` | Get the current ISO 8601 timestamp with timezone offset. |
+| `append_log` | Append a formatted entry to a directory's LOG.md. |
+
+The two knowledge-graph tools require this MCP server (Python 3.10+). On Python 3.9 they are unavailable, but the underlying CLI works directly: `python workflows/knowledge-graph/scripts/run.py <command>`.
 
 Canonical project setup on every operating system:
 
@@ -308,7 +325,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 |---|---|
 | Wrapper file | None needed |
 | AGENTS.md loading | Native — Codex reads `AGENTS.md` by default |
-| MCP support | Yes — pre-configured in `.codex/config.toml` |
+| MCP support | Yes — pre-configured in `.codex/config.toml`; verify live tool exposure per Codex surface |
 | Config files | `.codex/config.toml` (MCP server registration and hooks) |
 | Session hooks | Pre-configured — Stop event in `.codex/config.toml` |
 | Session transcripts | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — adapter: `codex` |
@@ -321,7 +338,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 4. Open the project. Codex reads `AGENTS.md` automatically — no wrapper file needed.
 5. The biblio-tools MCP server is pre-configured in `.codex/config.toml` — no additional MCP setup needed.
 
-**Note:** Codex CLI, Codex Desktop, and the Codex IDE extension share MCP settings. The project-scoped `.codex/config.toml` is picked up by all three surfaces and uses `workflows/biblio-tools/scripts/launch.py` to select the platform-appropriate `.venv` interpreter. You can also manage servers via the `codex mcp` CLI commands.
+**Note:** Codex CLI, Codex Desktop, and the Codex IDE extension share MCP settings. The project-scoped `.codex/config.toml` uses `workflows/biblio-tools/scripts/launch.py` to select the platform-appropriate `.venv` interpreter. Setup verification proves the configured server starts and exposes all ten Biblio Tools over the MCP protocol. A live Codex Desktop session on Windows has shown the protocol check passing while the Biblio Tools were not injected into that session's callable tool list; in that case use direct shell commands for Book Dragon workflows and treat it as a Codex host/tool-palette issue unless `verify.py --ai "Codex Desktop"` fails. You can also manage servers via the `codex mcp` CLI commands where the local Codex executable is available.
 
 ### OpenCode
 

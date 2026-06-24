@@ -13,6 +13,7 @@ for AIs without MCP support.
 """
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -92,23 +93,147 @@ async def _run_script(cmd: list[str]) -> dict:
         return {"success": False, "error": str(exc)}
 
 
+async def _run_json_script(cmd: list[str]) -> dict:
+    """Run a project script that emits JSON on stdout (via --json) and parse it.
+
+    On success returns {"success": True, "result": <parsed JSON>}. On a non-zero
+    exit or unparseable output, returns {"success": False, "stderr", "return_code"}
+    so the caller gets a structured error. The knowledge-graph CLI's unknown-id
+    case (exit 2, stderr carries difflib suggestions) surfaces naturally here.
+    """
+    raw = await _run_script(cmd)
+    if not raw.get("success"):
+        return {
+            "success": False,
+            "stderr": raw.get("stderr") or raw.get("error", ""),
+            "return_code": raw.get("return_code"),
+        }
+    try:
+        return {"success": True, "result": json.loads(raw["stdout"])}
+    except (ValueError, KeyError) as exc:
+        return {
+            "success": False,
+            "stderr": f"could not parse JSON output: {exc}",
+            "return_code": raw.get("return_code"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Knowledge-graph query dispatcher — pure argv assembly (unit-testable)
+# ---------------------------------------------------------------------------
+_KG_RUN_PY = "workflows/knowledge-graph/scripts/run.py"
+_KG_NEEDS_ID = ("node", "neighbors", "impact", "subtree", "path", "sessions")
+
+
+def build_kg_query_argv(
+    command: str,
+    *,
+    id: str | None = None,
+    target: str | None = None,
+    direction: str = "both",
+    edge_type: str | None = None,
+    undirected: bool = False,
+    no_backrefs: bool = False,
+    save: bool = False,
+    from_index: bool = False,
+    include_memory: bool = False,
+    include_wiki: bool = False,
+    include_journal: bool = False,
+    include_conversation: bool = False,
+    terms: str | None = None,
+    limit: int = 10,
+    since: str | None = None,
+    ai: str | None = None,
+    source: str | None = None,
+) -> tuple[list[str] | None, str | None]:
+    """Validate required args and assemble the run.py argv for a read-only
+    knowledge-graph query command.
+
+    Returns (argv, None) on success or (None, error_message) when a required
+    argument is missing. Pure (no I/O) so the required-arg matrix and argv
+    construction can be unit-tested without spawning a subprocess.
+    """
+    if command in _KG_NEEDS_ID and not id:
+        role = "source" if command == "path" else "id"
+        return None, f"command {command!r} requires `{role}` (the `id` argument)."
+    if command == "path" and not target:
+        return None, "command 'path' requires both `id` (source) and `target`."
+
+    argv = [PYTHON, str(PROJECT_ROOT / _KG_RUN_PY), command]
+
+    # Positional argument(s)
+    if command == "path":
+        argv += [id, target]
+    elif command in _KG_NEEDS_ID:
+        argv.append(id)
+
+    # Command-specific flags
+    if command == "neighbors":
+        if direction == "in":
+            argv.append("--in")
+        elif direction == "out":
+            argv.append("--out")
+        if edge_type:
+            argv += ["--type", edge_type]
+    if command == "path" and undirected:
+        argv.append("--undirected")
+    if command == "validate":
+        if no_backrefs:
+            argv.append("--no-backrefs")
+        if save:
+            argv.append("--save")
+    if command == "sessions":
+        argv += ["--limit", str(limit)]
+        if terms:
+            argv += ["--terms", terms]
+        if since:
+            argv += ["--since", since]
+        if ai:
+            argv += ["--ai", ai]
+        if source:
+            argv += ["--source", source]
+
+    # Flags shared by every read-only command
+    argv.append("--json")
+    if from_index:
+        argv.append("--from-index")
+    if include_memory:
+        argv += ["--layer", "memory"]
+    if include_wiki:
+        argv += ["--layer", "wiki"]
+    if include_journal:
+        argv += ["--layer", "journal"]
+    if include_conversation:
+        argv += ["--layer", "conversation"]
+    return argv, None
+
+
 # ---------------------------------------------------------------------------
 # Tools — script wrappers
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def run_audit(save: bool = False) -> dict:
+async def run_audit(save: bool = False, with_graph: bool = True) -> dict:
     """Run the structural audit across all project directories.
 
     Checks for: missing CONTEXT.md/LOG.md files, missing required sections,
     broken Contents paths, unlisted subdirectories, dead Obsidian links,
-    AGENTS.md line-count threshold, and code hygiene issues.
+    AGENTS.md line-count threshold, and code hygiene issues. By default it also
+    validates the structural knowledge graph and merges its actionable (WARN/FAIL)
+    findings under a `knowledge-graph` label, so a graph regression surfaces in
+    the same report; this is additive and advisory (the result is unchanged when
+    the graph is clean) and degrades to a single INFO note if the graph cannot
+    be validated.
 
     Args:
         save: Save the report to workflows/audit/last-report.md.
+        with_graph: Also validate the structural knowledge graph (default True).
+            Set False to skip it (passes --no-graph) for a faster structural-only run.
     """
     cmd = [PYTHON, str(PROJECT_ROOT / "workflows/audit/scripts/run.py")]
     if save:
         cmd.append("--save")
+    if not with_graph:
+        cmd.append("--no-graph")
     return await _run_script(cmd)
 
 
@@ -202,6 +327,169 @@ async def run_settings_check(verbose: bool = False) -> dict:
     if verbose:
         cmd.append("--verbose")
     return await _run_script(cmd)
+
+
+# ---------------------------------------------------------------------------
+# Tools — knowledge graph
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def build_knowledge_graph(
+    dry_run: bool = False,
+    include_memory: bool = False,
+    include_wiki: bool = False,
+    include_journal: bool = False,
+    include_conversation: bool = False,
+) -> dict:
+    """Build (or rebuild) the knowledge-graph index from the project tree and
+    write nodes.json / edges.json / meta.json to the gitignored index directory.
+    Logs start/finish to the workflow and root LOG.md.
+
+    The graph turns existing project connections (directory hierarchy, Contents
+    references, Dependencies, and Obsidian [[links]]) into queryable indexes.
+    Run this once per session before relying on query_knowledge_graph with
+    from_index=True; the query tool otherwise rebuilds in memory each call.
+
+    By default only the structural (tracked-content) layer is built. Set
+    include_memory=True to additionally index the gitignored memory/ store (each
+    memory a node, [[links]] between memories as edges). Set include_wiki=True to
+    additionally index each wiki's internal pages as a namespaced sub-graph (each
+    page a node, intra-wiki [[links]] resolved per-wiki). Set include_journal=True
+    to additionally index the gitignored journal entries (each month file a node
+    with its outbound links). Set include_conversation=True to additionally index
+    the gitignored saved conversations (standalone files and doc-set pages as
+    nodes with their outbound links). The flags combine; all four layers are
+    opt-in and purely additive, and their output stays in the gitignored index.
+
+    Note: requires Python 3.10+ for this MCP server. If running 3.9, call the
+    underlying CLI directly: python workflows/knowledge-graph/scripts/run.py build
+
+    Args:
+        dry_run: Report what would be written without modifying files or logs.
+        include_memory: Also index the opt-in memory layer (--layer memory).
+        include_wiki: Also index the opt-in wiki sub-graph layer (--layer wiki).
+        include_journal: Also index the opt-in journal layer (--layer journal).
+        include_conversation: Also index the opt-in conversation layer
+            (--layer conversation).
+    """
+    cmd = [
+        PYTHON,
+        str(PROJECT_ROOT / "workflows/knowledge-graph/scripts/run.py"),
+        "build",
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    if include_memory:
+        cmd += ["--layer", "memory"]
+    if include_wiki:
+        cmd += ["--layer", "wiki"]
+    if include_journal:
+        cmd += ["--layer", "journal"]
+    if include_conversation:
+        cmd += ["--layer", "conversation"]
+    return await _run_script(cmd)
+
+
+@mcp.tool()
+async def query_knowledge_graph(
+    command: Literal[
+        "validate", "node", "neighbors", "impact",
+        "path", "subtree", "stats", "orphans", "broken", "sessions",
+    ],
+    id: str | None = None,
+    target: str | None = None,
+    direction: Literal["in", "out", "both"] = "both",
+    edge_type: str | None = None,
+    undirected: bool = False,
+    no_backrefs: bool = False,
+    save: bool = False,
+    from_index: bool = False,
+    include_memory: bool = False,
+    include_wiki: bool = False,
+    include_journal: bool = False,
+    include_conversation: bool = False,
+    terms: str | None = None,
+    limit: int = 10,
+    since: str | None = None,
+    ai: str | None = None,
+    source: str | None = None,
+) -> dict:
+    """Query and traverse the knowledge graph. A single dispatcher over all ten
+    read-only commands, returning parsed JSON in a `result` field.
+
+    By default the graph is rebuilt in memory on every call (sub-second, never
+    stale). Pass from_index=True to read the saved index after an explicit
+    build_knowledge_graph — faster, but only as fresh as the last build.
+
+    By default only the structural layer is queried. Set include_memory=True,
+    include_wiki=True, include_journal=True, and/or include_conversation=True to
+    rebuild with the opt-in memory, wiki, journal, and/or conversation layers so
+    their nodes are inspectable (all ignored when from_index=True, which returns
+    whatever layers the last build wrote).
+
+    Commands and their required arguments:
+        - stats / orphans / broken / validate — no id needed.
+        - node / neighbors / impact / subtree — require `id`.
+        - path — requires `id` (the source) and `target`.
+        - sessions — requires `id`; returns the session transcripts that mention
+          the node (a read-only, best-effort cross-reference into the
+          session-search index). An absent or unreadable index returns an empty
+          session list, never an error; nothing is persisted.
+
+    Unknown node ids return success=False with the CLI's stderr, which includes
+    closest-match suggestions.
+
+    Note: requires Python 3.10+ for this MCP server. If running 3.9, call the
+    underlying CLI directly: python workflows/knowledge-graph/scripts/run.py <command>
+
+    Args:
+        command: Which read-only graph command to run.
+        id: Node id for node/neighbors/impact/subtree, and the source for path
+            (e.g. "workflows/audit" or "AGENTS.md").
+        target: Target node id for the path command.
+        direction: For neighbors — inbound, outbound, or both edges.
+        edge_type: For neighbors — restrict to one edge type
+            (child|contains|depends_on|references|links_to).
+        undirected: For path — treat every edge as bidirectional.
+        no_backrefs: For validate — skip the dependency back-reference gap check.
+        save: For validate — also write the report to the gitignored
+            last-report.md.
+        from_index: Read the saved index instead of rebuilding in memory.
+        include_memory: Rebuild with the opt-in memory layer (--layer memory).
+        include_wiki: Rebuild with the opt-in wiki sub-graph layer (--layer wiki).
+        include_journal: Rebuild with the opt-in journal layer (--layer journal).
+        include_conversation: Rebuild with the opt-in conversation layer
+            (--layer conversation).
+        terms: For sessions — override the FTS5 search terms (default: derived
+            from the node title).
+        limit: For sessions — maximum sessions to return (default: 10).
+        since: For sessions — only sessions on or after this YYYY-MM-DD date.
+        ai: For sessions — only sessions from this AI (e.g. "Claude Code").
+        source: For sessions — only sessions from this source
+            (claude-code|cowork).
+    """
+    argv, error = build_kg_query_argv(
+        command,
+        id=id,
+        target=target,
+        direction=direction,
+        edge_type=edge_type,
+        undirected=undirected,
+        no_backrefs=no_backrefs,
+        save=save,
+        from_index=from_index,
+        include_memory=include_memory,
+        include_wiki=include_wiki,
+        include_journal=include_journal,
+        include_conversation=include_conversation,
+        terms=terms,
+        limit=limit,
+        since=since,
+        ai=ai,
+        source=source,
+    )
+    if error is not None:
+        return {"success": False, "error": error}
+    return await _run_json_script(argv)
 
 
 # ---------------------------------------------------------------------------

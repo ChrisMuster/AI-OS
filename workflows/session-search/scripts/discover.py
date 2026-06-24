@@ -266,7 +266,7 @@ def main() -> None:
         print('    python workflows/session-search/scripts/archive.py --hook')
         print()
         print('  The hook should pipe session context JSON to stdin.')
-        print('  Refer to PROPOSAL.md for the expected archive record format.')
+        print('  See the session-search workflow docs for the archive record format.')
         return
 
     # Report findings

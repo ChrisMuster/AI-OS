@@ -1,15 +1,15 @@
 # Session Search
 
-**Last modified:** 2026-06-12
+**Last modified:** 2026-06-24
 
 ## Purpose
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
 
 ## Contents
-- PROPOSAL.md — `workflows/session-search/PROPOSAL.md` [[workflows/session-search/PROPOSAL]] — Completed design document; approved and implemented. Kept for historical reference.
 - scripts/ — `workflows/session-search/scripts/` [[workflows/session-search/scripts/CONTEXT]] — Python scripts implementing the archive, indexing, search, discovery, and background scheduling functionality.
 - data/ — `workflows/session-search/data/` [[workflows/session-search/data/CONTEXT]] — Archive JSONL files (source of truth) and SQLite database shards. Gitignored; Google Drive-synced automatically.
 - skills/session-search/ — `workflows/session-search/skills/session-search/` [[workflows/session-search/skills/session-search/CONTEXT]] — Biblio-invocable skill for searching session history.
+- tests/ — `workflows/session-search/tests/` [[workflows/session-search/tests/CONTEXT]] — Standalone unit tests; currently covers `search.py`'s `--json` output mode (the contract consumed by the knowledge-graph `sessions` cross-reference).
 
 ## Inputs
 - Claude Code session transcripts: `%USERPROFILE%\.claude\projects\<sanitized-cwd>\<session-uuid>.jsonl`
@@ -55,17 +55,17 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - **Cowork hooks not supported** — Platform limitation (GitHub Issue #40495). Cowork sessions are captured by the scheduled task (hourly) and `index.py` at startup. Claude Code is recommended over Cowork for reliable real-time archiving.
 - **`transcript_path` stale bug in Claude Code Stop hook** — GitHub Issue #8564. Workaround: `archive.py` ignores the hook-provided path and finds the latest `.jsonl` by modification time instead.
 - **FTS5 is keyword-based** — Not semantic. Conceptual or fuzzy queries will not match unless the exact words appear in the transcript.
+- **`search.py --json` is a consumed contract** — The knowledge-graph `sessions` command (`workflows/knowledge-graph/` [[workflows/knowledge-graph/CONTEXT]]) parses `search.py --json` stdout as a JSON list to cross-reference a graph node against the transcripts that mention it. Changing the result field set, or emitting non-JSON to stdout in `--json` mode, would break that consumer (which degrades to an empty result). The lookup is one-directional (node → sessions) and returns personal session data at query time only.
 - **Scheduled task creation** — The `session-search-archive` scheduled task is created automatically in two places: by first-run initialisation (CLAUDE.md first-run step 6) on a fresh clone, and by regular session startup step 6a on any machine where it is not yet present (e.g. a Google Drive transfer where first-run init does not trigger). The task command must use **forward slashes** in the absolute path so it matches the `settings.json` allowlist pattern `Bash(python *workflows/session-search/scripts/archive.py*)` and runs without a permission prompt.
 - **`data/` contents are personal data** — Archive files and database shards are not listed in this CONTEXT.md. The filesystem is the authoritative source; read `data/archive/<hostname>/` directly when needed.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-06-12.
-- 2026-06-08 — Updated Dependencies and Known Issues to reflect scheduled task check in regular startup (step 6a) as well as first-run init. Fixed personal-data language in Known Issues.
-- 2026-06-08 — Fixed scheduled task permission prompt: SKILL.md updated to use forward-slash path, settings.json allowlist broadened to wildcard pattern covering both relative (hooks) and absolute (scheduled task) invocations.
-- 2026-06-09 — Clarified CLAUDE.md dependency as Claude-specific session maintenance (AI-agnostic transition).
+Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-10 — Added AI identity (ai_identity) field to archive format, FTS5 schema, and search filters. Retroactive identity inferred from source field for pre-existing sessions. Auto-migration detects old schema and triggers rebuild (Phase 4, AI-agnostic transition).
 - 2026-06-11 — Added session hooks for 6 non-Claude AIs (Gemini CLI, Cursor, Windsurf/Devin Desktop, Cline, Codex). Updated Steps and Dependencies to reflect multi-AI hook coverage. AIs without hooks (Copilot, Continue.dev, OpenCode, Aider) rely on background scheduler (Phase 5, Item 2).
 - 2026-06-11 — Added scheduler.py — PID-guarded background scheduler running archive.py --all hourly. Started at AGENTS.md step 6d for non-Claude AIs. Auto-terminates after 4 hours of inactivity. Updated Steps, Contents, and Dependencies (Phase 5, Item 3).
 - 2026-06-11 — Refactored archive.py to use adapter registry for all discovery and parsing (inline parsers removed). Added Codex CLI/Desktop adapter. archive.py now iterates all registered adapters in --all mode. Updated Inputs (Phase 5, Item 4).
 - 2026-06-11 — Added 6 new adapters: Copilot CLI, Gemini CLI, Continue.dev, OpenCode, Cursor, Cline. Total: 9 adapters covering all AIs with local transcript storage. Updated Inputs. Two AIs have no adapter: Aider (git-based only) and Windsurf/Devin Desktop (no documented local storage).
 - 2026-06-11 — Fixed scheduler status detection in sandboxed Windows environments.
+- 2026-06-24 — Added a `--json` output mode to search.py (the contract for the knowledge-graph `sessions` cross-reference) and a new `tests/` directory (test_json_output.py) covering it. search.py is now consumed by the knowledge-graph workflow as a node → sessions lookup; noted in Contents, Outputs, and Known Issues.
+- 2026-06-24 - Removed PROPOSAL.md from Contents: planning/handover/proposal docs are now treated as personal (gitignored, local-only), so PROPOSAL.md was untracked (git rm --cached) and the discover.py pointer to it softened.

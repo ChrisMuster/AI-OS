@@ -21,6 +21,9 @@ workflows/web-research/outputs/*.md
 # Audit report — generated output, local only
 workflows/audit/last-report.md
 
+# Link-check report — generated output (only created with --save), local only
+workflows/link-check/last-report.md
+
 # Weather workflow — saved locations contain personal place data; local only
 workflows/weather/locations.json
 
@@ -64,6 +67,15 @@ workflows/session-search/data/*
 !workflows/session-search/data/.gitkeep
 !workflows/session-search/data/CONTEXT.md
 
+# Knowledge graph — generated node/edge indexes; rebuildable and may include
+# names from gitignored directories. CONTEXT.md is structural and tracked.
+workflows/knowledge-graph/index/*
+!workflows/knowledge-graph/index/.gitkeep
+!workflows/knowledge-graph/index/CONTEXT.md
+# Validation report — generated output (only created with --save); may include
+# names drawn from gitignored directories. Local only.
+workflows/knowledge-graph/last-report.md
+
 # Reddit collector — downloaded posts and state are personal/machine-specific content
 workflows/reddit-collector/collections/
 workflows/reddit-collector/config/feeds.json
@@ -71,7 +83,17 @@ workflows/reddit-collector/state/
 workflows/reddit-collector/Read *.bat
 workflows/reddit-collector/Stop *.bat
 workflows/reddit-collector/.reader_server.pid
-workflows/reddit-collector/HANDOVER.md
+
+# Design-time documents (plans, handovers, proposals, roadmaps) are personal
+# working artifacts — never committed. They routinely capture machine-, session-,
+# and user-specific context. Durable, generic design decisions live in the tracked
+# CONTEXT.md files instead. A genuinely generic forward-looking design doc may be
+# tracked only as a deliberate opt-in (give it a non-matching name or explicitly
+# un-ignore it after confirming it carries no personal data).
+**/*-PLAN.md
+**/HANDOVER.md
+**/PROPOSAL.md
+**/ROADMAP.md
 
 # OS
 .DS_Store

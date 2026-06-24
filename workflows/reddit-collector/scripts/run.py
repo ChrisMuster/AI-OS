@@ -63,7 +63,7 @@ def get_timestamp():
     try:
         result = subprocess.run(
             ["date", '+%Y-%m-%dT%H:%M:%S%:z'],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()

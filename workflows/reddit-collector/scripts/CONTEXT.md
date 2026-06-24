@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-19
+**Last modified:** 2026-06-24
 
 ## Purpose
 Python modules for the Reddit collector workflow. The main entry point is `run.py`; supporting modules handle API communication, state tracking, post formatting, historical backfill, series detection, and the local reader server.
@@ -37,9 +37,7 @@ N/A. This is a container directory for script modules.
 - Distinct series that share a name prefix (e.g. "Deathworld" vs "Deathworld Commando: Reborn") are intentionally not merged — prefix merging would produce false positives.
 
 ## Revision History
-- Earlier history archived to LOG.md on 2026-06-19.
-- 2026-06-18 — Deep series detection rewrite: added 14 title patterns (comma separators, Episode/Book/Volume/Arc keywords, decimal numbering), fixed normalisation (bracket stripping, trailing chapter/subtitle removal, OC tag handling), nav-link series extraction, sort-key fix for numbered vs unnumbered parts. Reindex produced 6,030 series with correct ordering. Fixed `float('inf')` parsing bug in both `series_detector.py` and `build_reader.py`.
-- 2026-06-18 — Added ascending/descending sort toggle to `build_reader.py` series pages. Client-side JavaScript reverses table rows, persists preference in localStorage, and updates the "Start reading" link dynamically.
+Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-19 — Phase 1 series detection fixes: pipe escaping in index tables, pipe-aware reader parsing, trailing pipe/tag suffix stripping, Ralts-style patterns, year-detection guard, outlier validation, prologue/epilogue/interlude recognition, explicit LF newlines. Added `test_normalisation.py` (55 assertions) and `audit_series.py` with baseline comparison.
 - 2026-06-19 — Phase 2.5 normalisation polish: leading article stripping in `_slugify()`, Vol./Volume abbreviation standardisation in `_normalise_series_name()`, old series directory cleanup in `cmd_reindex_series()`. Test suite expanded to 67 assertions.
 - 2026-06-19 — Indexing bug-fix pass: removed unused per-part ref files (single `_index.md` per series); reindex now builds into `series.tmp` and swaps atomically with retry/backoff and rollback (`_robust_replace`/`_robust_rmtree` in `run.py`); failure logging gained exception type, `file:line`, and traceback; nav-link guard plus authoritative one-post-one-series pass drove duplicate post IDs to 0; added unclosed-bracket chapter-leak stripping and spelled-out part-number recognition; made `audit_series.py` pipe-aware. Test suite expanded to 81 assertions.
@@ -48,3 +46,4 @@ N/A. This is a container directory for script modules.
 - 2026-06-19 — Part-ordering fix: new `_order_parts()` helper interleaves unnumbered parts (interludes, epilogues, un-numbered prologues) into the numbered sequence by post date instead of dumping them at the end (numbered parts still order by explicit number). An interlude posted before everything now sorts to the front. Test suite expanded to 101 assertions.
 - 2026-06-19 — Manual curation overrides: `_apply_overrides()` reads `collections/<sub>/_overrides.json` and forces canonical series membership/order where auto-detection cannot, removing claimed/excluded posts from auto series; `build_series_indexes` writes related-works frontmatter and shows Prologue/Epilogue/Interlude in the # column; `build_reader.py` hides excluded posts everywhere and renders related cross-links. First entry: The Soldier Becomes a Cultivator (Connect_Study3875). Test suite expanded to 105 assertions.
 - 2026-06-19 — Reader server-side search: `search_dataset()` + the `/api/search` endpoint in `build_reader.py` query the full in-memory dataset (all series, groups, standalones) so author/title searches reach every standalone, not just the 100 on the current index page. Capped results with true totals; `SEARCH_JS` rewritten to a debounced fetch with stale-response guarding; dead `data-searchable` attributes removed. New `test_reader_search.py` (21 assertions). Fixes the search gap that was blocking Phase 4 manual review.
+- 2026-06-24 - Encoding hardening: pinned `encoding="utf-8"` on the `date` `subprocess.run` call in run.py so it decodes as UTF-8 rather than the Windows cp1252 default. No behavioural change.

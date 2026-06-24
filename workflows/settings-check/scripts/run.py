@@ -292,6 +292,7 @@ def check_absolute_paths() -> tuple[list, int]:
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=15,
         )
         tracked = [f for f in result.stdout.strip().splitlines() if f]

@@ -1,12 +1,12 @@
 # Weather
 
-**Last modified:** 2026-06-03
+**Last modified:** 2026-06-20
 
 ## Purpose
 Fetches current weather conditions and forecasts for any location worldwide, using Open-Meteo (weather data) and Nominatim/OpenStreetMap (geocoding). No API keys required.
 
 ## Contents
-- `scripts/` — Python scripts for the workflow. Entry point: `scripts/run.py` [[weather/scripts/CONTEXT]].
+- scripts/ — `workflows/weather/scripts/` [[workflows/weather/scripts/CONTEXT]] — Python scripts for the workflow. Entry point: `workflows/weather/scripts/run.py`.
 - `locations.json` — Saved named locations (gitignored; created automatically on first use).
 
 ## Inputs
@@ -42,3 +42,4 @@ Fetches current weather conditions and forecasts for any location worldwide, usi
 
 ## Revision History
 - 2026-06-03 — Initial creation.
+- 2026-06-20 — Fixed the Contents entry for the scripts subdirectory to use the project-root-relative path `workflows/weather/scripts/` and the correct `[[workflows/weather/scripts/CONTEXT]]` link (previously a bare `scripts/` token and a malformed `[[weather/scripts/CONTEXT]]` link that the knowledge-graph indexer could not resolve, flagging the directory as uncontained).

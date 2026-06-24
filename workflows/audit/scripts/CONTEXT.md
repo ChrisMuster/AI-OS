@@ -1,16 +1,17 @@
 # Scripts
 
-**Last modified:** 2026-06-12
+**Last modified:** 2026-06-24
 
 ## Purpose
 Contains the audit script for the audit workflow. run.py can walk the full project or validate only named context directories.
 
 ## Contents
-- run.py — `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] — Main audit script. Checks structural compliance, validates Last modified and Revision History consistency, supports targeted context maintenance, and runs full-project code hygiene checks.
+- run.py — `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] — Main audit script. Checks structural compliance, validates Last modified and Revision History consistency, supports targeted context maintenance, runs full-project code hygiene checks, and (in full mode) validates the structural knowledge graph via its `validate --json` CLI, merging the WARN/FAIL findings under a `knowledge-graph` label. The pure `graph_findings` merge helper and the graceful-skip `run_graph_validation` wrapper are unit-tested in `workflows/audit/tests/` [[workflows/audit/tests/CONTEXT]]. A parallel pair, `encoding_findings` and `run_encoding_check`, merges the encoding-guard `--check --json` WARN/FAIL findings under an `encoding` label. The script reconfigures stdout/stderr to UTF-8 at startup so its report never mojibakes when piped on Windows.
 
 ## Inputs
-No required inputs. Optional flag:
+No required inputs. Optional flags:
 - `--save` — Saves the report to `workflows/audit/last-report.md` [[workflows/audit/last-report]].
+- `--no-graph` — Skips the structural knowledge-graph validation in a full audit (no effect in `--context` mode).
 - `--context <directory> [<directory> ...]` — Checks only the named project-relative directories or CONTEXT.md files.
 
 ## Outputs
@@ -31,6 +32,8 @@ python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
 - All `CONTEXT.md` and `LOG.md` files in the project — the script reads these to perform its checks.
 - `workflows/audit/LOG.md` — Appended on every run.
 - `LOG.md` (root) — Appended on every run.
+- `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]] — A full audit shells out to its `validate --json --no-backrefs` command (structural graph only) and merges the WARN/FAIL findings. Subprocess, not import (both workflows ship a `common.py`/`parser.py`, so importing would risk a module-name collision); a missing or broken graph degrades to an INFO note.
+- `workflows/encoding-guard/scripts/run.py` [[workflows/encoding-guard/scripts/CONTEXT]] — A full audit shells out to its `--check --json` command and merges the WARN/FAIL findings under an `encoding` label. Subprocess, not import; a missing or broken checker degrades to an INFO note.
 
 ## Known Issues
 - Wiki-root CONTEXT.md files (LLM Wiki format) are detected by the presence of `## Folder structure` and have their standard section checks skipped. Any wiki that uses a different non-standard format may generate false warnings.
@@ -46,3 +49,5 @@ python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
 - 2026-06-03 — Added dead [[link]] check. Warns on project [[links]] pointing to non-existent .md files; wiki-internal links ignored.
 - 2026-06-08 — Added code hygiene check (check_python_scripts): scans all project .py files for strftime with time but no timezone. Fixed format_report to use isoformat.
 - 2026-06-12 — Added metadata consistency checks and targeted `--context` mode for lightweight post-task validation.
+- 2026-06-23 — Added the knowledge-graph validation hook: the pure `graph_findings` merge helper and the `run_graph_validation` subprocess wrapper (graceful skip on any failure), called from `run_audit()` (full mode only) and gated by the new `--no-graph` flag. Imports `sys`/`json`. Targeted `--context` mode is unaffected.
+- 2026-06-24 - Added the encoding-guard hook: the pure `encoding_findings` merge helper and the `run_encoding_check` subprocess wrapper (graceful skip on any failure), called from `run_audit()` in full mode and merged under an `encoding` label. Reconfigured stdout/stderr to UTF-8 at startup (fixes report mojibake when piped on Windows) and pinned `encoding="utf-8"` on the two `git check-ignore`/graph subprocess calls. Targeted `--context` mode is unaffected.

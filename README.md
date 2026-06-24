@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 15 June 2026
+**Last updated:** 24 June 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -40,6 +40,8 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Settings Check** — Validates that all automated commands (hooks and scheduled tasks) are covered by allowlist entries; catches permission-prompt bugs before they occur. `workflows/settings-check/` `[active]`
 - **Biblio Tools** — MCP server exposing project scripts as typed, callable tools for any AI that supports the Model Context Protocol. `workflows/biblio-tools/` `[active]`
 - **Reddit Collector** — Downloads posts from configured subreddits, saves as Markdown, detects multi-part series and groups them. `workflows/reddit-collector/` `[active]` — For setup, see `workflows/reddit-collector/SETUP.md`.
+- **Knowledge Graph** — Deterministic indexer that parses CONTEXT.md files and approved relationships into a rebuildable node/edge graph, with validation (broken references, orphans, uncontained directories, duplicate titles) and read-only query/traversal (impact analysis, shortest path, subtree, stats). Available via CLI and as the `build_knowledge_graph` / `query_knowledge_graph` MCP tools on the Biblio Tools server. `workflows/knowledge-graph/` `[active]`
+- **Encoding Guard** - Checks the project for encoding problems (invalid UTF-8, mojibake, byte-order marks, and text-mode subprocess calls with no explicit encoding) and repairs corrupted files to clean UTF-8 with LF line endings. Runs standalone via CLI and automatically as part of the full audit. `workflows/encoding-guard/` `[active]`
 
 ## Skills
 

@@ -13,21 +13,39 @@ Checks every directory (excluding the project root and system dirs) for:
 Also runs code hygiene checks across all Python scripts in the project:
   - strftime calls with time components but no timezone offset
 
+A full audit additionally rebuilds and validates the structural knowledge graph
+and merges its actionable (WARN/FAIL) findings under a `knowledge-graph` label,
+so a graph regression surfaces in the same report. This is additive and advisory
+(the exit code is unchanged) and degrades to a single INFO note if the graph
+cannot be validated. Use --no-graph to skip it; targeted --context mode never
+validates the graph.
+
 Usage (run from anywhere):
-    python workflows/audit/scripts/run.py [--save]
+    python workflows/audit/scripts/run.py [--save] [--no-graph]
     python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
 
 Options:
-    --save    Save the full report to workflows/audit/last-report.md
-    --context Check only the named directories and their CONTEXT.md metadata
+    --save     Save the full report to workflows/audit/last-report.md
+    --no-graph Skip the structural knowledge-graph validation (full mode only)
+    --context  Check only the named directories and their CONTEXT.md metadata
 """
 
 import os
 import re
+import sys
+import json
 import argparse
 import subprocess
 from pathlib import Path
 from datetime import datetime
+
+# A UTF-8 stdout/stderr so the report (which uses non-ASCII punctuation) never
+# mojibakes when piped or redirected on Windows (the console default is cp1252).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -37,6 +55,8 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 WORKFLOW_DIR = PROJECT_ROOT / "workflows" / "audit"
 WORKFLOW_LOG = WORKFLOW_DIR / "LOG.md"
 ROOT_LOG     = PROJECT_ROOT / "LOG.md"
+KG_RUN_PY    = PROJECT_ROOT / "workflows" / "knowledge-graph" / "scripts" / "run.py"
+ENCODING_RUN_PY = PROJECT_ROOT / "workflows" / "encoding-guard" / "scripts" / "run.py"
 
 # ---------------------------------------------------------------------------
 # Config
@@ -376,6 +396,137 @@ def check_python_scripts() -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Knowledge-graph validation hook
+# ---------------------------------------------------------------------------
+# The full audit additionally rebuilds and validates the *structural* knowledge
+# graph and merges its actionable findings, so a graph regression (a new broken
+# reference, orphan, or uncontained directory) shows up in the same report the
+# AI already reads at close-out. The hook is additive and advisory — it never
+# changes the audit's exit code, and a missing or broken graph layer degrades to
+# a single INFO note rather than failing the audit.
+
+def graph_findings(payload: dict) -> list[Finding]:
+    """Map a knowledge-graph ``validate --json`` payload to audit Findings.
+
+    Keeps only the actionable severities (WARN and FAIL). INFO findings —
+    forward references and gitignored-artifact references — are dropped so the
+    audit report stays a true to-do list. Each graph finding becomes a Finding
+    labelled ``knowledge-graph`` with the node id carried inside the message,
+    mirroring how the audit already renders its own findings.
+
+    Pure (dict in, tuples out) so it can be unit-tested without a subprocess.
+    """
+    findings: list[Finding] = []
+    for f in payload.get("findings", []):
+        severity = f.get("severity")
+        if severity not in ("WARN", "FAIL"):
+            continue
+        subject = f.get("subject", "")
+        message = f.get("message", "")
+        findings.append((severity, "knowledge-graph", f"`{subject}` — {message}"))
+    return findings
+
+
+def run_graph_validation() -> list[Finding]:
+    """Rebuild and validate the structural knowledge graph, returning its
+    actionable findings as audit Findings.
+
+    Shells out to the knowledge-graph CLI (the contract) rather than importing
+    it — both workflows ship a ``common.py``/``parser.py``, so importing would
+    risk a module-name collision. Validates the *structural* graph only (never
+    passes ``--layer``), so the merged findings carry no personal/gitignored
+    names; ``--no-backrefs`` skips the advisory back-reference check (its gaps
+    are INFO and dropped anyway).
+
+    Degrades gracefully: on any failure — KG run.py missing, a crash, or
+    unparseable output — returns a single INFO note and never raises, so the
+    audit always completes with exit 0.
+    """
+    if not KG_RUN_PY.exists():
+        return [("INFO", "knowledge-graph",
+                 "graph validation skipped — knowledge-graph CLI not found")]
+    try:
+        result = subprocess.run(
+            [sys.executable, str(KG_RUN_PY), "validate", "--json", "--no-backrefs"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(PROJECT_ROOT),
+        )
+    except Exception as exc:
+        return [("INFO", "knowledge-graph",
+                 f"graph validation skipped — could not run validator ({exc})")]
+
+    # validate exits 0 (clean) or 1 (a FAIL finding present) with the JSON
+    # payload on stdout; an internal error exits 1 with an empty stdout and the
+    # reason on stderr. Disambiguate by parsing stdout — a clean parse means we
+    # have findings regardless of the exit code; a parse failure is the skip path.
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        reason = (result.stderr.strip().splitlines()
+                  or [f"validator exited {result.returncode} with no JSON output"])[-1]
+        return [("INFO", "knowledge-graph", f"graph validation skipped — {reason}")]
+    return graph_findings(payload)
+
+
+# ---------------------------------------------------------------------------
+# Encoding-guard hook
+# ---------------------------------------------------------------------------
+# The full audit also runs the encoding-guard check and merges its actionable
+# findings, so an encoding regression (a file that stops being valid UTF-8, new
+# mojibake, or a text-mode subprocess call with no explicit encoding) surfaces in
+# the same close-out report. Like the graph hook it is additive and advisory —
+# it never changes the audit's exit code, and a missing or broken encoding-guard
+# degrades to a single INFO note.
+
+def encoding_findings(payload: dict) -> list[Finding]:
+    """Map an encoding-guard ``--check --json`` payload to audit Findings.
+
+    Keeps only the actionable severities (WARN and FAIL); the encoding-guard
+    message already carries the file path. Pure (dict in, tuples out) so it can
+    be unit-tested without a subprocess.
+    """
+    findings: list[Finding] = []
+    for f in payload.get("findings", []):
+        severity = f.get("severity")
+        if severity not in ("WARN", "FAIL"):
+            continue
+        findings.append((severity, "encoding", f.get("message", "")))
+    return findings
+
+
+def run_encoding_check() -> list[Finding]:
+    """Run the encoding-guard check and return its actionable findings.
+
+    Shells out to the encoding-guard CLI (the contract) rather than importing it,
+    matching the graph hook. Degrades gracefully: on any failure the audit gets a
+    single INFO note and never raises, so the exit code stays advisory.
+    """
+    if not ENCODING_RUN_PY.exists():
+        return [("INFO", "encoding",
+                 "encoding check skipped — encoding-guard CLI not found")]
+    try:
+        result = subprocess.run(
+            [sys.executable, str(ENCODING_RUN_PY), "--check", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(PROJECT_ROOT),
+        )
+    except Exception as exc:
+        return [("INFO", "encoding",
+                 f"encoding check skipped — could not run ({exc})")]
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        reason = (result.stderr.strip().splitlines()
+                  or [f"checker exited {result.returncode} with no JSON output"])[-1]
+        return [("INFO", "encoding", f"encoding check skipped — {reason}")]
+    return encoding_findings(payload)
+
+
+# ---------------------------------------------------------------------------
 # Per-directory audit
 # ---------------------------------------------------------------------------
 
@@ -474,6 +625,7 @@ def _git_check_ignored(parent_rel: str, subdirs: list[str]) -> set[str]:
             ["git", "check-ignore", *candidates.values()],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(PROJECT_ROOT),
         )
         ignored_paths = {line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()}
@@ -534,7 +686,7 @@ def collect_dirs() -> list[Path]:
     return sorted(auditable)
 
 
-def run_audit() -> tuple[list[Finding], int]:
+def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
     dirs = collect_dirs()
     findings: list[Finding] = []
 
@@ -554,6 +706,13 @@ def run_audit() -> tuple[list[Finding], int]:
 
     # Code hygiene checks across all Python scripts
     findings.extend(check_python_scripts())
+
+    # Structural knowledge-graph validation (full mode only; opt out with --no-graph)
+    if with_graph:
+        findings.extend(run_graph_validation())
+
+    # Encoding hygiene check (full mode only; always runs, advisory)
+    findings.extend(run_encoding_check())
 
     return findings, len(dirs)
 
@@ -647,6 +806,12 @@ def main() -> None:
         metavar="DIRECTORY",
         help="Check only the named project-relative directories or CONTEXT.md files",
     )
+    parser.add_argument(
+        "--no-graph",
+        action="store_true",
+        help="Skip the structural knowledge-graph validation in a full audit "
+             "(no effect in --context mode, which never validates the graph)",
+    )
     args = parser.parse_args()
 
     ts = now_ts()
@@ -665,7 +830,7 @@ def main() -> None:
         if args.context:
             findings, dir_count = run_context_audit(args.context)
         else:
-            findings, dir_count = run_audit()
+            findings, dir_count = run_audit(with_graph=not args.no_graph)
     except ValueError as exc:
         note = f"Audit failed: {exc}"
         append_log(WORKFLOW_LOG, ts, "failed", note)

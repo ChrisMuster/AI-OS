@@ -367,6 +367,7 @@ def check_pdf_extraction() -> dict:
                 [str(python), "-c", "import pypdf; print(pypdf.__version__)"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=15,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -401,7 +402,8 @@ def check_project_runtime() -> dict:
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            timeout=30,
+            encoding="utf-8",
+            timeout=90,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {
@@ -467,6 +469,7 @@ def check_mcp_handshake(command: str, args: list[str]) -> dict:
             smoke_cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
             cwd=PROJECT_ROOT,
         )

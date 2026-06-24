@@ -154,7 +154,7 @@ def _run_archive() -> int:
         result = subprocess.run(
             [sys.executable, str(ARCHIVE_SCRIPT), "--all"],
             cwd=str(WORKFLOW_DIR.parent.parent),  # project root
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, encoding="utf-8", timeout=300,
         )
         # Parse the "Done. N message(s) archived." line
         for line in result.stdout.splitlines():

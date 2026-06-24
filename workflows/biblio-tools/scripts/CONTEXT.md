@@ -1,18 +1,18 @@
 # Biblio Tools Scripts
 
-**Last modified:** 2026-06-17
+**Last modified:** 2026-06-24
 
 ## Purpose
 Contains the canonical project-runtime setup and hand-off helpers, MCP server, setup verification, launcher, and protocol smoke-test scripts.
 
 ## Contents
-- server.py — `workflows/biblio-tools/scripts/server.py` [[workflows/biblio-tools/scripts/CONTEXT]] — The FastMCP server defining all tools and their typed parameters.
-- verify.py — `workflows/biblio-tools/scripts/verify.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Setup verification script (doctor pattern). Checks environment configuration and shared PDF ingestion for any supported AI. Standard library only — works on Python 3.9+.
-- launch.py — `workflows/biblio-tools/scripts/launch.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Cross-platform launcher that uses the project `.venv` interpreter when available.
-- mcp_smoke.py — `workflows/biblio-tools/scripts/mcp_smoke.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Connects to a configured stdio server, completes the MCP handshake, confirms the eight-tool inventory, calls a read-only tool, and checks input/path rejection.
-- lifecycle_check.py — `workflows/biblio-tools/scripts/lifecycle_check.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Verifies helper-process lifecycle safeguards: MCP handshake, parent-death cleanup, and reader stale-PID safety.
-- setup.py — `workflows/biblio-tools/scripts/setup.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Creates or repairs the canonical `.venv`, installs the root dependency manifest, and verifies package availability.
-- runtime.py — `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Shared project-runtime helpers: `.venv` discovery, process liveness checking (cross-platform), and runtime hand-off for dependency-bearing entry points.
+- server.py - `workflows/biblio-tools/scripts/server.py` [[workflows/biblio-tools/scripts/CONTEXT]] - The FastMCP server defining all ten tools and their typed parameters, including the knowledge-graph build and query dispatcher assembled by the pure, unit-testable `build_kg_query_argv` helper.
+- verify.py - `workflows/biblio-tools/scripts/verify.py` [[workflows/biblio-tools/scripts/CONTEXT]] - Setup verification script (doctor pattern). Checks environment configuration, shared PDF ingestion, and the configured MCP server for any supported AI. Standard library only; works on Python 3.9+.
+- launch.py - `workflows/biblio-tools/scripts/launch.py` [[workflows/biblio-tools/scripts/CONTEXT]] - Cross-platform launcher that uses the project `.venv` interpreter when available.
+- mcp_smoke.py - `workflows/biblio-tools/scripts/mcp_smoke.py` [[workflows/biblio-tools/scripts/CONTEXT]] - Connects to a configured stdio server, completes the MCP handshake, confirms the ten-tool inventory, calls read-only tools, checks input/path rejection, and verifies knowledge-graph query wiring using saved-index stats when available with a lightweight no-index fallback.
+- lifecycle_check.py - `workflows/biblio-tools/scripts/lifecycle_check.py` [[workflows/biblio-tools/scripts/CONTEXT]] - Verifies helper-process lifecycle safeguards: MCP handshake, parent-death cleanup, and reader stale-PID safety.
+- setup.py - `workflows/biblio-tools/scripts/setup.py` [[workflows/biblio-tools/scripts/CONTEXT]] - Creates or repairs the canonical `.venv`, installs the root dependency manifest, and verifies package availability.
+- runtime.py - `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] - Shared project-runtime helpers: `.venv` discovery, process liveness checking (cross-platform), and runtime hand-off for dependency-bearing entry points.
 
 ## Inputs
 None. The server is started by the AI's MCP client.
@@ -26,20 +26,22 @@ None. The server is started by the AI's MCP client.
 N/A. The server is started automatically by the MCP client, not run manually.
 
 ## Dependencies
-- Python `mcp` package — provides FastMCP for tool definitions and server runtime.
-- Root `requirements.txt` — includes every workflow-specific Python dependency manifest.
-- Project `.venv` — canonical runtime used by all dependency-bearing workflow entry points.
+- Python `mcp` package - Provides FastMCP for tool definitions and server runtime.
+- Root `requirements.txt` - Includes every workflow-specific Python dependency manifest.
+- Project `.venv` - Canonical runtime used by all dependency-bearing workflow entry points.
 - All project scripts listed in `workflows/biblio-tools/CONTEXT.md` [[workflows/biblio-tools/CONTEXT]] Dependencies section.
 
 ## Known Issues
 None.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-06-17.
-- 2026-06-11 — Added cross-platform `.venv` launcher and taught verify.py to detect MCP installed in the local environment.
-- 2026-06-11 — Updated server initialisation for the current MCP SDK and made local-environment verification resilient to launch errors.
-- 2026-06-11 — Added per-AI native config parsing and protocol-level MCP smoke tests; all supported profiles now verify their exact configured launch command.
-- 2026-06-11 — Added a universal check for pypdf and the shared Create Wiki PDF extractor.
-- 2026-06-11 — Added setup.py and runtime.py to provide one shared runtime and command path for every AI client.
-- 2026-06-17 — Orphan prevention: server.py gains stdin watchdog + idle timeout (4h); launch.py gains parent-PID monitoring. Processes now self-terminate when the parent session ends.
-- 2026-06-17 — Hardened orphan-process cleanup: launch.py now owns parent-death cleanup with Windows-safe liveness checks, server.py focuses on stdin/idle shutdown, and lifecycle_check.py verifies the lifecycle safeguards.
+Earlier history archived to LOG.md on 2026-06-24.
+- 2026-06-20 - Phase 3: server.py adds the `build_knowledge_graph` and `query_knowledge_graph` tools (plus the `_run_json_script` helper and the pure `build_kg_query_argv` dispatcher helper), shelling out to the knowledge-graph CLI. mcp_smoke.py verifies the ten-tool inventory and a knowledge-graph query call.
+- 2026-06-22 - Knowledge-graph Phase 5: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_memory` parameter (appending `--layer memory`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
+- 2026-06-23 - Knowledge-graph Phase 6: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_wiki` parameter (appending `--layer wiki`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
+- 2026-06-23 - Knowledge-graph Phase 7: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_journal` parameter (appending `--layer journal`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
+- 2026-06-23 - Knowledge-graph Phase 8: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_conversation` parameter (appending `--layer conversation`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
+- 2026-06-23 - Knowledge-graph audit-hook integration: `run_audit` gains a `with_graph: bool = True` parameter (appending `--no-graph` when false) and an updated docstring noting the full audit now also validates the structural graph and merges its WARN/FAIL findings. No new tools; the ten-tool inventory is unchanged.
+- 2026-06-24 - Knowledge-graph session-search cross-reference: `query_knowledge_graph` gains a tenth command, `sessions` (added to the `Literal`, to `_KG_NEEDS_ID`, and to `build_kg_query_argv`), plus `terms`/`limit`/`since`/`ai`/`source` parameters threaded through to `run.py sessions` (the node-to-transcripts lookup). No new tools; the ten-tool inventory is unchanged.
+- 2026-06-24 - Hardened MCP smoke verification: mcp_smoke.py now calls `query_knowledge_graph stats` with `from_index=True` when a saved graph index exists, falls back to lightweight argument validation when no saved index exists, and verify.py allows up to 90 seconds for the protocol smoke test.
+- 2026-06-24 - Encoding hardening: pinned `encoding="utf-8"` on the text-mode `subprocess` calls in verify.py, setup.py, and lifecycle_check.py so they decode as UTF-8 rather than the Windows cp1252 default. No behavioural change.
