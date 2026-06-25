@@ -10,7 +10,8 @@ Usage:
   python index.py --rebuild    — drop and rebuild the database from scratch
   python index.py --dry-run    — print what would happen without writing
 
-Recommended: add to CLAUDE.md session startup sequence as a maintenance step.
+Recommended: run during universal AGENTS.md session startup and scheduled
+maintenance so all supported AIs keep the search index fresh.
 """
 
 import argparse

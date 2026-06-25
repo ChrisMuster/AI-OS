@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-06-24 (Codex Desktop MCP availability note)
+**Last updated:** 2026-06-25 (MCP-first startup verification)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -51,7 +51,7 @@ These apply to every AI:
 
 ## MCP support (biblio-tools)
 
-The biblio-tools MCP server exposes project scripts as typed tools. It is optional — all scripts work via direct shell commands without MCP. But for AIs that support MCP, it saves tool calls and provides typed parameters.
+The biblio-tools MCP server exposes project scripts as typed tools. For any AI session where biblio-tools is exposed, Biblio must use MCP tools for covered project operations before shell/script equivalents. Direct shell/script commands remain the fallback for products or sessions where biblio-tools is genuinely unavailable, or for local work that has no Biblio Tools equivalent.
 
 | Requirement | Notes |
 |---|---|
@@ -60,6 +60,8 @@ The biblio-tools MCP server exposes project scripts as typed tools. It is option
 | `.mcp.json` | Must exist at project root with biblio-tools registered. Ships with the repository. |
 
 **All 13 supported AIs have MCP support.** Each AI's MCP configuration format differs — see the per-AI sections below for details. For most AIs, the biblio-tools server is pre-configured in a project-scoped config file that ships with the repository. The only exception is GitHub Copilot CLI, which requires a one-time manual config step (see its section below).
+
+At startup, an AI with biblio-tools exposed should verify live tool availability in the current session before using shell/script fallbacks. If expected Biblio Tools are missing, it should report `BIBLIO_TOOLS_NOT_AVAILABLE` first, then diagnose using the product's normal local tools. This live check is deliberately per-AI: tool namespaces differ by product, so Codex's namespace must not be required of Claude, Gemini, Copilot, or any other AI.
 
 **Tools exposed (ten):**
 
@@ -108,9 +110,9 @@ Text-based PDFs work across all supported AIs, regardless of whether the AI prod
 
 ## Background scheduler
 
-A Python background scheduler (`workflows/session-search/scripts/scheduler.py`) runs `archive.py --all` every hour to catch sessions that hooks may have missed. It is started automatically at session startup (AGENTS.md step 6d) for all AIs except Claude (which uses its own MCP scheduled task instead).
+A Python background scheduler (`workflows/session-search/scripts/scheduler.py`) runs `index.py` every hour to catch sessions that hooks may have missed and refresh the SQLite search index. It is started automatically at session startup (AGENTS.md step 6f) for all AIs except Claude (which uses its own MCP scheduled task instead).
 
-The scheduler is PID-file-guarded — only one instance runs at a time. It auto-terminates after 4 hours of inactivity (no new sessions archived). It is especially important for AIs without session hooks (GitHub Copilot, Continue.dev, OpenCode, Aider), where it is the primary archiving mechanism.
+The scheduler is PID-file-guarded - only one instance runs at a time. It auto-terminates after 4 hours of inactivity (no new sessions archived or indexed). It is especially important for AIs without session hooks (GitHub Copilot, Continue.dev, OpenCode, Aider), where it is the primary archive-and-index mechanism.
 
 | Command | Description |
 |---|---|
@@ -324,21 +326,22 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | Item | Detail |
 |---|---|
 | Wrapper file | None needed |
-| AGENTS.md loading | Native — Codex reads `AGENTS.md` by default |
-| MCP support | Yes — pre-configured in `.codex/config.toml`; verify live tool exposure per Codex surface |
+| AGENTS.md loading | Native - Codex reads `AGENTS.md` by default |
+| MCP support | Codex CLI and the Codex IDE extension: yes - pre-configured in `.codex/config.toml`. Codex Desktop: local Biblio MCP tools are not currently exposed in-session. |
 | Config files | `.codex/config.toml` (MCP server registration and hooks) |
-| Session hooks | Pre-configured — Stop event in `.codex/config.toml` |
-| Session transcripts | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — adapter: `codex` |
+| Session hooks | Pre-configured - Stop event in `.codex/config.toml` runs `index.py` so completed sessions are archived and made searchable. |
+| Session transcripts | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` - adapter: `codex` |
 | AI identity | `Codex CLI` or `Codex Desktop` |
 
 **Setup steps:**
 1. Ensure Python 3.9+ is installed.
 2. Run the canonical project setup command.
 3. Install the tool per OpenAI's documentation.
-4. Open the project. Codex reads `AGENTS.md` automatically — no wrapper file needed.
-5. The biblio-tools MCP server is pre-configured in `.codex/config.toml` — no additional MCP setup needed.
+4. Open the project. Codex reads `AGENTS.md` automatically - no wrapper file needed.
+5. For Codex CLI or the Codex IDE extension, the biblio-tools MCP server is pre-configured through the project-local Codex plugin - no additional MCP setup needed.
+6. At the start of each Codex CLI or Codex IDE extension session, Biblio must confirm that the live `mcp__biblio_tools` namespace is exposed by calling `verify_setup` with `ai_name="Codex CLI"` and then `get_timestamp`. If that namespace or either tool is missing, Biblio must report `BIBLIO_TOOLS_NOT_AVAILABLE` before using shell/script fallbacks to diagnose the issue.
 
-**Note:** Codex CLI, Codex Desktop, and the Codex IDE extension share MCP settings. The project-scoped `.codex/config.toml` uses `workflows/biblio-tools/scripts/launch.py` to select the platform-appropriate `.venv` interpreter. Setup verification proves the configured server starts and exposes all ten Biblio Tools over the MCP protocol. A live Codex Desktop session on Windows has shown the protocol check passing while the Biblio Tools were not injected into that session's callable tool list; in that case use direct shell commands for Book Dragon workflows and treat it as a Codex host/tool-palette issue unless `verify.py --ai "Codex Desktop"` fails. You can also manage servers via the `codex mcp` CLI commands where the local Codex executable is available.
+**Note:** Codex exposes local Biblio MCP tools through the project-local `biblio-tools` Codex plugin in `.codex/plugins/`, which registers the plugin-backed MCP server as `biblio_tools` and appears to agents as `mcp__biblio_tools`. The older raw `[mcp_servers.biblio-tools]` entry in `.codex/config.toml` is intentionally disabled because Codex could list that server while not exposing it reliably to agents. Setup verification checks both the standalone protocol smoke test and Codex's enabled `biblio_tools` registry entry. The live session check confirms the final tool palette that the agent can actually call. If a running Codex session still does not show Biblio Tools after install or update, start a fresh session so Codex rebuilds its tool palette.
 
 ### OpenCode
 

@@ -1,0 +1,24 @@
+{
+  "name": "biblio-tools",
+  "version": "0.1.0+codex.20260624182933",
+  "description": "Expose Book Dragon's local Biblio Tools MCP server to Codex.",
+  "author": {
+    "name": "Book Dragon"
+  },
+  "interface": {
+    "displayName": "Biblio Tools",
+    "shortDescription": "Use Book Dragon workflow tools in Codex.",
+    "longDescription": "Biblio Tools exposes the project's local MCP server through Codex's plugin-backed MCP path so agents can call setup verification, audit, link-check, session-search indexing, logging, and knowledge-graph tools.",
+    "developerName": "Book Dragon",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Verify Book Dragon setup",
+      "Run the session-search indexer"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

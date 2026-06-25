@@ -336,13 +336,15 @@ def get_listed_subdir_names(content: str) -> set[str]:
 
 
 def get_immediate_subdirs(directory: Path) -> list[Path]:
-    """Return immediate subdirectories, excluding skip dirs and hidden dirs."""
-    return [
+    """Return immediate subdirectories, excluding skip, hidden, and ignored dirs."""
+    candidates = [
         p for p in sorted(directory.iterdir())
         if p.is_dir()
         and p.name not in SKIP_DIRS
         and not p.name.startswith(".")
     ]
+    ignored = _git_check_ignored(rel(directory), [p.name for p in candidates])
+    return [p for p in candidates if p.name not in ignored]
 
 
 # ---------------------------------------------------------------------------

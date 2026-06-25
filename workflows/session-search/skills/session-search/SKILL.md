@@ -2,7 +2,7 @@
 
 ## What this skill does
 
-Searches the Book Dragon full conversation archive — all Claude Code and Cowork sessions indexed to date — and returns the most relevant snippets for a given query. Enables recall of past decisions, conversations, and context that predates the current session.
+Searches the Book Dragon full conversation archive across all indexed AI sessions and returns the most relevant snippets for a given query. Enables recall of past decisions, conversations, and context that predates the current session.
 
 ## When to invoke
 
@@ -41,17 +41,17 @@ python workflows/session-search/scripts/search.py "journal" --source claude-code
 
 ## What to do with results
 
-Read the returned snippets and respond in plain prose. Describe what was actually discussed, cite the session title and approximate date, and note the source (Claude Code or Cowork). Do not speculate about or infer content that was not present in the returned snippets.
+Read the returned snippets and respond in plain prose. Describe what was actually discussed, cite the session title and approximate date, and note the source/AI identity. Do not speculate about or infer content that was not present in the returned snippets.
 
 If results appear sparse or missing:
 1. Run the indexer to ensure the archive is up to date:
    ```
    python workflows/session-search/scripts/index.py
    ```
-2. Try broader search terms — FTS5 is keyword-based, not semantic.
+2. Try broader search terms - FTS5 is keyword-based, not semantic.
 
 ## Important limitations
 
-- **Keyword search only** — FTS5 does not match synonyms or concepts; only exact words. If a query returns nothing, try alternative wording.
-- **Index freshness** — Sessions are archived via hooks at session end. A session that is still open or was closed without the hook firing may not appear yet. Running `index.py` manually catches anything missed.
-- **Cowork lag** — Cowork sessions are captured by the hourly scheduled task, not in real time. Recent Cowork sessions may not appear until the next scheduled run.
+- **Keyword search only** - FTS5 does not match synonyms or concepts; only exact words. If a query returns nothing, try alternative wording.
+- **Index freshness** - `index.py` runs at startup for every AI that follows AGENTS.md and hourly via scheduled maintenance. A session that is still open or was closed without any hook/scheduler run may not appear yet. Running `index.py` manually catches anything missed.
+- **Cowork lag** - Cowork sessions are captured by scheduled maintenance, not in real time. Recent Cowork sessions may not appear until the next scheduled run or startup index pass.

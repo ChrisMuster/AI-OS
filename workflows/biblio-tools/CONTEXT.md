@@ -1,6 +1,6 @@
 # Biblio Tools
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-06-25
 
 ## Purpose
 Provides Book Dragon's canonical Python runtime, setup verification, cross-platform workflow launcher, and MCP (Model Context Protocol) server. The same project commands work for every AI; MCP-capable clients additionally receive typed tools, while other clients run the underlying scripts directly.
@@ -33,6 +33,7 @@ Each tool returns structured output: success status, stdout, stderr, and return 
 - `workflows/settings-check/scripts/run.py` [[workflows/settings-check/scripts/CONTEXT]] - Called by the `run_settings_check` tool.
 - `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]] - Called by the `build_knowledge_graph` and `query_knowledge_graph` tools.
 - `AGENT-SETUP.md` [[AGENT-SETUP]] (root) - Human-readable setup documentation; verify.py points users to it for remediation.
+- `.codex/plugins/plugins/biblio-tools/CONTEXT.md` [[.codex/plugins/plugins/biblio-tools/CONTEXT]] - Codex plugin wrapper used to expose Biblio Tools through Codex's plugin-backed MCP path.
 - Python `mcp` package (>= 1.0.0, requires Python 3.10+) - The MCP SDK providing FastMCP. Note: verify.py itself is standard-library only and works on Python 3.9+.
 - `workflows/create-wiki/scripts/extract_pdf.py` [[workflows/create-wiki/scripts/CONTEXT]] - verify.py confirms that shared PDF ingestion is installed for every AI.
 
@@ -41,15 +42,16 @@ Each tool returns structured output: success status, stdout, stderr, and return 
 - Adding a new project script requires adding one tool to server.py and one entry to AGENT-SETUP.md.
 - Adding a new AI requires updating the `AI_REQUIREMENTS` mapping in verify.py with its native MCP config format and updating the per-AI section in `AGENT-SETUP.md` [[AGENT-SETUP]].
 - A successful standalone handshake proves that the checked-in config launches the server correctly. The smoke test checks knowledge-graph tool wiring without forcing a full graph rebuild during setup; run the knowledge-graph workflow's own tests and CLI checks when changing graph behaviour. Each client still needs one live confirmation that it discovers its project-scoped config.
-- Codex Desktop sessions on Windows have shown the server passing standalone MCP verification while the Biblio Tools themselves were not exposed in the session's callable tool list. This is under investigation (tracked in the backlog); until resolved, use direct shell commands for Book Dragon workflows in affected Codex Desktop sessions.
+- Codex raw `mcp_servers` registration can appear in `codex mcp list` while failing to expose tools to agents. Codex now uses the project-local `biblio_tools` plugin-backed MCP server; existing sessions must be restarted before that tool palette is available.
 
 ## Revision History
 Earlier history archived to LOG.md on 2026-06-17.
-- 2026-06-11 - Added universal setup verification for the shared Create Wiki PDF extractor.
-- 2026-06-11 - Added one canonical setup command and root dependency manifest for all AI clients and dependency-bearing workflows.
-- 2026-06-17 - Orphan prevention: server.py and launch.py now detect parent session death and self-terminate. Fixes accumulation of stale MCP server processes across sessions.
 - 2026-06-17 - Hardened orphan-process lifecycle handling: launch.py now owns parent-death cleanup with Windows-safe liveness checks, server.py focuses on stdin/idle shutdown, and lifecycle_check.py verifies cleanup behaviour.
 - 2026-06-20 - Phase 3: exposed the knowledge graph as two MCP tools (`build_knowledge_graph`, `query_knowledge_graph`), which shell out to `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]]. Added a `tests/` directory with a unit test for the dispatcher's argv helper; extended mcp_smoke.py to the ten-tool inventory.
 - 2026-06-21 - Knowledge-graph Phase 4: added tests/test_run_json_script.py covering the `_run_json_script` helper's failure paths (no change to server.py).
 - 2026-06-24 - Hardened setup verification: mcp_smoke.py now uses the saved knowledge-graph index for fast stats when available and falls back to a lightweight argument-validation check when no index exists; verify.py's smoke timeout increased to 90 seconds as a safety margin.
 - 2026-06-24 - Investigated Codex Desktop MCP availability (config and protocol checks pass, but the session does not inject project-local tools into the callable palette). The working investigation notes are kept local-only (gitignored) and are not listed in Contents; the open issue is tracked in the backlog.
+- 2026-06-24 - Corrected the Codex Desktop setup verifier so its MCP handshake timeout now matches the documented 90-second smoke-test allowance.
+- 2026-06-24 - Raised the verifier's project-venv MCP import probe timeout to prevent slow Windows process startup from producing a false MCP package warning.
+- 2026-06-24 - Fixed Codex project-config path handling: `.codex/config.toml` now launches Biblio Tools from the project root, and verify.py validates the same configured cwd.
+- 2026-06-25 - Added the Codex plugin-backed Biblio Tools route and updated setup verification to check the enabled `biblio_tools` registry entry.

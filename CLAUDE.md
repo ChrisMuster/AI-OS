@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-**Last updated:** 2026-06-11
+**Last updated:** 2026-06-25
 
 ## CRITICAL — Rule compliance
 
@@ -72,27 +72,25 @@ If a rule-compliant alternative exists, switch to it silently. Only escalate to 
 
 When writing log entries (per the LOG.md rules in AGENTS.md), always use the Edit tool to append. Never use Bash (`cat >>` or similar) — the Edit tool is always permitted without a permission prompt and is the correct tool for file modification in Claude Code.
 
-## Background scheduler exemption (step 6d)
+## Background scheduler exemption (step 6f)
 
-Claude is exempt from the background scheduler (AGENTS.md step 6d). Claude uses its own MCP scheduled task (`session-search-archive`) for hourly archiving, which is more reliable and does not require a background process. Skip step 6d entirely.
+Claude is exempt from the background scheduler (AGENTS.md step 6f). Claude uses its own MCP scheduled task (`session-search-archive`) for hourly session-search maintenance, which is more reliable and does not require a background process. Skip step 6f entirely.
 
-## Session maintenance (step 6c)
+## Session maintenance (step 6e)
 
-For step 6c of session startup (AI-specific maintenance), perform the following silently if `workflows/session-search/scripts/index.py` exists:
+For step 6e of session startup (AI-specific maintenance), perform the following silently if `workflows/session-search/scripts/index.py` exists:
 
-a. **Scheduled task check** — call `list_scheduled_tasks` and check whether `session-search-archive` exists on this machine. If it does not, create it with the same parameters as first-run step 6b (using forward slashes in the path). Tell the user in a single sentence that it has been set up.
+a. **Scheduled task check** — call `list_scheduled_tasks` and check whether `session-search-archive` exists on this machine. If it does not, create it with the same parameters as first-run step 6b (using forward slashes in the path). Tell the user in a single sentence that it has been set up. If it exists but still runs `archive.py`, update or recreate it so it runs `index.py` instead.
 
-b. **Index update** — run `python workflows/session-search/scripts/index.py` to archive any sessions completed since the last run and refresh the search index. Do not report results unless the script exits with a non-zero exit code or raises an exception. Suppress all other output.
+b. **Settings coverage check** — run `python workflows/settings-check/scripts/run.py` silently. Do not report results unless there are FAIL findings. If failures are found, tell the user in a single sentence after greeting them: "Settings coverage check found uncovered commands — [list]. These will prompt for permission when they fire."
 
-c. **Settings coverage check** — run `python workflows/settings-check/scripts/run.py` silently. Do not report results unless there are FAIL findings. If failures are found, tell the user in a single sentence after greeting them: "Settings coverage check found uncovered commands — [list]. These will prompt for permission when they fire."
+## First-run setup (step 6)
 
-## First-run setup (step 6c)
-
-For step 6c of first-run initialisation (AI-specific first-run setup), set up the session-search scheduled task if `workflows/session-search/` exists:
+For step 6 of first-run initialisation (AI-specific first-run setup), set up the session-search scheduled task if `workflows/session-search/` exists:
 
 a. Call `list_scheduled_tasks` to check whether a task with id `session-search-archive` already exists on this machine.
 
-b. If it does not exist, call `create_scheduled_task` with taskId `session-search-archive`, description `Hourly session archive — captures any new or updated Book Dragon sessions`, cronExpression `0 * * * *`, notifyOnCompletion `false`, and a prompt that runs `python <absolute-path-to-project>/workflows/session-search/scripts/archive.py --all` (substituting the real absolute path to the project root on this machine, using **forward slashes** — e.g. `C:/Users/Name/Desktop/AI-Work/AI-OS` — so that the path matches the `settings.json` allowlist pattern `Bash(python *workflows/session-search/scripts/archive.py*)`). Quote the path only if it contains spaces. This script is idempotent and safe to re-run; it should not notify on normal completion.
+b. If it does not exist, call `create_scheduled_task` with taskId `session-search-archive`, description `Hourly session-search index update — captures and indexes any new or updated Book Dragon sessions`, cronExpression `0 * * * *`, notifyOnCompletion `false`, and a prompt that runs `python <absolute-path-to-project>/workflows/session-search/scripts/index.py` (substituting the real absolute path to the project root on this machine, using **forward slashes** — e.g. `C:/Users/Name/Desktop/AI-Work/AI-OS` — so that the path matches the `settings.json` allowlist pattern `Bash(python *workflows/session-search/scripts/index.py*)`). Quote the path only if it contains spaces. This script is idempotent and safe to re-run; it should not notify on normal completion.
 
 c. Note briefly to the user that the session search scheduled task has been created. If the task already exists, skip this step silently.
 

@@ -17,6 +17,8 @@ Works on Python 3.9+ (standard library only — no MCP dependency).
 import argparse
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -228,11 +230,12 @@ def _parse_aider_command(path: Path) -> tuple[str, list[str]]:
     return command, args
 
 
-def load_mcp_command(config_kind: str, config_path: str) -> tuple[str, list[str]]:
+def load_mcp_command(config_kind: str, config_path: str) -> tuple[str, list[str], Path]:
     """Read the selected AI's native config and return its stdio command."""
     path = PROJECT_ROOT / config_path
     if not path.exists():
         raise FileNotFoundError(f"{config_path} not found")
+    cwd = PROJECT_ROOT
 
     if config_kind in {"mcp-json", "gemini-json"}:
         server = _load_json(path).get("mcpServers", {}).get("biblio-tools")
@@ -261,8 +264,14 @@ def load_mcp_command(config_kind: str, config_path: str) -> tuple[str, list[str]
             raise ValueError("biblio-tools is not registered under mcp_servers")
         command = server.get("command")
         args = server.get("args", [])
+        configured_cwd = server.get("cwd")
+        if configured_cwd is not None:
+            if not isinstance(configured_cwd, str) or not configured_cwd:
+                raise ValueError("MCP cwd must be a non-empty string")
+            cwd_path = Path(configured_cwd)
+            cwd = cwd_path if cwd_path.is_absolute() else (path.parent / cwd_path).resolve()
     elif config_kind == "aider-yaml":
-        return _parse_aider_command(path)
+        command, args = _parse_aider_command(path)
     else:
         raise ValueError(f"Unsupported MCP config kind: {config_kind}")
 
@@ -270,12 +279,12 @@ def load_mcp_command(config_kind: str, config_path: str) -> tuple[str, list[str]
         raise ValueError("MCP command must be a non-empty string")
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
         raise ValueError("MCP args must be a list of strings")
-    return command, args
+    return command, args, cwd
 
 
 def check_mcp_config(
     config_kind: str, config_path: str
-) -> tuple[dict, tuple[str, list[str]] | None]:
+) -> tuple[dict, tuple[str, list[str], Path] | None]:
     """Validate the selected AI's native MCP configuration."""
     try:
         command = load_mcp_command(config_kind, config_path)
@@ -294,10 +303,98 @@ def check_mcp_config(
         {
             "check": f"MCP config ({config_path})",
             "status": "PASS",
-            "detail": f"biblio-tools registered: {rendered}",
+            "detail": f"biblio-tools registered: {rendered}; cwd={command[2]}",
         },
         command,
     )
+
+
+def _codex_cli_env() -> tuple[dict[str, str], str]:
+    """Return an environment that points Codex CLI at the likely user config."""
+    env = os.environ.copy()
+    configured = env.get("CODEX_HOME")
+    if configured:
+        return env, configured
+
+    candidates: list[Path] = []
+    if os.name == "nt":
+        userprofile = env.get("USERPROFILE")
+        if userprofile:
+            candidates.append(Path(userprofile) / ".codex")
+
+    home = env.get("HOME")
+    if home:
+        candidates.append(Path(home) / ".codex")
+
+    try:
+        candidates.append(Path.home() / ".codex")
+    except RuntimeError:
+        pass
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if (candidate / "config.toml").exists():
+            env["CODEX_HOME"] = str(candidate)
+            return env, str(candidate)
+
+    fallback = str(candidates[0]) if candidates else ""
+    if fallback:
+        env["CODEX_HOME"] = fallback
+    return env, fallback or "(not set)"
+
+
+def check_codex_mcp_registry() -> dict:
+    """Ask the Codex CLI registry whether the plugin-backed Biblio server is enabled."""
+    if shutil.which("codex") is None:
+        return {
+            "check": "Codex MCP registry",
+            "status": "WARN",
+            "detail": "codex executable not found on PATH; native registry check skipped.",
+        }
+
+    env, codex_home = _codex_cli_env()
+    try:
+        result = subprocess.run(
+            ["codex", "mcp", "get", "biblio_tools"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "check": "Codex MCP registry",
+            "status": "FAIL",
+            "detail": f"codex mcp get biblio_tools failed from CODEX_HOME={codex_home}: {exc}",
+        }
+
+    output = "\n".join(part.strip() for part in [result.stdout, result.stderr] if part.strip())
+    if result.returncode != 0:
+        detail = output or f"codex exited with {result.returncode}"
+        return {
+            "check": "Codex MCP registry",
+            "status": "FAIL",
+            "detail": f"CODEX_HOME={codex_home}; {detail}",
+        }
+
+    if "biblio_tools" not in result.stdout or "enabled: true" not in result.stdout:
+        return {
+            "check": "Codex MCP registry",
+            "status": "FAIL",
+            "detail": f"CODEX_HOME={codex_home}; biblio_tools was not reported as enabled.",
+        }
+
+    return {
+        "check": "Codex MCP registry",
+        "status": "PASS",
+        "detail": f"Codex CLI reports plugin-backed biblio_tools enabled from CODEX_HOME={codex_home}.",
+    }
 
 
 def check_mcp_package() -> dict:
@@ -324,7 +421,7 @@ def check_mcp_package() -> dict:
             result = subprocess.run(
                 [str(python), "-c", "import mcp"],
                 capture_output=True,
-                timeout=15,
+                timeout=45,
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
@@ -443,7 +540,7 @@ def _mcp_python() -> Path | None:
     return None
 
 
-def check_mcp_handshake(command: str, args: list[str]) -> dict:
+def check_mcp_handshake(command: str, args: list[str], cwd: Path) -> dict:
     """Prove the configured server starts, speaks MCP, and exposes all tools."""
     python = _mcp_python()
     if python is None:
@@ -459,7 +556,7 @@ def check_mcp_handshake(command: str, args: list[str]) -> dict:
         "--command",
         command,
         "--cwd",
-        str(PROJECT_ROOT),
+        str(cwd),
     ]
     for arg in args:
         smoke_cmd.extend(["--arg", arg])
@@ -470,7 +567,7 @@ def check_mcp_handshake(command: str, args: list[str]) -> dict:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=30,
+            timeout=90,
             cwd=PROJECT_ROOT,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -562,6 +659,8 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
         if reqs["mcp_support"]:
             checks.append(f"MCP config ({reqs['mcp_config'][1]})")
             checks.append("MCP package")
+            if ai_name in {"Codex CLI", "Codex Desktop"}:
+                checks.append("Codex MCP registry")
             checks.append("MCP handshake and tools")
         return [{"check": c, "status": "DRY RUN", "detail": "Would check."} for c in checks]
 
@@ -586,6 +685,8 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
         results.append(check_mcp_package())
         config_result, command = check_mcp_config(*reqs["mcp_config"])
         results.append(config_result)
+        if ai_name in {"Codex CLI", "Codex Desktop"}:
+            results.append(check_codex_mcp_registry())
         if command is not None:
             results.append(check_mcp_handshake(*command))
 

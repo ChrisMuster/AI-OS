@@ -1,12 +1,12 @@
 # Scripts
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-06-25
 
 ## Purpose
 Contains the audit script for the audit workflow. run.py can walk the full project or validate only named context directories.
 
 ## Contents
-- run.py — `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] — Main audit script. Checks structural compliance, validates Last modified and Revision History consistency, supports targeted context maintenance, runs full-project code hygiene checks, and (in full mode) validates the structural knowledge graph via its `validate --json` CLI, merging the WARN/FAIL findings under a `knowledge-graph` label. The pure `graph_findings` merge helper and the graceful-skip `run_graph_validation` wrapper are unit-tested in `workflows/audit/tests/` [[workflows/audit/tests/CONTEXT]]. A parallel pair, `encoding_findings` and `run_encoding_check`, merges the encoding-guard `--check --json` WARN/FAIL findings under an `encoding` label. The script reconfigures stdout/stderr to UTF-8 at startup so its report never mojibakes when piped on Windows.
+- run.py — `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] — Main audit script. Checks structural compliance, validates Last modified and Revision History consistency, supports targeted context maintenance, ignores gitignored immediate child directories when checking for unlisted subdirectories, runs full-project code hygiene checks, and (in full mode) validates the structural knowledge graph via its `validate --json` CLI, merging the WARN/FAIL findings under a `knowledge-graph` label. The pure `graph_findings` merge helper and the graceful-skip `run_graph_validation` wrapper are unit-tested in `workflows/audit/tests/` [[workflows/audit/tests/CONTEXT]]. A parallel pair, `encoding_findings` and `run_encoding_check`, merges the encoding-guard `--check --json` WARN/FAIL findings under an `encoding` label. The script reconfigures stdout/stderr to UTF-8 at startup so its report never mojibakes when piped on Windows.
 
 ## Inputs
 No required inputs. Optional flags:
@@ -42,6 +42,7 @@ python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
 - Directories named `raw/` or `data/` are treated as source-data boundaries: the directory itself is checked, but its contents are not walked. This prevents false failures from runtime-generated or imported data files (e.g. `session-search/data/archive/`).
 - Stale-phrase and parent-relative path checks strip fenced code blocks and the Revision History section before scanning. Phrases inside inline code (single backticks) are still matched — this may produce occasional false positives if prose examples contain the target patterns. See STALE_PHRASES in run.py for the exact patterns checked.
 - Metadata consistency is date-based. It catches mismatches between Last modified and visible Revision History metadata, but cannot prove that unchanged metadata accompanied an uncommitted prose-only edit; the immediate-maintenance rule and targeted command cover that workflow boundary.
+- The unlisted-subdirectory check depends on git for ignored child-directory suppression. If git is unavailable, ignored child directories may be reported until the audit is re-run in a normal repository checkout.
 
 ## Revision History
 - 2026-05-27 — Initial creation.
@@ -51,3 +52,4 @@ python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
 - 2026-06-12 — Added metadata consistency checks and targeted `--context` mode for lightweight post-task validation.
 - 2026-06-23 — Added the knowledge-graph validation hook: the pure `graph_findings` merge helper and the `run_graph_validation` subprocess wrapper (graceful skip on any failure), called from `run_audit()` (full mode only) and gated by the new `--no-graph` flag. Imports `sys`/`json`. Targeted `--context` mode is unaffected.
 - 2026-06-24 - Added the encoding-guard hook: the pure `encoding_findings` merge helper and the `run_encoding_check` subprocess wrapper (graceful skip on any failure), called from `run_audit()` in full mode and merged under an `encoding` label. Reconfigured stdout/stderr to UTF-8 at startup (fixes report mojibake when piped on Windows) and pinned `encoding="utf-8"` on the two `git check-ignore`/graph subprocess calls. Targeted `--context` mode is unaffected.
+- 2026-06-25 - Updated `get_immediate_subdirs()` so unlisted-subdirectory warnings ignore immediate child directories that are gitignored, matching the gitignored-content propagation rule.

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "biblio_tools": {
+      "title": "Biblio Tools",
+      "description": "Book Dragon's local workflow MCP tools.",
+      "cwd": ".",
+      "command": "python",
+      "args": [
+        "./mcp/launch_biblio.py"
+      ],
+      "startup_timeout_sec": 90,
+      "tool_timeout_sec": 300
+    }
+  }
+}

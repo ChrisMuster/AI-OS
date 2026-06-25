@@ -4,14 +4,20 @@
 # See AGENT-SETUP.md for full setup instructions.
 
 [mcp_servers.biblio-tools]
+# Disabled for Codex agent sessions. Biblio Tools is exposed through the
+# project-local Codex plugin at .codex/plugins/ so Codex uses the same
+# plugin-backed MCP path as other visible MCP tools.
+enabled = false
 command = "python"
 args = [
     "workflows/biblio-tools/scripts/launch.py",
     "workflows/biblio-tools/scripts/server.py",
 ]
-cwd = "."
+cwd = ".."
+startup_timeout_sec = 90
+tool_timeout_sec = 300
 
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
 type = "command"
-command = "python workflows/session-search/scripts/archive.py --all"
+command = "python workflows/session-search/scripts/index.py"

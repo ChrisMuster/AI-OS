@@ -1,6 +1,6 @@
 # Biblio Tools Scripts
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-06-25
 
 ## Purpose
 Contains the canonical project-runtime setup and hand-off helpers, MCP server, setup verification, launcher, and protocol smoke-test scripts.
@@ -36,12 +36,12 @@ None.
 
 ## Revision History
 Earlier history archived to LOG.md on 2026-06-24.
-- 2026-06-20 - Phase 3: server.py adds the `build_knowledge_graph` and `query_knowledge_graph` tools (plus the `_run_json_script` helper and the pure `build_kg_query_argv` dispatcher helper), shelling out to the knowledge-graph CLI. mcp_smoke.py verifies the ten-tool inventory and a knowledge-graph query call.
-- 2026-06-22 - Knowledge-graph Phase 5: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_memory` parameter (appending `--layer memory`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
-- 2026-06-23 - Knowledge-graph Phase 6: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_wiki` parameter (appending `--layer wiki`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
-- 2026-06-23 - Knowledge-graph Phase 7: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_journal` parameter (appending `--layer journal`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
 - 2026-06-23 - Knowledge-graph Phase 8: `build_knowledge_graph` and `query_knowledge_graph` gain an `include_conversation` parameter (appending `--layer conversation`); `build_kg_query_argv` threads it through. No new tools; the ten-tool inventory is unchanged.
 - 2026-06-23 - Knowledge-graph audit-hook integration: `run_audit` gains a `with_graph: bool = True` parameter (appending `--no-graph` when false) and an updated docstring noting the full audit now also validates the structural graph and merges its WARN/FAIL findings. No new tools; the ten-tool inventory is unchanged.
 - 2026-06-24 - Knowledge-graph session-search cross-reference: `query_knowledge_graph` gains a tenth command, `sessions` (added to the `Literal`, to `_KG_NEEDS_ID`, and to `build_kg_query_argv`), plus `terms`/`limit`/`since`/`ai`/`source` parameters threaded through to `run.py sessions` (the node-to-transcripts lookup). No new tools; the ten-tool inventory is unchanged.
 - 2026-06-24 - Hardened MCP smoke verification: mcp_smoke.py now calls `query_knowledge_graph stats` with `from_index=True` when a saved graph index exists, falls back to lightweight argument validation when no saved index exists, and verify.py allows up to 90 seconds for the protocol smoke test.
 - 2026-06-24 - Encoding hardening: pinned `encoding="utf-8"` on the text-mode `subprocess` calls in verify.py, setup.py, and lifecycle_check.py so they decode as UTF-8 rather than the Windows cp1252 default. No behavioural change.
+- 2026-06-24 - Corrected verify.py's MCP handshake smoke-test timeout to the documented 90 seconds so Codex Desktop setup verification matches the direct protocol smoke behaviour.
+- 2026-06-24 - Raised verify.py's project-venv MCP import probe timeout to avoid false warnings on slow Windows process startup.
+- 2026-06-24 - verify.py now honours Codex MCP `cwd` resolution from `.codex/config.toml`, so setup verification matches Codex's actual project-config launch semantics.
+- 2026-06-25 - verify.py now checks Codex's enabled plugin-backed `biblio_tools` MCP registry entry instead of treating the disabled raw `biblio-tools` entry as the live Codex route.

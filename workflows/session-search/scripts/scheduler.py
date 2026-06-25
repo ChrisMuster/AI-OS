@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-scheduler.py — Background session archive scheduler.
+scheduler.py — Background session-search index scheduler.
 
-Runs archive.py --all every hour in a loop. PID-file-guarded to prevent
+Runs index.py every hour in a loop. index.py calls archive.py --all first,
+then refreshes the SQLite FTS5 search index. PID-file-guarded to prevent
 duplicate instances. Auto-terminates after a configurable inactivity period
-(default: 4 hours) with no new sessions archived.
+(default: 4 hours) with no new sessions archived or indexed.
 
 Started at session startup by non-Claude AIs (Claude uses its own MCP
 scheduled task). Safe to run manually — exits immediately if another
@@ -31,7 +32,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 WORKFLOW_DIR = SCRIPT_DIR.parent
 DATA_DIR = WORKFLOW_DIR / "data"
 PID_FILE = DATA_DIR / "scheduler.pid"
-ARCHIVE_SCRIPT = SCRIPT_DIR / "archive.py"
+INDEX_SCRIPT = SCRIPT_DIR / "index.py"
 
 DEFAULT_INTERVAL = 3600  # 1 hour
 DEFAULT_TIMEOUT = 14400  # 4 hours
@@ -148,24 +149,28 @@ def stop() -> None:
     print(f"Scheduler stopped (PID {pid}).")
 
 
-def _run_archive() -> int:
-    """Run archive.py --all and return the count of messages archived."""
+def _run_index() -> int:
+    """Run index.py and return the count of messages archived or indexed."""
     try:
         result = subprocess.run(
-            [sys.executable, str(ARCHIVE_SCRIPT), "--all"],
+            [sys.executable, str(INDEX_SCRIPT)],
             cwd=str(WORKFLOW_DIR.parent.parent),  # project root
             capture_output=True, text=True, encoding="utf-8", timeout=300,
         )
-        # Parse the "Done. N message(s) archived." line
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            _log(f"index.py failed: {detail}")
+            return 0
+        total = 0
         for line in result.stdout.splitlines():
-            if "message(s) archived" in line:
+            if "message(s) archived" in line or "message(s) indexed" in line:
                 try:
-                    return int(line.split()[1])
+                    total += int(line.split()[1])
                 except (IndexError, ValueError):
                     pass
-        return 0
+        return total
     except Exception as e:
-        _log(f"archive.py failed: {e}")
+        _log(f"index.py failed: {e}")
         return 0
 
 
@@ -192,14 +197,14 @@ def run(interval: int = DEFAULT_INTERVAL, timeout: int = DEFAULT_TIMEOUT) -> Non
 
     try:
         while True:
-            count = _run_archive()
+            count = _run_index()
             if count > 0:
-                _log(f"Archived {count} message(s).")
+                _log(f"Archived/indexed {count} message(s).")
                 last_activity = time.monotonic()
             else:
                 idle_hours = (time.monotonic() - last_activity) / 3600
                 if (time.monotonic() - last_activity) >= timeout:
-                    _log(f"No new sessions for {idle_hours:.1f} hours. Auto-terminating.")
+                    _log(f"No new session updates for {idle_hours:.1f} hours. Auto-terminating.")
                     break
 
             time.sleep(interval)

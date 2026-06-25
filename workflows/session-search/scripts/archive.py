@@ -103,10 +103,20 @@ def get_session_title(session_id: str, source: str) -> str:
 
 _AI_IDENTITY_RE = re.compile(r'^AI_IDENTITY:\s*(.+)$', re.MULTILINE)
 
+_AI_IDENTITY_ALIASES: dict = {
+    'Codex CLI extension in Visual Studio Code': 'Codex CLI',
+}
+
 _SOURCE_TO_AI: dict = {
     'claude-code': 'Claude Code',
     'cowork': 'Claude Cowork',
 }
+
+
+def canonical_ai_identity(identity: str) -> str:
+    """Return the supported AI identity label for known aliases."""
+    identity = identity.strip()
+    return _AI_IDENTITY_ALIASES.get(identity, identity)
 
 
 def extract_ai_identity(records: list) -> str:
@@ -120,11 +130,11 @@ def extract_ai_identity(records: list) -> str:
         content = record.get('content', '')
         match = _AI_IDENTITY_RE.search(content)
         if match:
-            return match.group(1).strip()
+            return canonical_ai_identity(match.group(1))
 
     if records:
         source = records[0].get('source', '')
-        return _SOURCE_TO_AI.get(source, '')
+        return canonical_ai_identity(_SOURCE_TO_AI.get(source, ''))
 
     return ''
 
