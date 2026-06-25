@@ -1,0 +1,20 @@
+# Personal-data-guard denylist (EXAMPLE)
+#
+# Copy this file to denylist.txt (same directory) and add your own personal
+# nouns - one per line - that should be caught in committable files but are not
+# already covered by the automatic detectors (emails, home paths, and the name
+# read from USER.md). Typical entries: family members' names, your village or
+# street name, a company or client name, a recurring personal handle.
+#
+# Matches are WARN (advisory), not FAIL, because a personal noun can also be a
+# legitimate word in technical prose. Matching is whole-word and
+# case-insensitive. Blank lines and everything after a '#' are ignored.
+#
+# denylist.txt is gitignored - it holds your personal terms and is never
+# committed. This .example file is tracked and must stay generic (no real
+# names), so it is safe in version control.
+
+# --- examples (delete these and add your own) ---
+# Wobblethorpe
+# Dinglebrook
+# AcmeWidgets

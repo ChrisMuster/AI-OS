@@ -76,6 +76,9 @@ workflows/knowledge-graph/index/*
 # names drawn from gitignored directories. Local only.
 workflows/knowledge-graph/last-report.md
 
+# Personal-data-guard denylist holds the user's personal nouns; the .example is tracked
+workflows/personal-data-guard/config/denylist.txt
+
 # Reddit collector — downloaded posts and state are personal/machine-specific content
 workflows/reddit-collector/collections/
 workflows/reddit-collector/config/feeds.json

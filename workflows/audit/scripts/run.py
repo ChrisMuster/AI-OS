@@ -57,6 +57,7 @@ WORKFLOW_LOG = WORKFLOW_DIR / "LOG.md"
 ROOT_LOG     = PROJECT_ROOT / "LOG.md"
 KG_RUN_PY    = PROJECT_ROOT / "workflows" / "knowledge-graph" / "scripts" / "run.py"
 ENCODING_RUN_PY = PROJECT_ROOT / "workflows" / "encoding-guard" / "scripts" / "run.py"
+PERSONAL_RUN_PY = PROJECT_ROOT / "workflows" / "personal-data-guard" / "scripts" / "run.py"
 
 # ---------------------------------------------------------------------------
 # Config
@@ -529,6 +530,63 @@ def run_encoding_check() -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Personal-data-guard hook
+# ---------------------------------------------------------------------------
+# The full audit also runs the personal-data guard and merges its actionable
+# findings, so a personal-data leak in a committable file (an email address, a
+# personal home path, the user's name, or a denylisted noun) surfaces in the same
+# close-out report. Like the graph and encoding hooks it is additive and advisory
+# — it never changes the audit's exit code, and a missing or broken guard
+# degrades to a single INFO note. The standalone CLI still exits 1 on a FAIL so a
+# pre-commit hook or CI can gate on it directly.
+
+def personal_findings(payload: dict) -> list[Finding]:
+    """Map a personal-data-guard ``--check --json`` payload to audit Findings.
+
+    Keeps only the actionable severities (WARN and FAIL); the guard's message
+    already carries the file path. Pure (dict in, tuples out) so it can be
+    unit-tested without a subprocess.
+    """
+    findings: list[Finding] = []
+    for f in payload.get("findings", []):
+        severity = f.get("severity")
+        if severity not in ("WARN", "FAIL"):
+            continue
+        findings.append((severity, "personal-data", f.get("message", "")))
+    return findings
+
+
+def run_personal_data_check() -> list[Finding]:
+    """Run the personal-data guard and return its actionable findings.
+
+    Shells out to the guard CLI (the contract) rather than importing it, matching
+    the graph and encoding hooks. Degrades gracefully: on any failure the audit
+    gets a single INFO note and never raises, so the exit code stays advisory.
+    """
+    if not PERSONAL_RUN_PY.exists():
+        return [("INFO", "personal-data",
+                 "personal-data check skipped — personal-data-guard CLI not found")]
+    try:
+        result = subprocess.run(
+            [sys.executable, str(PERSONAL_RUN_PY), "--check", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(PROJECT_ROOT),
+        )
+    except Exception as exc:
+        return [("INFO", "personal-data",
+                 f"personal-data check skipped — could not run ({exc})")]
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        reason = (result.stderr.strip().splitlines()
+                  or [f"checker exited {result.returncode} with no JSON output"])[-1]
+        return [("INFO", "personal-data", f"personal-data check skipped — {reason}")]
+    return personal_findings(payload)
+
+
+# ---------------------------------------------------------------------------
 # Per-directory audit
 # ---------------------------------------------------------------------------
 
@@ -715,6 +773,9 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
 
     # Encoding hygiene check (full mode only; always runs, advisory)
     findings.extend(run_encoding_check())
+
+    # Personal-data leak check (full mode only; always runs, advisory)
+    findings.extend(run_personal_data_check())
 
     return findings, len(dirs)
 

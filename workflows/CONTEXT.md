@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-06-25
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -17,6 +17,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - Reddit Collector — `workflows/reddit-collector/` [[workflows/reddit-collector/CONTEXT]] — Downloads posts from configured subreddits, saves as Markdown, detects multi-part series and groups them with navigable indexes.
 - Knowledge Graph — `workflows/knowledge-graph/` [[workflows/knowledge-graph/CONTEXT]] — Deterministic indexer that parses CONTEXT.md files and approved relationships into a rebuildable node/edge graph for querying, traversal, and broken-reference validation.
 - Encoding Guard - `workflows/encoding-guard/` [[workflows/encoding-guard/CONTEXT]] - Checks the project for encoding problems (invalid UTF-8, mojibake, BOMs, text-mode subprocess calls with no explicit encoding) and repairs corrupted files to clean UTF-8; the full audit runs the check automatically.
+- Personal Data Guard - `workflows/personal-data-guard/` [[workflows/personal-data-guard/CONTEXT]] - Read-only checker that scans committable files for personal data (emails, personal home paths, the user's name/username, and a configurable denylist of personal nouns); the full audit runs the check automatically as an advisory hook.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -35,8 +36,7 @@ N/A. This is a container directory, not a workflow itself.
 - The Contents section of this file must be updated every time a new workflow is added or removed. Container directories are easy to forget when the focus is on the new subdirectory itself.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-06-24.
-- 2026-06-03 — Added weather workflow to Contents.
+Earlier history archived to LOG.md on 2026-06-25.
 - 2026-06-08 — Added session-search workflow to Contents.
 - 2026-06-08 — Added settings-check workflow to Contents.
 - 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).
@@ -45,3 +45,4 @@ Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-15 — Added reddit-collector workflow to Contents.
 - 2026-06-19 — Added knowledge-graph workflow to Contents.
 - 2026-06-24 - Added encoding-guard workflow to Contents.
+- 2026-06-25 - Added personal-data-guard workflow to Contents.
