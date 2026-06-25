@@ -6,6 +6,7 @@ never itself flagged by the guard.
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -148,6 +149,47 @@ class TestCodeCheck(unittest.TestCase):
     def test_does_not_flag_binary_open(self):
         src = "open(path, 'wb')\n"
         self.assertEqual(run.check_python_code("x.py", src), [])
+
+
+class TestHiddenDirWalk(unittest.TestCase):
+    """The blind-spot fix: iter_text_files must descend into authored hidden
+    config dirs (.codex, .github, ...) while still pruning system/tooling
+    dot-dirs (SKIP_DIRS) and the verbatim-data exemptions."""
+
+    def test_scans_hidden_config_dir_but_skips_system_and_exempt_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # Authored hidden config dir with a tracked text file, plus a
+            # nested hidden dir under it (mirrors .codex/plugins/.agents/).
+            (root / ".codex").mkdir()
+            (root / ".codex" / "config.toml").write_text("ok\n", encoding="utf-8")
+            (root / ".codex" / ".sub").mkdir()
+            (root / ".codex" / ".sub" / "CONTEXT.md").write_text("ok\n", encoding="utf-8")
+
+            # A normal tracked file at the root.
+            (root / "README.md").write_text("ok\n", encoding="utf-8")
+
+            # A system dot-dir holding a text-extension file: must stay skipped.
+            (root / ".venv").mkdir()
+            (root / ".venv" / "pyvenv.cfg").write_text("x\n", encoding="utf-8")
+
+            # A newly denylisted IDE dir: must stay skipped.
+            (root / ".vscode").mkdir()
+            (root / ".vscode" / "settings.json").write_text("{}\n", encoding="utf-8")
+
+            # A verbatim-data exemption: must stay pruned.
+            (root / "raw").mkdir()
+            (root / "raw" / "scraped.md").write_text("x\n", encoding="utf-8")
+
+            found = {p.relative_to(root).as_posix() for p in run.iter_text_files(root)}
+
+        self.assertIn(".codex/config.toml", found)
+        self.assertIn(".codex/.sub/CONTEXT.md", found)
+        self.assertIn("README.md", found)
+        self.assertNotIn(".venv/pyvenv.cfg", found)
+        self.assertNotIn(".vscode/settings.json", found)
+        self.assertNotIn("raw/scraped.md", found)
 
 
 class TestSourceIsPureAscii(unittest.TestCase):

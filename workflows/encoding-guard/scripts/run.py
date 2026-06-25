@@ -63,10 +63,12 @@ TEXT_EXTS = {
 }
 TEXT_NAMES = {".gitignore", ".gitattributes"}
 
-# Never descended into.
+# Never descended into: version-control internals, virtualenvs, dependency
+# trees, caches, and IDE/tooling config that hold no project-authored prose.
 SKIP_DIRS = {
     ".git", "__pycache__", ".venv", "venv", "node_modules", ".obsidian",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".idea", ".vscode", ".cache", ".tox", ".svn", ".hg",
 }
 # Directory names that mark scraped/imported verbatim data (pruned from the walk).
 EXEMPT_DIR_NAMES = {"raw"}
@@ -273,11 +275,15 @@ def iter_text_files(root):
         if set(rel.parts) & EXEMPT_PATH_PARTS:
             dirnames[:] = []
             continue
+        # Authored hidden config dirs (.codex, .github, .windsurf, .clinerules,
+        # .continue, .cursor, .gemini, .claude, and any future AI dir) hold
+        # tracked project prose, so they are scanned. Only system/tooling
+        # dot-dirs (SKIP_DIRS) and the verbatim-data exemptions are pruned, so
+        # coverage is never silently lost for a hidden directory.
         dirnames[:] = [
             d for d in dirnames
             if d not in SKIP_DIRS
             and d not in EXEMPT_DIR_NAMES
-            and not d.startswith(".")
         ]
         for fn in filenames:
             ext = os.path.splitext(fn)[1].lower()
