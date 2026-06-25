@@ -1,0 +1,61 @@
+# AI-style guard - tells configuration (single source of truth)
+#
+# This tracked, generic file is the one place the AI writing tells are defined.
+# The guard reads it at runtime and the AGENTS.md / SOUL.md writing-style rules
+# point at it, so the written rule and the enforced rule cannot drift apart.
+#
+# Three groups:
+#   typographic - tier 1, reported as WARN. Defined by Unicode code point (not
+#                 the literal character) so this config stays plain ASCII and is
+#                 never itself a source of mojibake.
+#   phrases     - tier 1, reported as WARN. Multi-word stock AI phrases, matched
+#                 whole-phrase and case-insensitively (inner whitespace flexible).
+#   words       - tier 2, reported as INFO (advisory only). Single words that are
+#                 common AI tells but are often legitimate in technical prose, so
+#                 they never escalate beyond INFO. Tune freely.
+#
+# Keep this file generic: no personal data, no project-specific content.
+
+typographic:
+  - {label: "em dash", codepoint: 0x2014}
+  - {label: "en dash", codepoint: 0x2013}
+  - {label: "left smart single quote", codepoint: 0x2018}
+  - {label: "right smart single quote", codepoint: 0x2019}
+  - {label: "left smart double quote", codepoint: 0x201C}
+  - {label: "right smart double quote", codepoint: 0x201D}
+  - {label: "ellipsis character", codepoint: 0x2026}
+  - {label: "non-breaking space", codepoint: 0x00A0}
+
+phrases:
+  - {text: "it's worth noting"}
+  - {text: "it's important to note"}
+  - {text: "it is important to note"}
+  - {text: "plays a crucial role"}
+  - {text: "plays a vital role"}
+  - {text: "a testament to"}
+  - {text: "when it comes to"}
+  - {text: "in the realm of"}
+  - {text: "in today's", label: "in today's ... age/world"}
+  - {text: "navigating the complexities"}
+  - {text: "at the end of the day"}
+  - {text: "needle in a haystack"}
+  - {text: "it's not just about"}
+  - {text: "more than just"}
+
+words:
+  - delve
+  - leverage
+  - foster
+  - landscape
+  - tapestry
+  - realm
+  - seamless
+  - seamlessly
+  - robust
+  - navigate
+  - underscore
+  - underscores
+  - showcasing
+  - elevate
+  - intricate
+  - myriad

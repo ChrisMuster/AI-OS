@@ -58,6 +58,7 @@ ROOT_LOG     = PROJECT_ROOT / "LOG.md"
 KG_RUN_PY    = PROJECT_ROOT / "workflows" / "knowledge-graph" / "scripts" / "run.py"
 ENCODING_RUN_PY = PROJECT_ROOT / "workflows" / "encoding-guard" / "scripts" / "run.py"
 PERSONAL_RUN_PY = PROJECT_ROOT / "workflows" / "personal-data-guard" / "scripts" / "run.py"
+AI_STYLE_RUN_PY = PROJECT_ROOT / "workflows" / "ai-style-guard" / "scripts" / "run.py"
 
 # ---------------------------------------------------------------------------
 # Config
@@ -535,8 +536,8 @@ def run_encoding_check() -> list[Finding]:
 # The full audit also runs the personal-data guard and merges its actionable
 # findings, so a personal-data leak in a committable file (an email address, a
 # personal home path, the user's name, or a denylisted noun) surfaces in the same
-# close-out report. Like the graph and encoding hooks it is additive and advisory
-# — it never changes the audit's exit code, and a missing or broken guard
+# close-out report. Like the graph and encoding hooks it is additive and advisory:
+# it never changes the audit's exit code, and a missing or broken guard
 # degrades to a single INFO note. The standalone CLI still exits 1 on a FAIL so a
 # pre-commit hook or CI can gate on it directly.
 
@@ -565,7 +566,7 @@ def run_personal_data_check() -> list[Finding]:
     """
     if not PERSONAL_RUN_PY.exists():
         return [("INFO", "personal-data",
-                 "personal-data check skipped — personal-data-guard CLI not found")]
+                 "personal-data check skipped - personal-data-guard CLI not found")]
     try:
         result = subprocess.run(
             [sys.executable, str(PERSONAL_RUN_PY), "--check", "--json"],
@@ -576,14 +577,70 @@ def run_personal_data_check() -> list[Finding]:
         )
     except Exception as exc:
         return [("INFO", "personal-data",
-                 f"personal-data check skipped — could not run ({exc})")]
+                 f"personal-data check skipped - could not run ({exc})")]
     try:
         payload = json.loads(result.stdout)
     except ValueError:
         reason = (result.stderr.strip().splitlines()
                   or [f"checker exited {result.returncode} with no JSON output"])[-1]
-        return [("INFO", "personal-data", f"personal-data check skipped — {reason}")]
+        return [("INFO", "personal-data", f"personal-data check skipped - {reason}")]
     return personal_findings(payload)
+
+
+# ---------------------------------------------------------------------------
+# AI-style-guard hook
+# ---------------------------------------------------------------------------
+# The full audit also runs the AI-style guard, scoped to the whole branch's new
+# content (--base main, i.e. added lines since the merge-base with main), so an
+# AI writing tell introduced on the branch surfaces in the same close-out report.
+# Like the other content hooks it is additive and advisory: only the tier-1 WARN
+# findings are merged (the tier-2 single-word denylist stays INFO and is dropped),
+# it never changes the audit's exit code, and a missing or broken guard degrades
+# to a single INFO note. The standalone CLI can still gate via --strict.
+
+def ai_style_findings(payload: dict) -> list[Finding]:
+    """Map an ai-style-guard ``--check --json`` payload to audit Findings.
+
+    Keeps only the actionable severity (WARN); the guard's message already
+    carries file:line. Pure (dict in, tuples out) for unit testing.
+    """
+    findings: list[Finding] = []
+    for f in payload.get("findings", []):
+        if f.get("severity") != "WARN":
+            continue
+        findings.append(("WARN", "ai-style", f.get("message", "")))
+    return findings
+
+
+def run_ai_style_check() -> list[Finding]:
+    """Run the AI-style guard over the branch and return its WARN findings.
+
+    Shells out to the guard CLI (the contract) rather than importing it, matching
+    the other hooks. Degrades gracefully: on any failure the audit gets a single
+    INFO note and never raises, so the exit code stays advisory.
+    """
+    if not AI_STYLE_RUN_PY.exists():
+        return [("INFO", "ai-style",
+                 "AI-style check skipped - ai-style-guard CLI not found")]
+    try:
+        result = subprocess.run(
+            [sys.executable, str(AI_STYLE_RUN_PY),
+             "--check", "--json", "--base", "main"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(PROJECT_ROOT),
+        )
+    except Exception as exc:
+        return [("INFO", "ai-style",
+                 f"AI-style check skipped - could not run ({exc})")]
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        reason = (result.stderr.strip().splitlines()
+                  or [f"checker exited {result.returncode} with no JSON output"])[-1]
+        return [("INFO", "ai-style", f"AI-style check skipped - {reason}")]
+    return ai_style_findings(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +833,9 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
 
     # Personal-data leak check (full mode only; always runs, advisory)
     findings.extend(run_personal_data_check())
+
+    # AI-style tell check (full mode only; always runs, advisory)
+    findings.extend(run_ai_style_check())
 
     return findings, len(dirs)
 
