@@ -338,7 +338,13 @@ def get_listed_subdir_names(content: str) -> set[str]:
 
 
 def get_immediate_subdirs(directory: Path) -> list[Path]:
-    """Return immediate subdirectories, excluding skip, hidden, and ignored dirs."""
+    """Return immediate subdirectories, excluding skip, hidden, and ignored dirs.
+
+    Used by the unlisted-subdirectory check in targeted ``--context`` mode, where
+    no precomputed directory set exists. A full audit does not call this: it feeds
+    audit_directory the non-ignored children that collect_dirs already computed,
+    avoiding a per-directory ``git check-ignore`` spawn.
+    """
     candidates = [
         p for p in sorted(directory.iterdir())
         if p.is_dir()
@@ -648,7 +654,7 @@ def run_ai_style_check() -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-def audit_directory(directory: Path) -> list[Finding]:
+def audit_directory(directory: Path, subdirs: list[Path] | None = None) -> list[Finding]:
     findings: list[Finding] = []
     label = rel(directory) + "/"
 
@@ -701,7 +707,15 @@ def audit_directory(directory: Path) -> list[Finding]:
             # hold imported files and are not required to enumerate their contents.
             if directory.name not in NO_RECURSE_DIRS:
                 listed = get_listed_subdir_names(content)
-                for subdir in get_immediate_subdirs(directory):
+                # In a full audit, collect_dirs already computed the non-ignored
+                # immediate children (passed in as `subdirs`), so reuse that
+                # instead of re-spawning git here. In targeted --context mode no
+                # such set exists, so fall back to a direct per-dir git check.
+                immediate = (
+                    subdirs if subdirs is not None
+                    else get_immediate_subdirs(directory)
+                )
+                for subdir in immediate:
                     if subdir.name not in listed:
                         findings.append((
                             "WARN", label,
@@ -755,13 +769,16 @@ def _git_check_ignored(parent_rel: str, subdirs: list[str]) -> set[str]:
 # Full tree walk
 # ---------------------------------------------------------------------------
 # Speed note: spawning ``git check-ignore`` is the dominant cost of a full audit
-# on Windows (~0.4s per spawn). Two optimisations preserve the ignore semantics
+# on Windows (~0.4s per spawn). Three optimisations preserve the ignore semantics
 # exactly while cutting that cost:
 #   A. _is_git_worktree skips git entirely when the tree is not a repository
 #      (e.g. a temporary test fixture) - zero subprocess in that case.
 #   B. collect_dirs walks breadth-first and batches one ``git check-ignore``
 #      call per depth level instead of one per directory, so the call count
 #      drops from "directories with children" to "tree depth".
+#   C. run_audit indexes collect_dirs' non-ignored result by parent and feeds it
+#      to each audit_directory call, so the unlisted-subdirectory check reuses
+#      that set instead of re-spawning git once per directory.
 def _is_git_worktree(root: Path) -> bool:
     """True if ``root`` is inside a Git worktree (a ``.git`` exists at root or an
     ancestor). A filesystem check mirroring git's own repo discovery, so a
@@ -858,6 +875,16 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
     dirs = collect_dirs()
     findings: list[Finding] = []
 
+    # collect_dirs already determined, for the whole tree, which immediate
+    # children survived the skip/hidden/gitignore filter. Index that result by
+    # parent so the per-directory unlisted-subdirectory check can reuse it
+    # instead of re-spawning `git check-ignore` once per directory. (NO_RECURSE
+    # dirs map to an empty list, which is harmless: their unlisted check is
+    # skipped anyway.)
+    children_by_parent: dict[Path, list[Path]] = {}
+    for d in dirs:
+        children_by_parent.setdefault(d.parent, []).append(d)
+
     # Check AGENTS.md line count
     agents_md = PROJECT_ROOT / "AGENTS.md"
     if agents_md.exists():
@@ -870,7 +897,7 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
             ))
 
     for d in dirs:
-        findings.extend(audit_directory(d))
+        findings.extend(audit_directory(d, children_by_parent.get(d, [])))
 
     # Code hygiene checks across all Python scripts
     findings.extend(check_python_scripts())
