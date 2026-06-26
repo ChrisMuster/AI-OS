@@ -754,53 +754,104 @@ def _git_check_ignored(parent_rel: str, subdirs: list[str]) -> set[str]:
 # ---------------------------------------------------------------------------
 # Full tree walk
 # ---------------------------------------------------------------------------
+# Speed note: spawning ``git check-ignore`` is the dominant cost of a full audit
+# on Windows (~0.4s per spawn). Two optimisations preserve the ignore semantics
+# exactly while cutting that cost:
+#   A. _is_git_worktree skips git entirely when the tree is not a repository
+#      (e.g. a temporary test fixture) - zero subprocess in that case.
+#   B. collect_dirs walks breadth-first and batches one ``git check-ignore``
+#      call per depth level instead of one per directory, so the call count
+#      drops from "directories with children" to "tree depth".
+def _is_git_worktree(root: Path) -> bool:
+    """True if ``root`` is inside a Git worktree (a ``.git`` exists at root or an
+    ancestor). A filesystem check mirroring git's own repo discovery, so a
+    non-repo tree (e.g. a temporary test fixture) costs no subprocess at all."""
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return False
+    for d in (resolved, *resolved.parents):
+        if (d / ".git").exists():
+            return True
+    return False
+
+
+def _git_check_ignored_batch(root: Path, rel_paths: list[str]) -> set[str]:
+    """Return the subset of ``rel_paths`` (project-root-relative, forward slash)
+    that git would ignore, in a single ``git check-ignore`` call.
+
+    Uses NUL-separated stdin/stdout (``-z``) and raw bytes so that Windows
+    newline translation cannot corrupt the piped paths. Empty set on any git
+    failure, matching the fall-back behaviour of the per-call helper above.
+    """
+    if not rel_paths:
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            input="\0".join(rel_paths).encode("utf-8"),
+            capture_output=True,
+            cwd=str(root),
+        )
+        out = result.stdout.decode("utf-8", errors="replace")
+        return {p.replace("\\", "/") for p in out.split("\0") if p.strip()}
+    except Exception:
+        return set()
+
+
 def collect_dirs() -> list[Path]:
     """
-    Walk the project tree and return all auditable directories.
+    Walk the project tree and return all auditable directories (sorted),
+    excluding the project root itself.
 
-    Uses os.walk() with in-place pruning so that gitignored, hidden, and
-    no-recurse directories are never entered — avoiding traversal into large
-    data directories such as collections/.
+    Breadth-first so each depth level's gitignore check is a single batched
+    ``git check-ignore`` call rather than one subprocess per directory. Skip,
+    hidden, gitignored, and no-recurse directories are pruned before descending,
+    so large data trees such as collections/ are never entered. When the tree is
+    not a Git worktree (e.g. a temporary test fixture), git is skipped entirely.
+
+    The directory set this returns must stay identical to the previous os.walk
+    implementation: same skip/hidden/gitignore pruning, no-recurse directories
+    recorded but not descended, root excluded, output sorted.
     """
-    auditable: list[Path] = []
+    is_repo = _is_git_worktree(PROJECT_ROOT)
+    out: list[Path] = []
+    current: list[Path] = [PROJECT_ROOT]
 
-    for root, subdirs, _files in os.walk(PROJECT_ROOT):
-        root_path = Path(root)
-
-        # --- Prune subdirs in-place to control recursion ---
-
-        # 1. Remove SKIP_DIRS and hidden directories
-        subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith(".")]
-
-        # 2. Remove gitignored directories
-        if subdirs:
+    while current:
+        # Gather every candidate child across this whole level, after the cheap
+        # skip/hidden pruning, so the gitignore check is one batched call.
+        level: list[tuple[Path, str]] = []
+        for parent in current:
             try:
-                parent_rel = str(root_path.relative_to(PROJECT_ROOT)).replace("\\", "/")
-            except ValueError:
-                parent_rel = "."
-            ignored = _git_check_ignored(parent_rel, subdirs)
-            if ignored:
-                subdirs[:] = [d for d in subdirs if d not in ignored]
+                names = sorted(
+                    e.name for e in os.scandir(parent)
+                    if e.is_dir()
+                    and e.name not in SKIP_DIRS
+                    and not e.name.startswith(".")
+                )
+            except OSError:
+                continue
+            for name in names:
+                child = parent / name
+                rel = child.relative_to(PROJECT_ROOT).as_posix()
+                level.append((child, rel))
 
-        # 3. If current dir is a no-recurse boundary, audit it but stop recursion
-        if root_path != PROJECT_ROOT and root_path.name in NO_RECURSE_DIRS:
-            auditable.append(root_path)
-            subdirs.clear()
-            continue
+        ignored: set[str] = set()
+        if is_repo and level:
+            ignored = _git_check_ignored_batch(PROJECT_ROOT, [rel for _, rel in level])
 
-        # Skip the project root itself
-        if root_path == PROJECT_ROOT:
-            continue
+        next_level: list[Path] = []
+        for child, rel in level:
+            if rel in ignored:
+                continue
+            out.append(child)
+            # No-recurse directories are recorded but never descended into.
+            if child.name not in NO_RECURSE_DIRS:
+                next_level.append(child)
+        current = next_level
 
-        # Defensive: skip if an ancestor is a no-recurse dir
-        rel_parts = root_path.relative_to(PROJECT_ROOT).parts
-        if any(part in NO_RECURSE_DIRS for part in rel_parts[:-1]):
-            subdirs.clear()
-            continue
-
-        auditable.append(root_path)
-
-    return sorted(auditable)
+    return sorted(out)
 
 
 def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:

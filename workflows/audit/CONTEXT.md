@@ -1,13 +1,14 @@
 # Audit
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-06-26
 
 ## Purpose
 Walks every directory in the Book Dragon project and checks for structural compliance: missing CONTEXT.md or LOG.md files, missing required sections, inconsistent Last modified and Revision History metadata, broken Contents paths, unlisted non-gitignored subdirectories, and dead Obsidian [[links]]. It can also run a lightweight targeted check against named directories immediately after context maintenance. The full audit checks that AGENTS.md has not exceeded its line-count threshold (600 lines), runs code hygiene checks across all Python scripts, and validates the structural knowledge graph, merging its actionable (WARN/FAIL) findings under a `knowledge-graph` label so a graph regression surfaces in the same report. The graph step is additive and advisory (it never changes the audit's exit code) and degrades to a single INFO note if the graph cannot be validated. A full audit also runs the encoding-guard check and merges its WARN/FAIL findings under an `encoding` label, so an encoding regression (a file that stops being valid UTF-8, new mojibake, or a text-mode subprocess call with no explicit encoding) surfaces in the same report; this step is additive and advisory in the same way. It likewise runs the personal-data guard and merges its WARN/FAIL findings under a `personal-data` label, so a personal-data leak in a committable file (an email, a personal home path, the user's name/username, or a denylisted noun) surfaces in the same report - again additive and advisory. It also runs the ai-style guard scoped to the branch (`--base main`) and merges its WARN findings under an `ai-style` label, so an AI writing tell introduced on the branch (an em dash, a smart quote, a stock phrase) surfaces in the same report - again additive and advisory.
 
 ## Contents
 - scripts/ - `workflows/audit/scripts/` [[workflows/audit/scripts/CONTEXT]] - Automation scripts for this workflow; run.py is the main audit entry point.
-- tests/ - `workflows/audit/tests/` [[workflows/audit/tests/CONTEXT]] - Unit tests for the knowledge-graph, encoding-guard, personal-data-guard, and ai-style-guard audit-hook merge helpers and their graceful-degradation paths, plus the subdirectory filter and a one-command runner.
+- tests/ - `workflows/audit/tests/` [[workflows/audit/tests/CONTEXT]] - Unit tests for the knowledge-graph, encoding-guard, personal-data-guard, and ai-style-guard audit-hook merge helpers and their graceful-degradation paths, the subdirectory filter, the breadth-first `collect_dirs` walk, and a one-command runner.
+- archived/ - `workflows/audit/archived/` [[workflows/audit/archived/CONTEXT]] - Design-time plan and handover documents kept for history after close-out (personal, gitignored; individual files not listed).
 
 ## Inputs
 No inputs are required for a full audit. Targeted mode accepts one or more project-relative directories or CONTEXT.md paths after `--context`.
@@ -40,9 +41,7 @@ No inputs are required for a full audit. Targeted mode accepts one or more proje
 - The knowledge-graph validation step is best-effort: if the knowledge-graph CLI is absent, crashes, or returns unparseable output, the audit adds a single INFO note ("graph validation skipped — …") and still completes with exit 0. It validates the structural graph only (never `--layer`), so merged findings carry no personal/gitignored names.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-06-25.
-- 2026-06-09 — Line-count check updated from CLAUDE.md to AGENTS.md. Dependencies updated. AGENTS added to dead-link root stems.
-- 2026-06-09 — GEMINI added to dead-link root stems (Phase 2 AI-agnostic transition).
+Earlier history archived to LOG.md on 2026-06-26.
 - 2026-06-12 — Added deterministic Last modified and Revision History checks plus targeted `--context` mode for immediate context maintenance.
 - 2026-06-17 — Replaced `rglob` tree walk with `os.walk` and `git check-ignore` pruning. Gitignored directories (collections, state, wiki content) are now skipped entirely — eliminates false positives and avoids traversing large data directories.
 - 2026-06-23 — Knowledge-graph audit-hook integration: a full audit now also validates the structural graph (via the knowledge-graph `validate --json` CLI) and merges its WARN/FAIL findings under a `knowledge-graph` label; added the `--no-graph` opt-out and a new `tests/` directory for the merge helper. Additive and advisory (exit code unchanged); degrades to an INFO note on failure. Targeted `--context` mode stays graph-free.
@@ -50,3 +49,5 @@ Earlier history archived to LOG.md on 2026-06-25.
 - 2026-06-25 - Personal-data-guard hook: a full audit now also runs the personal-data guard `--check --json` and merges its WARN/FAIL findings under a `personal-data` label (subprocess, not import; degrades to an INFO note on failure). Added test_audit_personal_data_hook.py for the merge helper and graceful-skip paths.
 - 2026-06-25 - The unlisted-subdirectory check now ignores gitignored immediate child directories, matching the project rule that gitignored personal or generated content does not propagate into tracked Contents sections.
 - 2026-06-25 - Ai-style-guard hook: a full audit now also runs the ai-style guard (`--check --json --base main`) and merges its WARN findings under an `ai-style` label (subprocess, not import; degrades to an INFO note on failure). Added test_audit_ai_style_hook.py for the merge helper and graceful-skip paths.
+- 2026-06-26 - Speed: `collect_dirs` rewritten to a breadth-first walk that batches one `git check-ignore` call per depth level (was one subprocess per directory), with a filesystem fast path that skips git entirely outside a worktree. Directory set and audit output are byte-for-byte identical; the walk is roughly 5x faster locally. Added tests/test_collect_dirs.py (8 tests).
+- 2026-06-26 - Added archived/ subdirectory for the workflow's design-time plan documents (gitignored); moved AUDIT-SPEED-PLAN.md from the project root into it during close-out.

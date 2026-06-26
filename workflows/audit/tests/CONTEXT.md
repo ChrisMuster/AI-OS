@@ -1,9 +1,9 @@
 # Tests
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-06-26
 
 ## Purpose
-Standalone unit tests for the audit workflow's close-out hooks and structural helpers. Verifies that the pure `graph_findings`, `encoding_findings`, `personal_findings`, and `ai_style_findings` merge helpers keep only actionable severities, drop INFO, and label findings correctly; that `run_graph_validation`, `run_encoding_check`, `run_personal_data_check`, and `run_ai_style_check` degrade gracefully (never raising) when their CLI is missing, crashes, or returns unparseable output; and that immediate subdirectory filtering suppresses gitignored child directories.
+Standalone unit tests for the audit workflow's close-out hooks and structural helpers. Verifies that the pure `graph_findings`, `encoding_findings`, `personal_findings`, and `ai_style_findings` merge helpers keep only actionable severities, drop INFO, and label findings correctly; that `run_graph_validation`, `run_encoding_check`, `run_personal_data_check`, and `run_ai_style_check` degrade gracefully (never raising) when their CLI is missing, crashes, or returns unparseable output; that immediate subdirectory filtering suppresses gitignored child directories; and that the breadth-first `collect_dirs` walk preserves its pruning semantics (skip/hidden/gitignore/no-recurse) and the non-Git fast path.
 
 ## Contents
 - test_audit_graph_hook.py — `workflows/audit/tests/test_audit_graph_hook.py` [[workflows/audit/tests/CONTEXT]] — Tests for the knowledge-graph merge helper (severity filtering, field remap, label, message format, empty/missing-key cases) and the graceful-skip paths of the validator invocation (missing CLI, unparseable output, subprocess exception, and a valid-payload merge).
@@ -11,6 +11,7 @@ Standalone unit tests for the audit workflow's close-out hooks and structural he
 - test_audit_personal_data_hook.py - `workflows/audit/tests/test_audit_personal_data_hook.py` [[workflows/audit/tests/CONTEXT]] - Tests for the personal-data-guard merge helper (`personal_findings`) and the graceful-skip paths of `run_personal_data_check` (missing CLI, unparseable output, subprocess exception, and a valid-payload merge).
 - test_audit_ai_style_hook.py - `workflows/audit/tests/test_audit_ai_style_hook.py` [[workflows/audit/tests/CONTEXT]] - Tests for the ai-style-guard merge helper (`ai_style_findings`, WARN-only) and the graceful-skip paths of `run_ai_style_check` (missing CLI, unparseable output, subprocess exception, and a valid-payload merge).
 - test_audit_subdir_filter.py - `workflows/audit/tests/test_audit_subdir_filter.py` [[workflows/audit/tests/CONTEXT]] - Tests that immediate subdirectory discovery filters gitignored child directories while keeping normal children.
+- test_collect_dirs.py - `workflows/audit/tests/test_collect_dirs.py` [[workflows/audit/tests/CONTEXT]] - Tests the breadth-first batched `collect_dirs` walk: `_is_git_worktree` detection, the non-Git fast path (git never spawned), gitignore pruning of an ignored dir and its children, skip/hidden exclusion, no-recurse dirs recorded but not descended, one batched check per level, and sorted output.
 - run_tests.py — `workflows/audit/tests/run_tests.py` [[workflows/audit/tests/CONTEXT]] — One-command runner that discovers and runs every `test_*.py` here; exits non-zero on any failure.
 
 ## Inputs
@@ -25,7 +26,7 @@ None. Tests build their own payloads and patch subprocess or gitignore boundarie
 2. Append LOG.md with a completion or failure entry.
 
 ## Dependencies
-- `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] - The module under test (`graph_findings`/`run_graph_validation`, `encoding_findings`/`run_encoding_check`, `personal_findings`/`run_personal_data_check`, `ai_style_findings`/`run_ai_style_check`, and `get_immediate_subdirs`).
+- `workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]] - The module under test (`graph_findings`/`run_graph_validation`, `encoding_findings`/`run_encoding_check`, `personal_findings`/`run_personal_data_check`, `ai_style_findings`/`run_ai_style_check`, `get_immediate_subdirs`, and `collect_dirs`/`_is_git_worktree`/`_git_check_ignored_batch`).
 - Python 3.9+ standard library only (unittest, unittest.mock, pathlib).
 
 ## Known Issues
@@ -37,3 +38,4 @@ None. Tests build their own payloads and patch subprocess or gitignore boundarie
 - 2026-06-25 - Added test_audit_subdir_filter.py covering gitignored child-directory filtering in immediate subdirectory discovery.
 - 2026-06-25 - Added test_audit_personal_data_hook.py covering the personal-data-guard merge helper and graceful-skip paths.
 - 2026-06-25 - Added test_audit_ai_style_hook.py covering the ai-style-guard merge helper (WARN-only) and graceful-skip paths.
+- 2026-06-26 - Added test_collect_dirs.py (8 tests) covering the breadth-first batched `collect_dirs` walk: worktree detection, non-Git fast path, gitignore/skip/hidden/no-recurse pruning, one batched check per level, and sorted output.
