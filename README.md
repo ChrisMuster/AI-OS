@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 25 June 2026
+**Last updated:** 26 June 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -49,6 +49,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 
 - **Web Research** — Shared research engine; importable by any workflow. `skills/web-research/` `[active]`
 - **Image Prompt** — Analyses written content and recommends an image type (real photo, stock, or AI-generated), then delivers the appropriate prompt or search terms. `skills/image-prompt/` `[active]`
+- **Lean Code** - Opt-in ruleset that steers AI coding agents toward the smallest correct solution, with a decision ladder, three intensity modes, a tag vocabulary, and a `lean:` marker convention. Ruleset is active; the diff-review, repo-audit, and debt-tracking skills are planned. `skills/lean-code/` `[active]`
 
 ## Wikis
 
