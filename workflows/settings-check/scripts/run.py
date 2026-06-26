@@ -53,11 +53,22 @@ PYTHON_SCAN_DIRS = [
     PROJECT_ROOT / 'journal' / 'scripts',
 ]
 
-# Patterns that indicate a hardcoded absolute path tied to a specific machine
+# Patterns that indicate a hardcoded absolute path tied to a specific machine.
+# Each captures the account-name segment so a placeholder can be skipped.
 ABS_PATH_PATTERNS = [
-    re.compile(r'C:[/\\]Users[/\\][A-Za-z]'),
-    re.compile(r'/home/[A-Za-z]'),
+    re.compile(r'C:[/\\]Users[/\\](<?[A-Za-z][\w.\-]*>?)'),
+    re.compile(r'/home/(<?[A-Za-z][\w.\-]*>?)'),
 ]
+
+# Account-name segments that are placeholders, not a real machine account, so a
+# path like C:/Users/Name/... in documentation or a test fixture is not a real
+# hardcoded value. Kept as a small local copy rather than cross-importing the
+# personal-data-guard workflow (same convention, decoupled).
+PLACEHOLDER_USERS = {
+    "name", "names", "yourname", "your-name", "username", "user", "users",
+    "you", "youruser", "example", "someone", "admin", "administrator",
+    "public", "default", "me", "home",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +289,24 @@ def _is_documentation_line(line: str) -> bool:
     return False
 
 
+def _is_placeholder_user(seg: str) -> bool:
+    """True for an account-name segment that is a documentation/fixture
+    placeholder (Name, <username>, user, ...) rather than a real account."""
+    s = seg.strip().lower()
+    return s.startswith('<') or s in PLACEHOLDER_USERS
+
+
+def _line_has_real_abs_path(line: str) -> bool:
+    """True if the line carries an absolute home path with a real account name.
+    Paths whose account segment is a placeholder are treated as examples or test
+    fixtures, not machine-specific values, so they are not flagged."""
+    for pattern in ABS_PATH_PATTERNS:
+        for m in pattern.finditer(line):
+            if not _is_placeholder_user(m.group(1)):
+                return True
+    return False
+
+
 def check_absolute_paths() -> tuple[list, int]:
     """
     List all files tracked by git and scan each line for hardcoded absolute paths.
@@ -312,14 +341,10 @@ def check_absolute_paths() -> tuple[list, int]:
         for line_num, line in enumerate(content.splitlines(), 1):
             if _is_documentation_line(line):
                 continue
-            for pattern in ABS_PATH_PATTERNS:
-                if pattern.search(line):
-                    findings.append(('WARN', file_str,
-                        f'Line {line_num}: hardcoded absolute path — will break on another machine'))
-                    break  # one finding per file
-            else:
-                continue
-            break  # stop scanning this file after first real match
+            if _line_has_real_abs_path(line):
+                findings.append(('WARN', file_str,
+                    f'Line {line_num}: hardcoded absolute path - will break on another machine'))
+                break  # stop scanning this file after first real match
     return findings, count
 
 

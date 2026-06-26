@@ -1,6 +1,6 @@
 # Settings Check
 
-**Last modified:** 2026-06-08
+**Last modified:** 2026-06-26
 
 ## Purpose
 Validates the health of the automated command infrastructure on every session startup. Runs four distinct checks: permission coverage (all automatic commands are covered by an allowlist entry), script existence (all referenced scripts are present on disk), Python syntax (all workflow scripts parse without errors or warnings), and absolute path audit (no tracked file contains a hardcoded machine-specific path).
@@ -38,8 +38,10 @@ This check runs automatically at session startup (CLAUDE.md step 6c). Only FAIL 
 - Scheduled task discovery reads from `~/.claude/scheduled-tasks/`, which exists only on machines where at least one session has run. A mis-configured task would not be caught until after the task is created.
 - The coverage check uses Python `fnmatch` glob matching. Patterns with a trailing ` *` (space + wildcard) will not match argless commands. All current hook and task commands include arguments, so this is not presently an issue.
 - The absolute path check skips comment lines and lines containing `e.g.` or `→` to avoid false positives from documentation examples. A real hardcoded path on one of those lines would be missed.
+- The absolute path check also skips paths whose account-name segment is a placeholder (`Name`, `<username>`, `user`, and similar) so documentation examples and test fixtures such as `C:/Users/Name/...` are not flagged; a path carrying a real account name is still caught. The placeholder set mirrors the personal-data-guard convention but is kept as a small local copy rather than cross-imported.
 - The check validates coverage and syntax only, not runtime correctness. A script may pass all checks but still fail at runtime for unrelated reasons.
 
 ## Revision History
 - 2026-06-08 — Initial creation.
 - 2026-06-08 — Extended with global settings coverage, script existence, Python syntax, and absolute path audit checks.
+- 2026-06-26 - Absolute path audit now skips placeholder account names (`C:/Users/Name/...`, `<username>`, `user`, etc.), removing false positives on documentation examples and test fixtures while still catching paths with a real account name.
