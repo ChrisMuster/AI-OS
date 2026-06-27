@@ -1,6 +1,6 @@
 # Book Dragon — Agent Instructions
 
-**Last updated:** 2026-06-25
+**Last updated:** 2026-06-26
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -38,12 +38,13 @@ At the start of every new session, before doing anything else:
    Do not mention this to the user unless a file was actually just created, in which case tell the user in a single sentence that it has been created.
 8. Scan journal entries for USER.md updates — read the current month's journal file (and the previous month's if today is within the first 7 days of the month). Check for any information matching USER.md tracked categories that is not already recorded there. Tracked categories are listed in `journal/CONTEXT.md`. If anything new is found, include it in the opening greeting message, after the greeting and before asking what they want to work on — do not wait for the user to respond first: "I noticed [X] in your journal — should I add that to USER.md?" Wait for confirmation before making any change. If nothing new is found, say nothing.
 9. **Backlog review** — read `memory/backlog.md` silently. Check each Active item against recent git history and session context. If any item appears to have been completed, flag it to the user: "[X] looks like it may be done — should I move it to Completed?" Do not move items without confirmation. If nothing is stale, say nothing. This check is silent unless it finds something.
-10. Wait for the user to say what they want to work on.
-11. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
+10. **Update-check staleness reminder** - read `workflows/check-for-updates/.last-run` silently (a local timestamp file; no network call). If it is missing, or its timestamp is older than the `staleness_months` value in `workflows/check-for-updates/config/sources.yaml` (default 3 months), then after greeting tell the user in a single sentence: "You haven't run the update check in over [N] months - want to run it now?" Run it only on confirmation; never run it automatically. If the file is recent, say nothing. This check is silent unless the check is due.
+11. Wait for the user to say what they want to work on.
+12. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
 
-Do not skip step 0 or steps 1–9. Do not summarise what you have read back to the user unless they ask. After finishing steps 1–9, greet the user by name (from `USER.md`) and ask what they want to work on today.
+Do not skip step 0 or steps 1 to 10. Do not summarise what you have read back to the user unless they ask. After finishing steps 1 to 10, greet the user by name (from `USER.md`) and ask what they want to work on today.
 
-Once the task is known and context is read (steps 10–11), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
+Once the task is known and context is read (steps 11 and 12), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
 
 ## Directory structure
 
@@ -73,7 +74,7 @@ Permission applies to the overall task and agreed plan, not to each file change 
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
-**Exemption — session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), the backlog review (step 9), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
+**Exemption - session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), the backlog review (step 9), the update-check staleness reminder (step 10), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
 
 ### Self-correction on tool errors
 

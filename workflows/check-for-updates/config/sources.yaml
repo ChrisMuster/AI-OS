@@ -1,0 +1,94 @@
+# check-for-updates - what the version checker inspects.
+# This file is the single source of truth. Adding an AI CLI tool is a new entry
+# under cli_tools, not new code. Keep it generic: no personal data, no machine
+# paths. Exact npm package ids should be confirmed against the live registry.
+
+# Drives the session-startup staleness reminder (AGENTS.md). If the workflow has
+# not been run within this many months, Biblio offers to run it after greeting.
+staleness_months: 3
+
+# Python packages in the canonical .venv. Latest versions come from PyPI via pip.
+python_deps:
+  enabled: true
+
+# AI CLI tools. Each is checked only if its command is found on PATH; an absent
+# tool is reported as "not installed", never an error. "latest" sources: npm or
+# github (owner/name).
+cli_tools:
+  - name: Claude Code
+    command: claude
+    version_flag: "--version"
+    version_regex: '(\d+\.\d+\.\d+)'
+    latest:
+      source: npm
+      id: "@anthropic-ai/claude-code"
+
+  - name: Codex CLI
+    command: codex
+    version_flag: "--version"
+    version_regex: '(\d+\.\d+\.\d+)'
+    latest:
+      source: npm
+      id: "@openai/codex"
+
+  - name: Gemini CLI / Antigravity
+    command: gemini
+    version_flag: "--version"
+    version_regex: '(\d+\.\d+\.\d+)'
+    latest:
+      source: npm
+      id: "@google/gemini-cli"
+
+# AI tool landscape watch (Phase 2 - advisory, opt-in via --landscape). For each
+# watched product, the workflow runs a focused web-research query and scans the
+# returned source content for status-change signal keywords (renames,
+# deprecations, replacements). It is advisory only: a signal is a candidate flag
+# to verify, never a conclusion. Network-heavy, so it is off unless --landscape
+# is passed. Adding a product to watch is a config entry here, not new code.
+landscape:
+  enabled: true
+
+  # Substrings that, found in researched source content (case-insensitive), flag
+  # a possible product status change. Tune freely.
+  signal_keywords:
+    - deprecated
+    - deprecation
+    - sunset
+    - discontinued
+    - end of life
+    - end-of-life
+    - renamed
+    - rebranded
+    - replaced by
+    - successor to
+    - retiring
+    - shutting down
+    - migrate to
+    - no longer maintained
+
+  # Products to monitor. name is the report label, query is the research topic,
+  # and aliases are replacement/new names that are themselves worth surfacing if
+  # they appear in the sources.
+  watch:
+    - name: Claude Code
+      query: "Anthropic Claude Code CLI deprecated renamed replaced status 2026"
+    - name: Codex CLI
+      query: "OpenAI Codex CLI deprecated renamed replaced status 2026"
+    - name: Gemini CLI / Antigravity
+      query: "Google Gemini CLI Antigravity rename deprecated replaced status 2026"
+      aliases:
+        - Antigravity
+    - name: Cursor
+      query: "Cursor AI code editor deprecated renamed replaced status 2026"
+    - name: Windsurf / Devin
+      query: "Windsurf AI editor Devin Cognition rename deprecated status 2026"
+      aliases:
+        - Devin
+    - name: GitHub Copilot
+      query: "GitHub Copilot CLI deprecated renamed replaced status 2026"
+    - name: Cline
+      query: "Cline AI coding assistant deprecated renamed replaced status 2026"
+    - name: Continue.dev
+      query: "Continue.dev AI coding assistant deprecated renamed replaced status 2026"
+    - name: Aider
+      query: "Aider AI pair programming tool deprecated renamed replaced status 2026"

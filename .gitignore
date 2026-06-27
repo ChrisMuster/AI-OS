@@ -79,6 +79,9 @@ workflows/knowledge-graph/last-report.md
 # Personal-data-guard denylist holds the user's personal nouns; the .example is tracked
 workflows/personal-data-guard/config/denylist.txt
 
+# Check-for-updates - local last-run timestamp; drives the startup staleness reminder
+workflows/check-for-updates/.last-run
+
 # Reddit collector — downloaded posts and state are personal/machine-specific content
 workflows/reddit-collector/collections/
 workflows/reddit-collector/config/feeds.json

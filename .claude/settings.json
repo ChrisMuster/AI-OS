@@ -10,6 +10,8 @@
       "Bash(python *workflows/link-check/scripts/run.py*)",
       "Bash(python *workflows/web-research/scripts/run.py*)",
       "Bash(python *workflows/weather/scripts/run.py*)",
+      "Bash(python *workflows/check-for-updates/scripts/run.py*)",
+      "Bash(python *workflows/check-for-updates/tests/run_tests.py*)",
       "Bash(python *workflows/session-search/scripts/archive.py*)",
       "Bash(python *workflows/settings-check/scripts/run.py*)",
       "Bash(python *workflows/session-search/scripts/index.py*)",

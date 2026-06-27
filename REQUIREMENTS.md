@@ -27,6 +27,7 @@ The setup script installs the root `requirements.txt`, which includes every work
 | journal | None — standard library only | — |
 | web-research | See workflow requirements | Included by root `requirements.txt` |
 | biblio-tools | mcp >= 1.0.0 (Python 3.10+) | Included by root `requirements.txt`; skipped on Python 3.9 |
+| check-for-updates | PyYAML (config) | Included by root `requirements.txt` |
 
 The Create Wiki dependency provides shared PDF extraction for every supported AI. The biblio-tools MCP server requires Python 3.10+ (the MCP SDK requirement); on Python 3.9 the root manifest skips MCP, while direct workflow scripts remain available.
 

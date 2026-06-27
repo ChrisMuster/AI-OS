@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 26 June 2026
+**Last updated:** 27 June 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -44,6 +44,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Encoding Guard** - Checks the project for encoding problems (invalid UTF-8, mojibake, byte-order marks, and text-mode subprocess calls with no explicit encoding) and repairs corrupted files to clean UTF-8 with LF line endings. Runs standalone via CLI and automatically as part of the full audit. `workflows/encoding-guard/` `[active]`
 - **Personal Data Guard** - Read-only checker that scans committable files for personal data (email addresses, personal home paths, the user's name and account name, and a configurable denylist of personal nouns) so a leak is caught mechanically before commit. Runs standalone via CLI and automatically as an advisory hook in the full audit. `workflows/personal-data-guard/` `[active]`
 - **AI-Style Guard** - Read-only checker that scans added or changed lines (via git diff, so legacy text is never touched) for AI writing tells: high-confidence typographic markers and stock phrases (WARN) plus a tunable single-word denylist (INFO). Enforces the writing-style rule that previously relied on discipline alone. Runs standalone via CLI and automatically as an advisory hook in the full audit. `workflows/ai-style-guard/` `[active]`
+- **Check For Updates** - Reports whether the project's Python packages and installed AI CLI tools have newer versions available, with recommendations. Read-only: it never updates anything; you review the report and decide what to act on. An opt-in advisory landscape mode (`--landscape`) also watches the supported AI tools for product-status changes (renames, deprecations, replacements) via web research. `workflows/check-for-updates/` `[active]`
 
 ## Skills
 
