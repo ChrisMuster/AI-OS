@@ -10,7 +10,7 @@ The scripts that implement the check-for-updates workflow. Kept lean and split b
 - checkers.py - `workflows/check-for-updates/scripts/checkers.py` [[workflows/check-for-updates/scripts/CONTEXT]] - `check_python_deps` (wraps `pip list --outdated`) and the generic config-driven `check_cli_tool`.
 - registries.py - `workflows/check-for-updates/scripts/registries.py` [[workflows/check-for-updates/scripts/CONTEXT]] - Latest-version resolvers (npm registry, GitHub releases) with graceful failure returned as a status string.
 - versions.py - `workflows/check-for-updates/scripts/versions.py` [[workflows/check-for-updates/scripts/CONTEXT]] - Minimal stdlib semver parse and change classification.
-- landscape.py - `workflows/check-for-updates/scripts/landscape.py` [[workflows/check-for-updates/scripts/CONTEXT]] - Phase 2 advisory landscape watch: imports the web-research skill, researches each watched product, and scans the results for status-change signal keywords. Degrades to a status string on failure.
+- landscape.py - `workflows/check-for-updates/scripts/landscape.py` [[workflows/check-for-updates/scripts/CONTEXT]] - Phase 2 advisory landscape watch: imports the web-research skill, researches each watched product, and scans the results for status-change signal keywords. Counts a source only if it also mentions the product (name variant or alias), matched on word boundaries, to cut off-topic noise. Degrades to a status string on failure.
 - report.py - `workflows/check-for-updates/scripts/report.py` [[workflows/check-for-updates/scripts/CONTEXT]] - Text and `--json` report formatting, the update count, and the advisory landscape section.
 
 ## Inputs
@@ -37,3 +37,4 @@ N/A. This directory holds the workflow's scripts; the run sequence is documented
 ## Revision History
 - 2026-06-26 - Initial creation. run.py orchestration, checkers.py, sources.py, versions.py, report.py.
 - 2026-06-27 - Added landscape.py (Phase 2 advisory watch). Renamed sources.py to registries.py to avoid a clash with the web-research skill's `sources` package. report.py gained the landscape section; run.py gained `--landscape`.
+- 2026-06-27 - landscape.py now gates each source on a product mention and matches on word boundaries (precision fix removing off-topic keyword false positives).

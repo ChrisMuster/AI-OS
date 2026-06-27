@@ -69,6 +69,49 @@ class TestScanProduct(unittest.TestCase):
         self.assertEqual(finding["hits"], [])
         self.assertTrue(finding["status"].startswith("research failed"))
 
+    def test_offtopic_source_is_filtered(self):
+        # Keyword present but the source does not mention the product - must not flag.
+        research_fn = _fake_research([
+            {"title": "Oval Invincibles will be renamed as MI London",
+             "content": "cricket news", "url": "u", "tier": 1},
+        ])
+        finding = landscape.scan_product(
+            {"name": "Codex CLI", "query": "q"}, ["renamed"], research_fn)
+        self.assertEqual(finding["signals"], [])
+        self.assertEqual(finding["hits"], [])
+
+    def test_ontopic_keyword_is_flagged(self):
+        research_fn = _fake_research([
+            {"title": "Codex CLI renamed by OpenAI", "content": "...", "url": "u", "tier": 1},
+        ])
+        finding = landscape.scan_product(
+            {"name": "Codex CLI", "query": "q"}, ["renamed"], research_fn)
+        self.assertIn("renamed", finding["signals"])
+
+    def test_substring_does_not_match_inside_longer_word(self):
+        # "Devin" must not match "Devine" (a cricketer in an unrelated story).
+        research_fn = _fake_research([
+            {"title": "Devine and Mooney top the auction", "content": "renamed squad",
+             "url": "u", "tier": 1},
+        ])
+        finding = landscape.scan_product(
+            {"name": "Windsurf / Devin", "query": "q", "aliases": ["Devin"]},
+            ["renamed"], research_fn)
+        self.assertEqual(finding["signals"], [])
+        self.assertEqual(finding["hits"], [])
+
+    def test_alias_mention_passes_identity_gate(self):
+        # A source about the replacement name (alias) alone still counts.
+        research_fn = _fake_research([
+            {"title": "Windsurf becomes Devin Desktop", "content": "rebranded",
+             "url": "u", "tier": 1},
+        ])
+        finding = landscape.scan_product(
+            {"name": "Windsurf / Devin", "query": "q", "aliases": ["Devin"]},
+            ["rebranded"], research_fn)
+        self.assertIn("rebranded", finding["signals"])
+        self.assertIn("Devin", finding["signals"])
+
 
 class TestCheckLandscape(unittest.TestCase):
     def test_disabled(self):
@@ -87,7 +130,8 @@ class TestCheckLandscape(unittest.TestCase):
 
     def test_runs_all_products(self):
         research_fn = _fake_research([
-            {"title": "tool sunset", "content": "", "url": "u", "tier": 1},
+            {"title": "Tool A and Tool B sunset announcement", "content": "",
+             "url": "u", "tier": 1},
         ])
         config = {"landscape": {
             "enabled": True, "signal_keywords": ["sunset"],

@@ -9,6 +9,7 @@ The deterministic ~90% lives here: build the query, scan content for keywords,
 structure the findings. The judgement (is this signal real?) stays with the
 reader, which is why this section is labelled advisory in the report.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -27,9 +28,23 @@ def _load_research():
 
 
 def _scan_text(text, terms):
-    """Return the sorted terms that appear (case-insensitive substring) in text."""
+    """Return the sorted terms that appear in text, matched on alphanumeric boundaries.
+
+    Boundary matching (rather than a raw substring test) stops short product names
+    and keywords from matching inside longer words - e.g. "Devin" must not match
+    "Devine", "Cline" must not match "decline", "Aider" must not match "raider".
+    Matching is case-insensitive; spaces, hyphens, and dots inside a term are
+    matched literally.
+    """
     lowered = (text or "").lower()
-    return sorted({term for term in terms if term and term.lower() in lowered})
+    found = set()
+    for term in terms:
+        if not term:
+            continue
+        pattern = r"(?<![a-z0-9])" + re.escape(term.lower()) + r"(?![a-z0-9])"
+        if re.search(pattern, lowered):
+            found.add(term)
+    return sorted(found)
 
 
 def scan_product(spec, keywords, research_fn, sources=5):
@@ -42,7 +57,15 @@ def scan_product(spec, keywords, research_fn, sources=5):
     """
     name = spec.get("name", "?")
     query = spec.get("query") or f"{name} deprecated renamed replaced status"
-    terms = list(keywords) + list(spec.get("aliases") or [])
+    aliases = list(spec.get("aliases") or [])
+    # Terms that identify this product in a source (name variants split on "/",
+    # plus aliases). A source must mention one of these to count, so a generic
+    # keyword hit in an unrelated story (a sports "rename", a court case about a
+    # worker "replaced by" AI) is filtered out.
+    identity_terms = [part.strip() for part in name.split("/") if part.strip()] + aliases
+    # Terms reported as signals: the status-change keywords plus the aliases (a
+    # replacement name surfacing is itself worth flagging).
+    signal_terms = list(keywords) + aliases
 
     try:
         package = research_fn(topic=query, sources=sources)
@@ -54,7 +77,9 @@ def scan_product(spec, keywords, research_fn, sources=5):
     matched = set()
     for src in package_sources:
         blob = f"{src.get('title', '')}\n{src.get('content', '')}"
-        signals = _scan_text(blob, terms)
+        if not _scan_text(blob, identity_terms):
+            continue  # source is not about this product
+        signals = _scan_text(blob, signal_terms)
         if signals:
             matched.update(signals)
             hits.append({
