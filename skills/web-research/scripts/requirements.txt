@@ -6,6 +6,9 @@ textstat>=0.7.3
 pyyaml>=6.0.0
 python-dotenv>=1.0.0
 lxml>=4.9.0
+# Verify TLS against the OS trust store so HTTPS interception (antivirus or a
+# corporate proxy re-signing certs with a non-certifi root) does not break requests.
+truststore>=0.10
 # Step 2: Tavily
 tavily-python>=0.3.0
 # Added in Step 3:

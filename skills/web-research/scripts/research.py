@@ -21,6 +21,19 @@ try:
 except ImportError:
     pass  # python-dotenv not installed; fall back to environment variables
 
+# Verify TLS against the OS trust store, not just certifi. On machines where
+# antivirus or a corporate proxy intercepts HTTPS (e.g. Norton Web/Mail Shield
+# re-signs certificates with its own root), that root is trusted by the OS but
+# absent from certifi, so requests' default verification fails with
+# CERTIFICATE_VERIFY_FAILED. truststore delegates verification to the native OS
+# store, which trusts it. Must run before the source adapters import requests.
+# No-op if truststore is not installed.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 # Ensure sources/ and compile are importable when called from anywhere
 sys.path.insert(0, str(Path(__file__).parent))
 
