@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-**Last updated:** 2026-06-25
+**Last updated:** 2026-06-28
 
 ## CRITICAL — Rule compliance
 
@@ -72,27 +72,40 @@ If a rule-compliant alternative exists, switch to it silently. Only escalate to 
 
 When writing log entries (per the LOG.md rules in AGENTS.md), always use the Edit tool to append. Never use Bash (`cat >>` or similar) — the Edit tool is always permitted without a permission prompt and is the correct tool for file modification in Claude Code.
 
-## Background scheduler exemption (step 6f)
+## Background scheduler (step 6f) - conditional on surface
 
-Claude is exempt from the background scheduler (AGENTS.md step 6f). Claude uses its own MCP scheduled task (`session-search-archive`) for hourly session-search maintenance, which is more reliable and does not require a background process. Skip step 6f entirely.
+Whether Claude runs the background scheduler depends on the surface, detected by tool availability (the `mcp__scheduled-tasks__*` tools):
+
+- **On Claude Desktop**, where the scheduled-task tools are exposed, Claude relies on the MCP scheduled task (`session-search-archive`) for hourly session-search maintenance and **skips** step 6f - no background process is needed.
+- **On the Claude Code CLI or IDE extension**, where those tools are not exposed, Claude **runs** step 6f: check `python workflows/session-search/scripts/scheduler.py --status`, and if it is not already running, start it detached (`python workflows/session-search/scripts/scheduler.py &`). This is what keeps the hourly index running on a surface that has no scheduled task.
+
+`scheduler.py` is safe to start every session: it is single-instance (PID-file guarded, so it cannot stack up across sessions), it auto-terminates after 4 hours of inactivity, and it cleans up its own PID file on exit. Steps 6e and 6f are complementary - exactly one of the two mechanisms (scheduled task or background scheduler) runs on any given surface, never both.
 
 ## Session maintenance (step 6e)
 
 For step 6e of session startup (AI-specific maintenance), perform the following silently if `workflows/session-search/scripts/index.py` exists:
 
-a. **Scheduled task check** — call `list_scheduled_tasks` and check whether `session-search-archive` exists on this machine. If it does not, create it with the same parameters as first-run step 6b (using forward slashes in the path). Tell the user in a single sentence that it has been set up. If it exists but still runs `archive.py`, update or recreate it so it runs `index.py` instead.
+a. **Hourly session-search maintenance** - Book Dragon keeps the session-search index current on an hourly cadence using whichever mechanism the current surface supports. The scheduled-task tooling is only available on Claude Desktop, so detect by tool availability: are the `mcp__scheduled-tasks__*` tools (e.g. `list_scheduled_tasks` / `create_scheduled_task`) exposed in this session?
+   - **If they are exposed (Claude Desktop):** call `list_scheduled_tasks` and check whether `session-search-archive` exists on this machine. If it does not, create it with the same parameters as first-run step 6 (using forward slashes in the path). Tell the user in a single sentence that it has been set up. If it exists but still runs `archive.py`, update or recreate it so it runs `index.py` instead.
+   - **If they are not exposed (Claude Code CLI or IDE extension):** this is expected, not a failure - do not attempt the scheduled-task tools. Instead run step 6f (the background scheduler) so the hourly index is covered on this surface. Tell the user in a single INFO sentence that the scheduled task is unavailable off Claude Desktop and the background scheduler is handling hourly session-search maintenance instead.
 
 b. **Settings coverage check** — run `python workflows/settings-check/scripts/run.py` silently. Do not report results unless there are FAIL findings. If failures are found, tell the user in a single sentence after greeting them: "Settings coverage check found uncovered commands — [list]. These will prompt for permission when they fire."
 
 ## First-run setup (step 6)
 
-For step 6 of first-run initialisation (AI-specific first-run setup), set up the session-search scheduled task if `workflows/session-search/` exists:
+For step 6 of first-run initialisation (AI-specific first-run setup), set up hourly session-search maintenance if `workflows/session-search/` exists. Use whichever mechanism the current surface supports, detected by whether the `mcp__scheduled-tasks__*` tools are exposed:
+
+**If the scheduled-task tools are exposed (Claude Desktop):**
 
 a. Call `list_scheduled_tasks` to check whether a task with id `session-search-archive` already exists on this machine.
 
 b. If it does not exist, call `create_scheduled_task` with taskId `session-search-archive`, description `Hourly session-search index update — captures and indexes any new or updated Book Dragon sessions`, cronExpression `0 * * * *`, notifyOnCompletion `false`, and a prompt that runs `python <absolute-path-to-project>/workflows/session-search/scripts/index.py` (substituting the real absolute path to the project root on this machine, using **forward slashes** — e.g. `C:/Users/Name/Desktop/AI-Work/AI-OS` — so that the path matches the `settings.json` allowlist pattern `Bash(python *workflows/session-search/scripts/index.py*)`). Quote the path only if it contains spaces. This script is idempotent and safe to re-run; it should not notify on normal completion.
 
 c. Note briefly to the user that the session search scheduled task has been created. If the task already exists, skip this step silently.
+
+**If the scheduled-task tools are not exposed (Claude Code CLI or IDE extension):**
+
+d. Do not attempt the scheduled-task tools. Hourly maintenance on this surface is handled by the background scheduler (step 6f) instead, so there is nothing to create here. Note briefly to the user that, off Claude Desktop, the background scheduler covers hourly session-search maintenance.
 
 ## Project memory — Claude-specific
 
