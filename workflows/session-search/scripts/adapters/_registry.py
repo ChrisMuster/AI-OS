@@ -11,7 +11,6 @@ Maps source labels to adapter instances. When adding a new AI source:
 from .claude_code import ClaudeCodeAdapter
 from .cline import ClineAdapter
 from .codex import CodexAdapter
-from .continue_dev import ContinueDevAdapter
 from .copilot import CopilotAdapter
 from .cowork import CoworkAdapter
 from .cursor import CursorAdapter
@@ -25,7 +24,6 @@ REGISTRY: dict = {
     'codex':        CodexAdapter(),
     'copilot':      CopilotAdapter(),
     'gemini-cli':   GeminiCliAdapter(),
-    'continue-dev': ContinueDevAdapter(),
     'opencode':     OpenCodeAdapter(),
     'cursor':       CursorAdapter(),
     'cline':        ClineAdapter(),

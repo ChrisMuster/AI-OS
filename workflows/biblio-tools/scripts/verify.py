@@ -106,13 +106,6 @@ AI_REQUIREMENTS: dict = {
         "agents_md": "manual",
         "mcp_config": ("mcp-json", ".mcp.json"),
     },
-    "Continue": {
-        "wrapper": ".continue/rules/00-project.md",
-        "mcp_support": True,
-        "config_files": [],
-        "agents_md": "native",
-        "mcp_config": ("mcp-json", ".mcp.json"),
-    },
     "Aider": {
         "wrapper": ".aider.conf.yml",
         "mcp_support": True,

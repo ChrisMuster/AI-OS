@@ -112,7 +112,7 @@ Text-based PDFs work across all supported AIs, regardless of whether the AI prod
 
 A Python background scheduler (`workflows/session-search/scripts/scheduler.py`) runs `index.py` every hour to catch sessions that hooks may have missed and refresh the SQLite search index. It is started automatically at session startup (AGENTS.md step 6f) for all AIs except Claude (which uses its own MCP scheduled task instead).
 
-The scheduler is PID-file-guarded - only one instance runs at a time. It auto-terminates after 4 hours of inactivity (no new sessions archived or indexed). It is especially important for AIs without session hooks (GitHub Copilot, Continue.dev, OpenCode, Aider), where it is the primary archive-and-index mechanism.
+The scheduler is PID-file-guarded - only one instance runs at a time. It auto-terminates after 4 hours of inactivity (no new sessions archived or indexed). It is especially important for AIs without session hooks (GitHub Copilot, OpenCode, Aider), where it is the primary archive-and-index mechanism.
 
 | Command | Description |
 |---|---|
@@ -280,25 +280,6 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 4. For MCP: configure in Cline's MCP settings.
 
 **Important:** Cline is the only supported AI that does not auto-load `AGENTS.md`. The wrapper file has a bold "CRITICAL — Read AGENTS.md first" section to ensure it is read manually. When native support is added, the wrapper will be simplified.
-
-### Continue.dev
-
-| Item | Detail |
-|---|---|
-| Wrapper file | `.continue/rules/00-project.md` |
-| AGENTS.md loading | Native |
-| MCP support | Yes |
-| Config files | None beyond the rule file |
-| Session hooks | Not yet available — Continue.dev hook support is pending official documentation. Relies on background scheduler for session archiving. |
-| Session transcripts | `~/.continue/sessions/<uuid>.json` — adapter: `continue-dev` |
-| AI identity | `Continue` |
-
-**Setup steps:**
-1. Ensure Python 3.9+ is installed.
-2. Install the Continue extension.
-3. Open the project. Continue reads `.continue/rules/00-project.md` and `AGENTS.md` automatically.
-
-**Note:** Additional rules can be scoped to specific files using `globs` in YAML frontmatter.
 
 ### Aider
 

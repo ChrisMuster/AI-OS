@@ -88,7 +88,5 @@ landscape:
       query: "GitHub Copilot CLI deprecated renamed replaced status 2026"
     - name: Cline
       query: "Cline AI coding assistant deprecated renamed replaced status 2026"
-    - name: Continue.dev
-      query: "Continue.dev AI coding assistant deprecated renamed replaced status 2026"
     - name: Aider
       query: "Aider AI pair programming tool deprecated renamed replaced status 2026"

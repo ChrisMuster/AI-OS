@@ -1,6 +1,6 @@
 # Session Search — Scripts
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-06-30
 
 ## Purpose
 Python scripts that implement the session-search workflow: archiving conversation transcripts, building the SQLite FTS5 search index, querying it, scaffolding adapters for new AI sources, and running the background archive scheduler.
@@ -11,7 +11,7 @@ Python scripts that implement the session-search workflow: archiving conversatio
 - search.py - `workflows/session-search/scripts/search.py` [[workflows/session-search/scripts/CONTEXT]] - Queries all machine shards and returns merged, ranked results. Supports a `--json` mode that prints the result list as a bare JSON array on stdout (per-shard FTS5 warnings go to stderr so stdout stays pure JSON); this is the contract the knowledge-graph `sessions` cross-reference command consumes.
 - discover.py - `workflows/session-search/scripts/discover.py` [[workflows/session-search/scripts/CONTEXT]] - Inspects a new AI tool's data footprint; either identifies a matching existing adapter or scaffolds a blank one.
 - scheduler.py - `workflows/session-search/scripts/scheduler.py` [[workflows/session-search/scripts/CONTEXT]] - Background scheduler. Runs index.py every hour in a loop so archive records become searchable. PID-file-guarded, auto-terminates after 4 hours of inactivity. Used by non-Claude AIs (Claude uses its MCP scheduled task). Started at AGENTS.md step 6e.
-- adapters/ - `workflows/session-search/scripts/adapters/` [[workflows/session-search/scripts/adapters/CONTEXT]] - Session transcript adapters for 9 AI sources (claude-code, cowork, codex, copilot, gemini-cli, continue-dev, opencode, cursor, cline).
+- adapters/ - `workflows/session-search/scripts/adapters/` [[workflows/session-search/scripts/adapters/CONTEXT]] - Session transcript adapters for 8 AI sources (claude-code, cowork, codex, copilot, gemini-cli, opencode, cursor, cline).
 
 ## Inputs
 - Claude Code JSONL cache files (read-only)
@@ -20,7 +20,6 @@ Python scripts that implement the session-search workflow: archiving conversatio
 - Codex session JSONL files (read-only, from `~/.codex/sessions/`)
 - Copilot CLI events JSONL files (read-only, from `~/.copilot/session-state/`)
 - Gemini CLI chat files (read-only, from `~/.gemini/tmp/`)
-- Continue.dev session JSON files (read-only, from `~/.continue/sessions/`)
 - OpenCode SQLite database (read-only, from `~/.local/share/opencode/`)
 - Cursor agent transcript JSONL files (read-only, from `~/.cursor/projects/`)
 - Cline task JSON files (read-only, from VS Code globalStorage)
@@ -57,3 +56,4 @@ N/A. Scripts are invoked individually; see each script's module docstring for us
 - 2026-06-24 - search.py gained a `--json` output mode (bare JSON list on stdout; per-shard FTS5 warnings rerouted to stderr so stdout stays pure JSON) as the contract for the knowledge-graph `sessions` cross-reference command. Restructured `main()` to parse args before checking for shards so `--json` works with an absent index (yielding `[]`); the human path is otherwise unchanged. Fixed the `search()` docstring to list the `ai_identity` field it already returned.
 - 2026-06-24 - Added AI identity alias canonicalisation in archive.py so the VS Code Codex extension label normalises to the supported `Codex CLI` identity.
 - 2026-06-24 - Updated scheduler.py to run index.py hourly instead of archive.py only, keeping non-Claude session archives searchable without a separate manual index run.
+- 2026-06-30 - Removed the Continue.dev adapter and its registry entry (discover.py KNOWN_SOURCES and the adapters Contents count); adapters now cover 8 AI sources. Continue.dev support dropped (project sunsetting).
