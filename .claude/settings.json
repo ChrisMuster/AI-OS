@@ -1,69 +1,104 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(python --version)",
-      "Bash(py --version)",
-      "Bash(python3 --version)",
-      "mcp__scheduled-tasks__list_scheduled_tasks",
-      "Bash(python *workflows/audit/scripts/run.py*)",
-      "Bash(python *workflows/create-wiki/scripts/run.py*)",
-      "Bash(python *workflows/link-check/scripts/run.py*)",
-      "Bash(python *workflows/web-research/scripts/run.py*)",
-      "Bash(python *workflows/weather/scripts/run.py*)",
-      "Bash(python *workflows/check-for-updates/scripts/run.py*)",
-      "Bash(python *workflows/check-for-updates/tests/run_tests.py*)",
-      "Bash(python *workflows/session-search/scripts/archive.py*)",
-      "Bash(python *workflows/settings-check/scripts/run.py*)",
-      "Bash(python *workflows/session-search/scripts/index.py*)",
-      "Bash(python *workflows/session-search/scripts/search.py*)",
-      "Bash(python *workflows/session-search/scripts/discover.py*)",
-      "Bash(python *workflows/session-search/scripts/scheduler.py*)",
-      "Bash(python *journal/scripts/new-month.py*)",
-      "Bash(date *)",
-      "Bash(python *workflows/biblio-tools/scripts/verify.py*)",
-      "mcp__biblio-tools__run_audit",
-      "mcp__biblio-tools__run_link_check",
-      "mcp__biblio-tools__run_new_month",
-      "mcp__biblio-tools__run_session_search_index",
-      "mcp__biblio-tools__run_settings_check",
-      "mcp__biblio-tools__get_timestamp",
-      "mcp__biblio-tools__append_log",
-      "mcp__biblio-tools__verify_setup"
-    ]
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python workflows/session-search/scripts/archive.py --hook"
-          }
+    "permissions": {
+        "allow": [
+            "Bash(python --version)",
+            "Bash(py --version)",
+            "Bash(python3 --version)",
+            "mcp__scheduled-tasks__list_scheduled_tasks",
+            "Bash(python *workflows/audit/scripts/run.py*)",
+            "Bash(python *workflows/create-wiki/scripts/run.py*)",
+            "Bash(python *workflows/link-check/scripts/run.py*)",
+            "Bash(python *workflows/web-research/scripts/run.py*)",
+            "Bash(python *workflows/weather/scripts/run.py*)",
+            "Bash(python *workflows/check-for-updates/scripts/run.py*)",
+            "Bash(python *workflows/check-for-updates/tests/run_tests.py*)",
+            "Bash(python *workflows/session-search/scripts/archive.py*)",
+            "Bash(python *workflows/settings-check/scripts/run.py*)",
+            "Bash(python *workflows/session-search/scripts/index.py*)",
+            "Bash(python *workflows/session-search/scripts/search.py*)",
+            "Bash(python *workflows/session-search/scripts/discover.py*)",
+            "Bash(python *workflows/session-search/scripts/scheduler.py*)",
+            "Bash(python *journal/scripts/new-month.py*)",
+            "Bash(date *)",
+            "Bash(python *workflows/biblio-tools/scripts/verify.py*)",
+            "Bash(python *workflows/rule-hooks/scripts/run.py*)",
+            "Bash(python *workflows/rule-hooks/tests/test_rule_hooks.py*)",
+            "mcp__biblio-tools__run_audit",
+            "mcp__biblio-tools__run_link_check",
+            "mcp__biblio-tools__run_new_month",
+            "mcp__biblio-tools__run_session_search_index",
+            "mcp__biblio-tools__run_settings_check",
+            "mcp__biblio-tools__get_timestamp",
+            "mcp__biblio-tools__append_log",
+            "mcp__biblio-tools__verify_setup"
         ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python workflows/session-search/scripts/archive.py --hook"
-          }
+    },
+    "hooks": {
+        "Stop": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python workflows/session-search/scripts/archive.py --hook"
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python workflows/session-search/scripts/archive.py --hook"
+                    }
+                ]
+            }
+        ],
+        "Notification": [
+            {
+                "matcher": "idle_prompt",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python workflows/session-search/scripts/archive.py --hook"
+                    }
+                ]
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python workflows/rule-hooks/scripts/run.py --ai claude",
+                        "timeout": 5
+                    }
+                ]
+            },
+            {
+                "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python workflows/rule-hooks/scripts/run.py --ai claude",
+                        "timeout": 5
+                    }
+                ]
+            }
+        ],
+        "SessionStart": [
+            {
+                "matcher": "startup|resume|clear|compact",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python workflows/rule-hooks/scripts/run.py --reinject"
+                    }
+                ]
+            }
         ]
-      }
-    ],
-    "Notification": [
-      {
-        "matcher": "idle_prompt",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python workflows/session-search/scripts/archive.py --hook"
-          }
-        ]
-      }
-    ]
-  }
+    }
 }

@@ -627,6 +627,35 @@ def check_user_md() -> dict:
     }
 
 
+def check_git_precommit_hook() -> dict:
+    """Check the universal git pre-commit hook (rule-hooks B3) is active.
+
+    The hook lives at workflows/rule-hooks/git-hooks/pre-commit and is activated
+    by pointing core.hooksPath at that directory. WARN (not FAIL) if inactive so
+    a fresh clone is prompted to run the one-line activation without the whole
+    verification failing.
+    """
+    expected = "workflows/rule-hooks/git-hooks"
+    hook_file = PROJECT_ROOT / "workflows" / "rule-hooks" / "git-hooks" / "pre-commit"
+    if not hook_file.exists():
+        return {"check": "Git pre-commit hook", "status": "WARN",
+                "detail": f"{expected}/pre-commit not found - personal-data commit gate inactive."}
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "core.hooksPath"],
+            cwd=str(PROJECT_ROOT), capture_output=True, encoding="utf-8", timeout=10)
+        configured = result.stdout.strip()
+    except Exception as exc:
+        return {"check": "Git pre-commit hook", "status": "WARN",
+                "detail": f"Could not read core.hooksPath ({exc})."}
+    if configured.replace("\\", "/").rstrip("/") == expected:
+        return {"check": "Git pre-commit hook", "status": "PASS",
+                "detail": f"core.hooksPath -> {expected} (personal-data commit gate active)."}
+    return {"check": "Git pre-commit hook", "status": "WARN",
+            "detail": (f"core.hooksPath is '{configured or 'unset'}'; expected "
+                       f"'{expected}'. Activate with: git config core.hooksPath {expected}")}
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -646,6 +675,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
             ".env file",
             "Project Python runtime",
             "PDF extraction",
+            "Git pre-commit hook",
         ]
         for cf in reqs["config_files"]:
             checks.append(f"Config: {cf}")
@@ -666,6 +696,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     results.append(check_env_file())
     results.append(check_project_runtime())
     results.append(check_pdf_extraction())
+    results.append(check_git_precommit_hook())
     results.extend(check_config_files(reqs["config_files"]))
 
     if reqs.get("readiness_blocker"):

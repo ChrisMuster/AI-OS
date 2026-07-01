@@ -1,0 +1,30 @@
+# Rule Hooks - Tests
+
+**Last modified:** 2026-07-01
+
+## Purpose
+Synthetic-event tests for the rule-hooks evaluator: prove each rule blocks what it should and allows what it should (the false-positive guards), and prove each adapter parses its AI's payload and emits the right block contract. Verification discipline: the build is not done until the suite passes and a live block is confirmed.
+
+## Contents
+- test_rule_hooks.py - `workflows/rule-hooks/tests/test_rule_hooks.py` [[workflows/rule-hooks/tests/CONTEXT]] - The full suite (53 tests): per-rule block/allow cases via the in-process Context pipeline, adapter input-parsing tests, and subprocess tests asserting the real output contracts (Claude exit 2 + stderr; Codex `hookSpecificOutput` JSON deny). Destructive cases use safe synthetic strings only; the B3 detection email is assembled at runtime so the literal never appears in the committed source.
+
+## Inputs
+- None beyond the workflow scripts under test and the live git repo (the B3 gitignored-vs-committable test uses real `git check-ignore`).
+
+## Outputs
+- Test pass/fail results on stdout.
+
+## Steps
+1. Run: `python workflows/rule-hooks/tests/test_rule_hooks.py`
+2. All tests must pass before the work is ready.
+
+## Dependencies
+- `workflows/rule-hooks/scripts/` [[workflows/rule-hooks/scripts/CONTEXT]] - The code under test.
+- `workflows/personal-data-guard/` [[workflows/personal-data-guard/CONTEXT]] - Reached via the B3 rule in the personal-data tests.
+
+## Known Issues
+- The subprocess tests spawn `run.py`, so the suite shells out; it stays fast (about 2 seconds) because the evaluator is light at import time.
+
+## Revision History
+- 2026-06-30 - Initial creation: 33 tests across A7/A4/A6/B3 rules, A2/A3 trials, both adapters, and the subprocess exit-code contracts.
+- 2026-07-01 - Added Codex regression coverage for the live hook failure: apply_patch payloads using `tool_input.command` and the supported `hookSpecificOutput.permissionDecision="deny"` contract.

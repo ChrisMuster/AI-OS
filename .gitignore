@@ -90,6 +90,10 @@ workflows/reddit-collector/Read *.bat
 workflows/reddit-collector/Stop *.bat
 workflows/reddit-collector/.reader_server.pid
 
+# rule-hooks fire-log: runtime, machine-specific record of trial-rule fires and
+# blocks. Infrastructure, not a logged workflow run - never committed.
+workflows/rule-hooks/fire-log.jsonl
+
 # Design-time documents (plans, handovers, proposals, roadmaps) are personal
 # working artifacts — never committed. They routinely capture machine-, session-,
 # and user-specific context. Durable, generic design decisions live in the tracked

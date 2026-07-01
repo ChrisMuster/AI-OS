@@ -21,3 +21,23 @@ tool_timeout_sec = 300
 [[hooks.Stop.hooks]]
 type = "command"
 command = "python workflows/session-search/scripts/index.py"
+
+# Deterministic rule-enforcement hooks (workflows/rule-hooks). PreToolUse fires
+# before a shell or file-edit tool runs; run.py evaluates the rules and denies
+# on a violation. SessionStart re-injects the permission-gate reminder.
+[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python workflows/rule-hooks/scripts/run.py --ai codex"
+
+[[hooks.PreToolUse]]
+matcher = "apply_patch"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python workflows/rule-hooks/scripts/run.py --ai codex"
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "python workflows/rule-hooks/scripts/run.py --reinject"

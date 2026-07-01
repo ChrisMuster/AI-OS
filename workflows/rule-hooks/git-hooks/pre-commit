@@ -1,0 +1,11 @@
+#!/bin/sh
+# Book Dragon universal git pre-commit hook (rule B3 layer 2 - personal data).
+#
+# AI-agnostic safety net: fires at commit time no matter who staged the change
+# (any AI, or a manual commit), and is the sole preventive layer Aider gets.
+# The detection logic lives in the workflow (one source of truth, reused from
+# personal-data-guard); this shim is only the entry point.
+#
+# Activated by `git config core.hooksPath workflows/rule-hooks/git-hooks`.
+# Human override (use sparingly): git commit --no-verify
+exec python workflows/rule-hooks/scripts/run.py --precommit

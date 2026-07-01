@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-06-27
+**Last modified:** 2026-06-30
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -20,6 +20,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - Personal Data Guard - `workflows/personal-data-guard/` [[workflows/personal-data-guard/CONTEXT]] - Read-only checker that scans committable files for personal data (emails, personal home paths, the user's name/username, and a configurable denylist of personal nouns); the full audit runs the check automatically as an advisory hook.
 - AI-Style Guard - `workflows/ai-style-guard/` [[workflows/ai-style-guard/CONTEXT]] - Read-only checker that scans added or changed lines (via git diff) for AI writing tells: typographic markers and stock phrases (WARN) and a tunable single-word denylist (INFO); the full audit runs the check automatically as an advisory hook.
 - Check For Updates - `workflows/check-for-updates/` [[workflows/check-for-updates/CONTEXT]] - Reports whether the project's Python packages and installed AI CLI tools have newer versions available; read-only, it recommends but never updates. An opt-in advisory landscape mode (`--landscape`) watches the supported AI tools for product-status changes (renames, deprecations, replacements) via web research.
+- Rule Hooks - `workflows/rule-hooks/` [[workflows/rule-hooks/CONTEXT]] - Deterministic rule enforcement: moves load-bearing always/never rules out of prose into hooks that block a violation at the moment an AI acts. Phase 1 wires Claude Code and Codex (rules A7/.env, A4/LOG-redirect, A6/dangerous-bash, B3/personal-data blocking; A2/A3 trial log-only) plus a universal git pre-commit personal-data gate and SessionStart re-injection.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -38,9 +39,7 @@ N/A. This is a container directory, not a workflow itself.
 - The Contents section of this file must be updated every time a new workflow is added or removed. Container directories are easy to forget when the focus is on the new subdirectory itself.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-06-26.
-- 2026-06-10 — Added biblio-tools MCP server to Contents (Phase 3, AI-agnostic transition).
-- 2026-06-12 — Updated the Audit entry to include targeted CONTEXT.md metadata checks.
+Earlier history archived to LOG.md on 2026-06-30.
 - 2026-06-15 — Added reddit-collector workflow to Contents.
 - 2026-06-19 — Added knowledge-graph workflow to Contents.
 - 2026-06-24 - Added encoding-guard workflow to Contents.
@@ -48,3 +47,4 @@ Earlier history archived to LOG.md on 2026-06-26.
 - 2026-06-25 - Added ai-style-guard workflow to Contents.
 - 2026-06-26 - Added check-for-updates workflow to Contents.
 - 2026-06-27 - Updated the check-for-updates entry: Phase 2 advisory landscape mode is now built (`--landscape`).
+- 2026-06-30 - Added rule-hooks workflow to Contents (Phase 1 of the deterministic rule-enforcement hooks).
