@@ -80,6 +80,17 @@ This rule applies from the very first message of a session. It is not suspended 
 
 If a command or tool call fails, is rejected, or triggers a permission prompt, do not push through it or ask the user to approve it. A rejection or permission prompt is a guardrail, not friction — the default assumption is that the guardrail is correct and your approach is wrong. Stop, check whether you are violating a project rule — wrong tool, wrong path format, absolute path where relative is required, or a tool substitution that bypasses the prescribed method. If a rule-compliant alternative exists, switch to it silently. Only escalate to the user if you have checked all applicable rules and genuinely cannot find a compliant alternative.
 
+### Verification discipline
+
+Verification is the single largest quality multiplier: give yourself a way to observe whether a change is correct, rather than trusting that it reads correctly. Two rules follow, and neither is optional.
+
+1. **Always provide a way to verify.** Every change ships with something runnable that confirms it: a test, a check command, an audit pass, or a rendered output read back. If a change cannot be verified, scope it down until it can, or do not make it.
+2. **Never declare success on a failed or unrun check.** If a verification step fails, say so plainly and iterate. Do not write a confident summary over a red result. If a required check was never run, it has not passed. A "the checks pass" claim must be backed by a check that actually ran and actually passed, not by prose.
+
+The mechanical backing for these rules is the close-out verifier [[workflows/close-out/CONTEXT]]: `python workflows/close-out/scripts/run.py` runs the structural audit, the link audit, and the workflow test suites as one pass/fail gate, so a "checks pass" claim is the script's exit code rather than an assertion. It defaults to the tests for the affected workflows; a full close-out runs `--scope all`. It is triggered by hand, never automatically, and it does not replace the judgement steps of close-out (plan complete, logs current, CONTEXT accurate).
+
+For work that touches multiple files or infrastructure and lifecycle code, also route the diff through a writer/reviewer pass before commit: one agent writes, then a second with fresh context (ideally a different model) reviews the diff for correctness, edge cases, security, and rule adherence, with explicit licence to fail the work. A reviewer with no stake in the writer's reasoning catches what the writer cannot see.
+
 ### Reading context before working
 
 Before making any changes to a directory, Biblio must read that directory's `CONTEXT.md` and the last 15 entries of its `LOG.md`. This applies to every directory that will be touched in a session — not the entire project up front, but each directory before work begins in it. If work expands to cover additional directories mid-session, read their `CONTEXT.md` and `LOG.md` before touching them too.
@@ -114,7 +125,7 @@ During close-out:
 2. Confirm every required `LOG.md` is current.
 3. Review affected `CONTEXT.md` files and complete any missing propagation.
 4. Perform the CONTEXT.md close-out review below.
-5. Run the link pass, structural audit, and any applicable lint or test commands.
+5. Run the link pass, then the close-out verifier (`python workflows/close-out/scripts/run.py --scope all`), which bundles the structural audit and the workflow test suites into one pass/fail result. Do not declare close-out clean on a failed or unrun verifier.
 6. Fix any failures or warnings that mean the work is not ready, then rerun the relevant checks.
 7. Report the completed changes and check results to the user for review.
 
@@ -128,9 +139,9 @@ The CONTEXT.md close-out review covers every `CONTEXT.md` created or modified in
 After the CONTEXT.md close-out review:
 
 1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run — it is idempotent and only adds links that are not already present.
-2. Run the structural audit (`python workflows/audit/scripts/run.py`) to confirm nothing structural was missed. A full audit also validates the structural knowledge graph, surfacing any graph regression (broken reference, orphan, uncontained directory) under a `knowledge-graph` label.
+2. Run the close-out verifier (`python workflows/close-out/scripts/run.py --scope all`). It bundles the structural audit (which also validates the structural knowledge graph, surfacing any broken reference, orphan, or uncontained directory under a `knowledge-graph` label) with the workflow test suites and returns one pass/fail result. Running the audit on its own (`python workflows/audit/scripts/run.py`) is still fine for a quick structural-only check mid-task.
 
-A clean audit and all other applicable checks are required before the work is ready for staging.
+A clean verifier and all other applicable checks are required before the work is ready for staging.
 
 After the user reviews the close-out report, staging requires a separate explicit instruction. Committing requires another explicit instruction after staging. Never treat approval to implement a task, run close-out, or stage files as approval for a later Git step.
 
@@ -336,6 +347,8 @@ workflows/<workflow-name>/skills/<skill-name>/SKILL.md
 One skill per subdirectory. Even if a workflow only has one skill, it still goes in `workflows/<workflow-name>/skills/<skill-name>/` — no loose SKILL.md files floating in the workflow root.
 
 Each skill directory must have its own `CONTEXT.md` (per the universal rule). The SKILL.md is the functional spec — what the skill does and how to run it. The CONTEXT.md is the "why this exists" for the directory. For tiny skills these can be short, but the rule stays consistent.
+
+Every new SKILL.md is scaffolded from `templates/SKILL.md.template` [[templates/CONTEXT]], which fixes a lightweight schema: Purpose, When to use, Inputs, How to run, Outputs, Verification, Dependencies, and (optional) Known Issues. The **Verification** section is required: it must state how a caller confirms the skill produced a correct result, meaning the command, test, or observable check that proves it worked and what a failed check looks like. A skill with no stated way to verify its output is one you have to trust on prose, which the Verification discipline rule forbids. Existing SKILL.md files predate the template and are brought onto the schema (and given a Verification section) when they are next meaningfully edited, not in a mass rewrite.
 
 When a workflow has skills, they must be documented in that workflow's `CONTEXT.md` in two places:
 

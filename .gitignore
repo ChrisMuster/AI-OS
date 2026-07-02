@@ -24,6 +24,9 @@ workflows/audit/last-report.md
 # Link-check report — generated output (only created with --save), local only
 workflows/link-check/last-report.md
 
+# Close-out verifier — most recent result, regenerated on every run, local only
+workflows/close-out/last-result.json
+
 # Weather workflow — saved locations contain personal place data; local only
 workflows/weather/locations.json
 

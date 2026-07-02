@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 30 June 2026
+**Last updated:** 2 July 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -46,6 +46,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **AI-Style Guard** - Read-only checker that scans added or changed lines (via git diff, so legacy text is never touched) for AI writing tells: high-confidence typographic markers and stock phrases (WARN) plus a tunable single-word denylist (INFO). Enforces the writing-style rule that previously relied on discipline alone. Runs standalone via CLI and automatically as an advisory hook in the full audit. `workflows/ai-style-guard/` `[active]`
 - **Check For Updates** - Reports whether the project's Python packages and installed AI CLI tools have newer versions available, with recommendations. Read-only: it never updates anything; you review the report and decide what to act on. An opt-in advisory landscape mode (`--landscape`) also watches the supported AI tools for product-status changes (renames, deprecations, replacements) via web research. `workflows/check-for-updates/` `[active]`
 - **Rule Hooks** - Deterministic rule enforcement that moves load-bearing always/never rules out of prose into hooks that block a violation the moment an AI acts. Phase 1 covers Claude Code and Codex (blocking: protect .env, no shell redirect into LOG.md, no dangerous bash, no personal data in committable files; plus two log-only trial rules) and ships a universal git pre-commit personal-data gate that protects every AI and manual commits, with a SessionStart reminder of the permission gate. `workflows/rule-hooks/` `[active]`
+- **Close-out** - The executable half of the close-out task: one command that runs the structural audit, the link audit, and the workflow test suites as a single pass/fail gate, so a "checks pass" claim is a script exit code rather than prose. Defaults to the tests for the workflows changed in the current work; `--scope all` runs every suite for a full close-out. Backs the Verification discipline rule in AGENTS.md. `workflows/close-out/` `[active]`
 
 ## Skills
 

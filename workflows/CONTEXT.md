@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-06-30
+**Last modified:** 2026-07-02
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -21,6 +21,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - AI-Style Guard - `workflows/ai-style-guard/` [[workflows/ai-style-guard/CONTEXT]] - Read-only checker that scans added or changed lines (via git diff) for AI writing tells: typographic markers and stock phrases (WARN) and a tunable single-word denylist (INFO); the full audit runs the check automatically as an advisory hook.
 - Check For Updates - `workflows/check-for-updates/` [[workflows/check-for-updates/CONTEXT]] - Reports whether the project's Python packages and installed AI CLI tools have newer versions available; read-only, it recommends but never updates. An opt-in advisory landscape mode (`--landscape`) watches the supported AI tools for product-status changes (renames, deprecations, replacements) via web research.
 - Rule Hooks - `workflows/rule-hooks/` [[workflows/rule-hooks/CONTEXT]] - Deterministic rule enforcement: moves load-bearing always/never rules out of prose into hooks that block a violation at the moment an AI acts. Phase 1 wires Claude Code and Codex (rules A7/.env, A4/LOG-redirect, A6/dangerous-bash, B3/personal-data blocking; A2/A3 trial log-only) plus a universal git pre-commit personal-data gate and SessionStart re-injection.
+- Close-out - `workflows/close-out/` [[workflows/close-out/CONTEXT]] - The executable close-out verifier: bundles the structural audit, the link audit, and the workflow test suites into one pass/fail gate so a "checks pass" claim is a script exit code, not prose. Backs the AGENTS.md Verification discipline rule.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -48,3 +49,4 @@ Earlier history archived to LOG.md on 2026-06-30.
 - 2026-06-26 - Added check-for-updates workflow to Contents.
 - 2026-06-27 - Updated the check-for-updates entry: Phase 2 advisory landscape mode is now built (`--landscape`).
 - 2026-06-30 - Added rule-hooks workflow to Contents (Phase 1 of the deterministic rule-enforcement hooks).
+- 2026-07-02 - Added close-out workflow to Contents (the executable close-out verifier; best-practices umbrella child #2, verification discipline).
