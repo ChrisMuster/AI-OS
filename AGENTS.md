@@ -40,12 +40,13 @@ At the start of every new session, before doing anything else:
 9. **Backlog review** — read `memory/backlog.md` silently. Check each Active item against recent git history and session context. If any item appears to have been completed, flag it to the user: "[X] looks like it may be done — should I move it to Completed?" Do not move items without confirmation. If nothing is stale, say nothing. This check is silent unless it finds something.
 10. **Update-check staleness reminder** - read `workflows/check-for-updates/.last-run` silently (a local timestamp file; no network call). If it is missing, or its timestamp is older than the `staleness_months` value in `workflows/check-for-updates/config/sources.yaml` (default 3 months), then after greeting tell the user in a single sentence: "You haven't run the update check in over [N] months - want to run it now?" Run it only on confirmation; never run it automatically. If the file is recent, say nothing. This check is silent unless the check is due.
 11. **Weekly-review staleness gate** - if `workflows/weekly-review/scripts/run.py` exists, run `python workflows/weekly-review/scripts/run.py --status` silently (read-only; no network call). If it reports a review is due, after greeting tell the user in a single sentence that a weekly review is due and offer to run it, relaying any empty-journal-day warning it prints so they can fill those days in first. Run it only on confirmation, never automatically; the weekly-review skill drives the write. If it reports none due, say nothing. This check is silent unless a review is due.
-12. Wait for the user to say what they want to work on.
-13. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
+12. **Handoff recovery** - if `workflows/handoff/scripts/run.py` exists, run `python workflows/handoff/scripts/run.py --status` silently (read-only; no network call). If it reports an unread handoff, read the `HANDOVER.md` at the project root, then run `python workflows/handoff/scripts/run.py --seen` to acknowledge it so it is not surfaced again on a later session. Fold a short summary into the opening greeting (after any journal, backlog, update, or review notes): what the last session handed off and what it looks like is next. Present it; do not auto-start the work - the user still chooses. If it reports no unread handoff, say nothing. This check is silent unless a handoff is waiting.
+13. Wait for the user to say what they want to work on.
+14. Once you know the task, read the `CONTEXT.md` and `LOG.md` of every directory you will touch before making any changes (per the "Reading context before working" rule below).
 
-Do not skip step 0 or steps 1 to 11. Do not summarise what you have read back to the user unless they ask. After finishing steps 1 to 11, greet the user by name (from `USER.md`) and ask what they want to work on today.
+Do not skip step 0 or steps 1 to 12. Do not summarise what you have read back to the user unless they ask. After finishing steps 1 to 12, greet the user by name (from `USER.md`), choosing the salutation that matches the current local time (from `get_timestamp` or `date`): use **Good morning** before 12:00, **Good afternoon** from 12:00 to 17:59, and **Good evening** from 18:00 onward. Then ask what they want to work on today - or, if a handoff was surfaced in step 12, offer to resume it.
 
-Once the task is known and context is read (steps 12 and 13), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
+Once the task is known and context is read (steps 13 and 14), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
 
 ## Directory structure
 
@@ -75,7 +76,7 @@ Permission applies to the overall task and agreed plan, not to each file change 
 
 This rule applies from the very first message of a session. It is not suspended by the presence of detailed instructions, a previous conversation about the task, or the user saying "that is what we will use."
 
-**Exemption - session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), the backlog review (step 9), the update-check staleness reminder (step 10), the weekly-review staleness gate (step 11), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
+**Exemption - session startup maintenance tasks:** The automatic tasks performed during session startup are exempt from this rule. This covers the Python check (step 0), setup verification and AI-specific maintenance (step 6), the journal check (step 7), the journal USER.md scan (step 8), the backlog review (step 9), the update-check staleness reminder (step 10), the weekly-review staleness gate (step 11), the handoff recovery check (step 12), and the first-run initialisation procedure when triggered. These are housekeeping operations defined by the instruction files, not user-directed work. They run on every session on every machine and do not require explicit permission.
 
 ### Self-correction on tool errors
 
@@ -336,6 +337,30 @@ After filling in all placeholders, Biblio must run the full verification checkli
 ---
 
 **Conventions — how things are organised and written**
+
+### Triggers and session handoff
+
+Book Dragon deliberately has no per-AI slash commands. Actions are invoked in plain
+language, and the phrases that trigger them live in one tracked registry,
+`workflows/triggers/config/triggers.yaml` [[workflows/triggers/CONTEXT]], so they
+work identically on every AGENTS-reading AI. Recognise a registered phrase when the
+user says it and run the mapped action. When the user asks for a list of triggers or
+skills ("give me a list of triggers", "list the skills", "what can I ask you to
+do"), run `python workflows/triggers/scripts/run.py --list` and show the grouped
+result rather than reciting from memory. Keep the registry in sync when an action is
+added or renamed.
+
+**Session handoff** is the trigger-driven way to save state between sessions. When
+the user asks for a handoff ("do the handoff", "hand off", "wrap up the session"),
+run `python workflows/handoff/scripts/run.py --gather` and write `HANDOVER.md` at the
+project root following the handoff skill [[workflows/handoff/skills/handoff/CONTEXT]]
+(overwrite any existing one - it is a single rolling file, gitignored via
+`**/HANDOVER.md`). If the user adds a steer with the trigger ("keep this in mind",
+"this is where I'm going next session"), capture it in their own words at the top of
+the document - it is the human's explicit priority for the next session, not
+something to paraphrase away. The document must carry a `**Created:**` timestamp line: the
+session-startup recovery step (step 12) reads it to tell an unread handoff from one
+already picked up, so the next session opens knowing where the last one left off.
 
 ### Workflow-scoped skills
 

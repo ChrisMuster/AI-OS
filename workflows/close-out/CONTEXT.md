@@ -1,13 +1,13 @@
 # Close-out
 
-**Last modified:** 2026-07-02
+**Last modified:** 2026-07-03
 
 ## Purpose
 The executable, mechanical half of the close-out task. It bundles the structural audit, the link audit, and the workflow test suites into one pass/fail verifier, so a "the checks pass" claim is a script exit code rather than prose. It is the enforcement backing for the Verification discipline rule in `AGENTS.md` [[AGENTS]].
 
 ## Contents
 - scripts/ - `workflows/close-out/scripts/` [[workflows/close-out/scripts/CONTEXT]] - holds `run.py`, the verifier that runs the audit and link checks in-process and the selected test suites as subprocesses, then returns one aggregate result.
-- tests/ - `workflows/close-out/tests/` [[workflows/close-out/tests/CONTEXT]] - the test suite for the verifier.
+- tests/ - `workflows/close-out/tests/` [[workflows/close-out/tests/CONTEXT]] - the test suite for the verifier, including a regression guard for workflow scripts that import project-only dependencies without bootstrapping into the canonical `.venv`.
 - `last-result.json` - the structured result of the most recent run (gitignored; rewritten on every run).
 
 ## Inputs
@@ -44,3 +44,6 @@ The executable, mechanical half of the close-out task. It bundles the structural
 ## Revision History
 - 2026-07-02 - Initial creation. Built as best-practices umbrella child #2 (verification discipline): the executable close-out verifier that backs the new AGENTS.md rule.
 - 2026-07-02 - Review-fix pass: the verifier re-execs under the project `.venv` interpreter (so the documented `python ...` command does not depend on PATH), and affected scope now escalates to all suites for cross-cutting changes (root `.md` docs or `templates/` [[templates/CONTEXT]]).
+- 2026-07-03 - Added a runtime-bootstrap regression guard to the close-out tests
+  so scripts importing PyYAML must use the canonical `.venv` handoff or
+  explicitly document a degrade path.

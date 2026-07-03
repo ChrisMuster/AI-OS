@@ -94,6 +94,9 @@ workflows/check-for-updates/.last-run
 workflows/weekly-review/.last-run
 workflows/weekly-review/state.json
 
+# Handoff - local seen-watermark (records which handoff was last surfaced at startup)
+workflows/handoff/state.json
+
 # Reddit collector — downloaded posts and state are personal/machine-specific content
 workflows/reddit-collector/collections/
 workflows/reddit-collector/config/feeds.json

@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 2 July 2026
+**Last updated:** 3 July 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -48,6 +48,8 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Rule Hooks** - Deterministic rule enforcement that moves load-bearing always/never rules out of prose into hooks that block a violation the moment an AI acts. Phase 1 covers Claude Code and Codex (blocking: protect .env, no shell redirect into LOG.md, no dangerous bash, no personal data in committable files; plus two log-only trial rules) and ships a universal git pre-commit personal-data gate that protects every AI and manual commits, with a SessionStart reminder of the permission gate. `workflows/rule-hooks/` `[active]`
 - **Close-out** - The executable half of the close-out task: one command that runs the structural audit, the link audit, and the workflow test suites as a single pass/fail gate, so a "checks pass" claim is a script exit code rather than prose. Defaults to the tests for the workflows changed in the current work; `--scope all` runs every suite for a full close-out. Backs the Verification discipline rule in AGENTS.md. `workflows/close-out/` `[active]`
 - **Weekly Review** - The cron + memory flywheel: a deterministic gather script assembles the week's signal (journal, LOG.md activity, git history, memory changes, session activity, prior reviews) into a briefing packet, and a session-startup staleness gate surfaces "a review is due" so Biblio writes a one-page review into the `reviews/` store and distils durable facts into memory. Startup-gated rather than an autonomous cron (no CLI/IDE scheduler can wake an LLM and touch local files), so it works identically on every AGENTS-reading AI. Tracks journal coverage so a backfilled day is never lost. `workflows/weekly-review/` `[active]`
+- **Handoff** - Clean session-to-session transitions. A trigger phrase ("do the handoff") runs a deterministic gather pass (branch, working tree, recent commits, changed-directory logs, active backlog, session activity) and Biblio writes a structured, rolling `HANDOVER.md`. On the next session a startup recovery step reads any unread handoff (tracked by a seen-watermark) and opens with an informed greeting, so the new session knows where the last one left off while the user keeps the choice. No per-AI slash commands; it works identically on every AGENTS-reading AI. `workflows/handoff/` `[active]`
+- **Triggers** - The AI-agnostic replacement for a per-AI slash-command set: a single tracked registry (`config/triggers.yaml`) mapping natural-language phrases to Book Dragon actions, referenced by `AGENTS.md` so any AI recognises them. Ask "give me a list of triggers" and `run.py --list` prints the grouped set. `workflows/triggers/` `[active]`
 
 ## Skills
 

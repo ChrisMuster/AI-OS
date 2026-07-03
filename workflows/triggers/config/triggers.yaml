@@ -1,0 +1,97 @@
+# Trigger-phrase registry - the single source of truth for Book Dragon's
+# natural-language actions. This is the AI-agnostic replacement for a per-AI
+# slash-command set: the phrases here are recognised by any AGENTS-reading AI,
+# and `run.py --list` prints them on demand ("give me a list of triggers").
+#
+# Schema: a list of categories, each with
+#   name     - short identifier (also the --category filter value)
+#   summary  - one line describing what the action does
+#   runs     - the command to run, or a short instruction where there is no script
+#   phrases  - the natural-language phrases that should trigger it
+#
+# Recognising a phrase in conversation is still the AI's job; this file records
+# the mapping. Keep it in sync when actions are added or renamed.
+
+categories:
+  - name: handoff
+    summary: Save the current session state into HANDOVER.md for a clean transition to the next session.
+    runs: python workflows/handoff/scripts/run.py --gather
+    phrases:
+      - do the handoff
+      - hand off
+      - handover
+      - wrap up the session
+      - save state for next time
+      - we are stopping for now, hand over
+
+  - name: close-out
+    summary: Run the close-out verifier (structural audit, link audit, and workflow test suites) as one pass/fail gate before staging.
+    runs: python workflows/close-out/scripts/run.py --scope all
+    phrases:
+      - close out
+      - run close-out
+      - prep for commit
+      - get this ready to stage
+      - run the verifier
+
+  - name: audit
+    summary: Run the full-project structural audit (compliance, encoding, personal-data, ai-style, knowledge-graph hooks).
+    runs: python workflows/audit/scripts/run.py
+    phrases:
+      - run the audit
+      - audit the project
+      - check the structure
+
+  - name: weekly-review
+    summary: Gather the week's signal and write the weekly review; also reports whether one is due.
+    runs: python workflows/weekly-review/scripts/run.py
+    phrases:
+      - run the weekly review
+      - do the review
+      - weekly review
+
+  - name: backlog
+    summary: Show the outstanding Active backlog items so you can pick what to work on next.
+    runs: Read memory/backlog.md and present the Active items as a numbered list.
+    phrases:
+      - show the backlog
+      - what is on the backlog
+      - what is next
+
+  - name: update-check
+    summary: Report whether the project's Python packages and AI CLI tools have newer versions available (read-only).
+    runs: python workflows/check-for-updates/scripts/run.py
+    phrases:
+      - check for updates
+      - run the update check
+
+  - name: link-check
+    summary: Insert Obsidian links into CONTEXT.md files and audit them for dead targets.
+    runs: python workflows/link-check/scripts/run.py --link
+    phrases:
+      - run the link check
+      - check the links
+
+  - name: settings-check
+    summary: Validate that all automated commands (hooks and scheduled tasks) are covered by allowlist entries.
+    runs: python workflows/settings-check/scripts/run.py
+    phrases:
+      - run the settings check
+      - check settings coverage
+
+  - name: onboarding
+    summary: Fill in the remaining USER.md sections through a guided question-and-answer pass.
+    runs: Run the USER.md onboarding Q&A (AGENTS.md first-run initialisation, step 2d).
+    phrases:
+      - run USER.md onboarding Q&A
+      - run the onboarding
+      - fill in my profile
+
+  - name: triggers
+    summary: List every triggerable action and its phrases (this registry).
+    runs: python workflows/triggers/scripts/run.py --list
+    phrases:
+      - give me a list of triggers
+      - list the triggers
+      - list the skills
+      - what can I ask you to do
