@@ -47,6 +47,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Check For Updates** - Reports whether the project's Python packages and installed AI CLI tools have newer versions available, with recommendations. Read-only: it never updates anything; you review the report and decide what to act on. An opt-in advisory landscape mode (`--landscape`) also watches the supported AI tools for product-status changes (renames, deprecations, replacements) via web research. `workflows/check-for-updates/` `[active]`
 - **Rule Hooks** - Deterministic rule enforcement that moves load-bearing always/never rules out of prose into hooks that block a violation the moment an AI acts. Phase 1 covers Claude Code and Codex (blocking: protect .env, no shell redirect into LOG.md, no dangerous bash, no personal data in committable files; plus two log-only trial rules) and ships a universal git pre-commit personal-data gate that protects every AI and manual commits, with a SessionStart reminder of the permission gate. `workflows/rule-hooks/` `[active]`
 - **Close-out** - The executable half of the close-out task: one command that runs the structural audit, the link audit, and the workflow test suites as a single pass/fail gate, so a "checks pass" claim is a script exit code rather than prose. Defaults to the tests for the workflows changed in the current work; `--scope all` runs every suite for a full close-out. Backs the Verification discipline rule in AGENTS.md. `workflows/close-out/` `[active]`
+- **Weekly Review** - The cron + memory flywheel: a deterministic gather script assembles the week's signal (journal, LOG.md activity, git history, memory changes, session activity, prior reviews) into a briefing packet, and a session-startup staleness gate surfaces "a review is due" so Biblio writes a one-page review into the `reviews/` store and distils durable facts into memory. Startup-gated rather than an autonomous cron (no CLI/IDE scheduler can wake an LLM and touch local files), so it works identically on every AGENTS-reading AI. Tracks journal coverage so a backfilled day is never lost. `workflows/weekly-review/` `[active]`
 
 ## Skills
 
@@ -69,6 +70,10 @@ Your personal wikis appear here once created — use the Create Wiki workflow to
 ## Memory
 
 - **Memory** — Project-scoped persistent memory that syncs with the project. Overrides the per-user Claude cache. `memory/` `[active]`
+
+## Reviews
+
+- **Reviews** - Store for the weekly-review flywheel; holds the dated one-page reviews produced by the Weekly Review workflow. Personal content, local only. `reviews/` `[active]`
 
 ## User profile
 

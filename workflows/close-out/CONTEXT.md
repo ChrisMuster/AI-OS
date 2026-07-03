@@ -22,7 +22,7 @@ The executable, mechanical half of the close-out task. It bundles the structural
 
 ## Steps
 1. Re-exec under the project `.venv` interpreter if one exists and differs from the invoking interpreter, so the gate does not depend on which `python` is first on PATH.
-2. Select the test suites to run from `--scope` (affected/default, `all`, or a workflow name); affected falls back to all if git cannot determine the changed set, and escalates to all when the change touches project-wide files no single suite owns (root-level `.md` governance docs or `templates/`).
+2. Select the test suites to run from `--scope` (affected/default, `all`, or a workflow name); affected falls back to all if git cannot determine the changed set, and escalates to all when the change touches project-wide files no single suite owns (root-level `.md` governance docs or `templates/` [[templates/CONTEXT]]).
 3. Run the structural audit in-process (0 FAIL required to pass; WARN reported but not gating).
 4. Run the link audit in-process (0 dead links required to pass).
 5. Run each selected test file as a subprocess (all must exit 0).
@@ -38,9 +38,9 @@ The executable, mechanical half of the close-out task. It bundles the structural
 ## Known Issues
 - The verifier gates on the audit FAIL count (0 required). Audit WARNs, including advisory personal-data and ai-style findings, are reported but do not fail the gate, matching the audit's own advisory semantics. Personal-data leaks are hard-blocked separately by the git pre-commit hook [[workflows/rule-hooks/CONTEXT]].
 - It covers the mechanical checks only. It does not judge whether the planned work is complete, whether LOG.md files are current, or whether CONTEXT.md files are accurate; those remain the human judgement steps of close-out.
-- Affected-scope test selection is only as good as git's changed-file view; when git is unavailable it runs all suites rather than risk under-testing. Changes confined to cross-cutting files (root-level `.md` governance docs or `templates/`) escalate affected scope to all suites, since no single workflow suite owns those files.
+- Affected-scope test selection is only as good as git's changed-file view; when git is unavailable it runs all suites rather than risk under-testing. Changes confined to cross-cutting files (root-level `.md` governance docs or `templates/` [[templates/CONTEXT]]) escalate affected scope to all suites, since no single workflow suite owns those files.
 - It is read-only with respect to project content (it writes only its own `last-result.json` and LOG.md), so like the audit it is exempt from the `--dry-run` convention.
 
 ## Revision History
 - 2026-07-02 - Initial creation. Built as best-practices umbrella child #2 (verification discipline): the executable close-out verifier that backs the new AGENTS.md rule.
-- 2026-07-02 - Review-fix pass: the verifier re-execs under the project `.venv` interpreter (so the documented `python ...` command does not depend on PATH), and affected scope now escalates to all suites for cross-cutting changes (root `.md` docs or `templates/`).
+- 2026-07-02 - Review-fix pass: the verifier re-execs under the project `.venv` interpreter (so the documented `python ...` command does not depend on PATH), and affected scope now escalates to all suites for cross-cutting changes (root `.md` docs or `templates/` [[templates/CONTEXT]]).

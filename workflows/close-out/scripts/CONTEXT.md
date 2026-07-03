@@ -27,4 +27,4 @@ N/A - see the parent workflow `CONTEXT.md` for the verifier's step sequence.
 
 ## Revision History
 - 2026-07-02 - Initial creation with `run.py` (the close-out verifier).
-- 2026-07-02 - `run.py` now re-execs under the project `.venv` interpreter and escalates affected scope to all suites for cross-cutting changes (root `.md` docs or `templates/`). Review-fix pass on the verification-discipline work.
+- 2026-07-02 - `run.py` now re-execs under the project `.venv` interpreter and escalates affected scope to all suites for cross-cutting changes (root `.md` docs or `templates/` [[templates/CONTEXT]]). Review-fix pass on the verification-discipline work.
