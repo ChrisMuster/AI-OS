@@ -360,6 +360,29 @@ def get_immediate_subdirs(directory: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 Finding = tuple[str, str, str]  # (level, path_or_label, message)
 
+# A check that could not run (a degrade) is reported at this level so it can
+# never be mistaken for a pass. It stays advisory - like INFO it does not change
+# the audit's exit code - but it is counted and shown in its own section, and the
+# close-out verifier surfaces it distinctly and can act on it with --repair.
+DEGRADED = "DEGRADED"
+_REPAIR_HINT = (
+    "Fix: run `python workflows/biblio-tools/scripts/setup.py` to repair the "
+    "project runtime, then re-run."
+)
+
+
+def degraded(label: str, reason: str, repairable: bool = True) -> Finding:
+    """Build a DEGRADED finding for a check that could not run.
+
+    A degrade means the check did not actually run, so it must be visible and
+    carry its own remediation. ``repairable=True`` (a runtime/dependency reason
+    setup.py can fix) appends the setup.py hint; ``repairable=False`` is for a
+    genuinely absent guard whose workflow is missing, which setup.py cannot fix.
+    """
+    tail = _REPAIR_HINT if repairable else (
+        f"The {label} workflow appears to be missing; reinstall or restore it.")
+    return (DEGRADED, label, f"{label} check did not run - {reason}. {tail}")
+
 
 # ---------------------------------------------------------------------------
 # Code hygiene checks
@@ -453,8 +476,8 @@ def run_graph_validation() -> list[Finding]:
     audit always completes with exit 0.
     """
     if not KG_RUN_PY.exists():
-        return [("INFO", "knowledge-graph",
-                 "graph validation skipped — knowledge-graph CLI not found")]
+        return [degraded("knowledge-graph", "knowledge-graph CLI not found",
+                         repairable=False)]
     try:
         result = subprocess.run(
             [sys.executable, str(KG_RUN_PY), "validate", "--json", "--no-backrefs"],
@@ -464,8 +487,8 @@ def run_graph_validation() -> list[Finding]:
             cwd=str(PROJECT_ROOT),
         )
     except Exception as exc:
-        return [("INFO", "knowledge-graph",
-                 f"graph validation skipped — could not run validator ({exc})")]
+        return [degraded("knowledge-graph",
+                         f"could not run validator ({exc})")]
 
     # validate exits 0 (clean) or 1 (a FAIL finding present) with the JSON
     # payload on stdout; an internal error exits 1 with an empty stdout and the
@@ -476,7 +499,7 @@ def run_graph_validation() -> list[Finding]:
     except ValueError:
         reason = (result.stderr.strip().splitlines()
                   or [f"validator exited {result.returncode} with no JSON output"])[-1]
-        return [("INFO", "knowledge-graph", f"graph validation skipped — {reason}")]
+        return [degraded("knowledge-graph", reason)]
     return graph_findings(payload)
 
 
@@ -514,8 +537,8 @@ def run_encoding_check() -> list[Finding]:
     single INFO note and never raises, so the exit code stays advisory.
     """
     if not ENCODING_RUN_PY.exists():
-        return [("INFO", "encoding",
-                 "encoding check skipped — encoding-guard CLI not found")]
+        return [degraded("encoding", "encoding-guard CLI not found",
+                         repairable=False)]
     try:
         result = subprocess.run(
             [sys.executable, str(ENCODING_RUN_PY), "--check", "--json"],
@@ -525,14 +548,13 @@ def run_encoding_check() -> list[Finding]:
             cwd=str(PROJECT_ROOT),
         )
     except Exception as exc:
-        return [("INFO", "encoding",
-                 f"encoding check skipped — could not run ({exc})")]
+        return [degraded("encoding", f"could not run ({exc})")]
     try:
         payload = json.loads(result.stdout)
     except ValueError:
         reason = (result.stderr.strip().splitlines()
                   or [f"checker exited {result.returncode} with no JSON output"])[-1]
-        return [("INFO", "encoding", f"encoding check skipped — {reason}")]
+        return [degraded("encoding", reason)]
     return encoding_findings(payload)
 
 
@@ -571,8 +593,8 @@ def run_personal_data_check() -> list[Finding]:
     gets a single INFO note and never raises, so the exit code stays advisory.
     """
     if not PERSONAL_RUN_PY.exists():
-        return [("INFO", "personal-data",
-                 "personal-data check skipped - personal-data-guard CLI not found")]
+        return [degraded("personal-data", "personal-data-guard CLI not found",
+                         repairable=False)]
     try:
         result = subprocess.run(
             [sys.executable, str(PERSONAL_RUN_PY), "--check", "--json"],
@@ -582,14 +604,13 @@ def run_personal_data_check() -> list[Finding]:
             cwd=str(PROJECT_ROOT),
         )
     except Exception as exc:
-        return [("INFO", "personal-data",
-                 f"personal-data check skipped - could not run ({exc})")]
+        return [degraded("personal-data", f"could not run ({exc})")]
     try:
         payload = json.loads(result.stdout)
     except ValueError:
         reason = (result.stderr.strip().splitlines()
                   or [f"checker exited {result.returncode} with no JSON output"])[-1]
-        return [("INFO", "personal-data", f"personal-data check skipped - {reason}")]
+        return [degraded("personal-data", reason)]
     return personal_findings(payload)
 
 
@@ -626,8 +647,8 @@ def run_ai_style_check() -> list[Finding]:
     INFO note and never raises, so the exit code stays advisory.
     """
     if not AI_STYLE_RUN_PY.exists():
-        return [("INFO", "ai-style",
-                 "AI-style check skipped - ai-style-guard CLI not found")]
+        return [degraded("ai-style", "ai-style-guard CLI not found",
+                         repairable=False)]
     try:
         result = subprocess.run(
             [sys.executable, str(AI_STYLE_RUN_PY),
@@ -638,14 +659,13 @@ def run_ai_style_check() -> list[Finding]:
             cwd=str(PROJECT_ROOT),
         )
     except Exception as exc:
-        return [("INFO", "ai-style",
-                 f"AI-style check skipped - could not run ({exc})")]
+        return [degraded("ai-style", f"could not run ({exc})")]
     try:
         payload = json.loads(result.stdout)
     except ValueError:
         reason = (result.stderr.strip().splitlines()
                   or [f"checker exited {result.returncode} with no JSON output"])[-1]
-        return [("INFO", "ai-style", f"AI-style check skipped - {reason}")]
+        return [degraded("ai-style", reason)]
     return ai_style_findings(payload)
 
 
@@ -952,6 +972,7 @@ def format_report(findings: list[Finding], dir_count: int) -> str:
 
     fails = [f for f in findings if f[0] == "FAIL"]
     warns = [f for f in findings if f[0] == "WARN"]
+    degradeds = [f for f in findings if f[0] == DEGRADED]
     infos = [f for f in findings if f[0] == "INFO"]
 
     lines = [
@@ -961,11 +982,12 @@ def format_report(findings: list[Finding], dir_count: int) -> str:
         f"**Directories checked:** {dir_count}",
         f"**Failures:** {len(fails)}",
         f"**Warnings:** {len(warns)}",
+        f"**Degraded (did not run):** {len(degradeds)}",
         f"**Info:** {len(infos)}",
         "",
     ]
 
-    if not fails and not warns:
+    if not fails and not warns and not degradeds:
         lines += ["All structural checks passed.", ""]
     else:
         if fails:
@@ -978,6 +1000,12 @@ def format_report(findings: list[Finding], dir_count: int) -> str:
             lines += ["## Warnings", ""]
             for _, path, msg in warns:
                 lines.append(f"- `{path}` — {msg}")
+            lines.append("")
+
+        if degradeds:
+            lines += ["## Degraded (did not run)", ""]
+            for _, path, msg in degradeds:
+                lines.append(f"- `{path}` - {msg}")
             lines.append("")
 
     if infos:
@@ -1049,10 +1077,11 @@ def main() -> None:
 
     fails = sum(1 for f in findings if f[0] == "FAIL")
     warns = sum(1 for f in findings if f[0] == "WARN")
+    degradeds = sum(1 for f in findings if f[0] == DEGRADED)
     mode = "targeted context audit" if args.context else "audit"
     note = (
         f"{mode.capitalize()} complete. {dir_count} directories checked. "
-        f"{fails} failure(s), {warns} warning(s)."
+        f"{fails} failure(s), {warns} warning(s), {degradeds} degraded."
     )
 
     append_log(WORKFLOW_LOG, ts, "completed", note)

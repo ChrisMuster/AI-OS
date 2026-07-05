@@ -28,6 +28,11 @@ re-execs under the project .venv interpreter when one exists (guarded against
 recursion), so the documented `python ...` command stays simple and does not
 depend on which interpreter is first on PATH.
 
+A check that could not run at all (a degraded advisory hook - e.g. a guard whose
+runtime is broken) is reported as DEGRADED: shown distinctly, non-blocking, and
+never counted as a pass. --repair runs setup.py to fix the runtime and re-runs
+the gates once; without it, the report prints the exact fix to run by hand.
+
 This verifier does NOT replace the judgement steps of close-out (plan complete,
 logs current, CONTEXT accurate) and never fires automatically; it is run by hand.
 
@@ -38,6 +43,7 @@ Usage:
   python workflows/close-out/scripts/run.py --scope all    # full close-out
   python workflows/close-out/scripts/run.py --scope audit  # one workflow
   python workflows/close-out/scripts/run.py --json
+  python workflows/close-out/scripts/run.py --repair       # auto-fix DEGRADED checks
 """
 import argparse
 import importlib.util
@@ -61,6 +67,7 @@ RESULT_FILE = WORKFLOW_DIR / "last-result.json"
 
 AUDIT_RUN = PROJECT_ROOT / "workflows" / "audit" / "scripts" / "run.py"
 LINK_RUN = PROJECT_ROOT / "workflows" / "link-check" / "scripts" / "run.py"
+SETUP_PY = PROJECT_ROOT / "workflows" / "biblio-tools" / "scripts" / "setup.py"
 
 TEST_ROOTS = ("workflows", "skills")
 TEST_TIMEOUT = 600  # seconds per test file
@@ -226,10 +233,15 @@ def gate_audit():
         findings, dir_count = mod.run_audit(with_graph=True)
         fails = sum(1 for f in findings if f[0] == "FAIL")
         warns = sum(1 for f in findings if f[0] == "WARN")
+        degraded = [f[2] for f in findings if f[0] == "DEGRADED"]
+        detail = f"{dir_count} dirs checked, {fails} FAIL, {warns} WARN"
+        if degraded:
+            detail += f", {len(degraded)} DEGRADED"
         return {
             "name": "structural audit",
             "passed": fails == 0,
-            "detail": f"{dir_count} dirs checked, {fails} FAIL, {warns} WARN",
+            "detail": detail,
+            "degraded": degraded,
         }
     except Exception as exc:  # a gate that cannot run has not passed
         return {"name": "structural audit", "passed": False,
@@ -291,9 +303,51 @@ def gate_tests(selected):
 
 
 # ---------------------------------------------------------------------------
+# Repair
+# ---------------------------------------------------------------------------
+def collect_degraded(gates):
+    """Every DEGRADED message across all gates (checks that could not run)."""
+    return [d for g in gates for d in g.get("degraded", [])]
+
+
+def overall_status(overall_pass: bool, degraded: list) -> str:
+    """Machine-readable verdict that never lets a degraded run read as a clean pass.
+
+    - ``"fail"``     a gate failed.
+    - ``"degraded"`` every gate passed, but at least one check could not run;
+      non-blocking (exit 0), yet distinct from a clean pass so automation or a
+      tired human reading only the verdict cannot mistake it for one.
+    - ``"pass"``     every check ran and passed.
+    """
+    if not overall_pass:
+        return "fail"
+    if degraded:
+        return "degraded"
+    return "pass"
+
+
+def run_repair():
+    """Repair the project runtime by running setup.py. Returns (ok, note).
+
+    A DEGRADED check almost always means the .venv is broken or incomplete, and
+    setup.py is the canonical fix. It is only invoked on --repair (opt-in), never
+    silently, so there is no surprise network install.
+    """
+    if not SETUP_PY.exists():
+        return False, "repair skipped - setup.py not found"
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(SETUP_PY)], cwd=str(PROJECT_ROOT), timeout=1200,
+        )
+    except Exception as exc:
+        return False, f"repair could not run setup.py ({exc})"
+    return completed.returncode == 0, f"repair ran setup.py (exit {completed.returncode})"
+
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
-def build_report(scope_label, gates):
+def build_report(scope_label, gates, repair_note=None):
     lines = [
         "Book Dragon - Close-out Verifier",
         f"Scope: {scope_label}",
@@ -307,10 +361,24 @@ def build_report(scope_label, gates):
                 lines.append(f"    [FAIL] {fr['file']}")
                 if fr["tail"]:
                     lines.append(f"        {fr['tail']}")
+    degraded = collect_degraded(gates)
+    if degraded:
+        lines.append("-" * 60)
+        lines.append(f"DEGRADED - {len(degraded)} check(s) did not run:")
+        for d in degraded:
+            lines.append(f"  - {d}")
+    if repair_note:
+        lines.append("-" * 60)
+        lines.append(repair_note)
     lines.append("-" * 60)
     failed = [g["name"] for g in gates if not g["passed"]]
     if failed:
         lines.append(f"RESULT: FAIL ({len(failed)} gate(s) failed: {', '.join(failed)})")
+    elif degraded:
+        lines.append(
+            f"RESULT: DEGRADED (gates passed, but {len(degraded)} check(s) did not "
+            "run); see above. Not a clean pass."
+        )
     else:
         lines.append("RESULT: PASS (all gates green)")
     return "\n".join(lines)
@@ -329,6 +397,11 @@ def main():
              "'all' (every suite, used by a full close-out), or a workflow/skill NAME.",
     )
     parser.add_argument("--json", action="store_true", help="Emit the result as JSON.")
+    parser.add_argument(
+        "--repair", action="store_true",
+        help="If a check DEGRADED (could not run), run setup.py to repair the "
+             "project runtime, then re-run the gates once.",
+    )
     args = parser.parse_args()
 
     reexec_under_venv()
@@ -337,13 +410,40 @@ def main():
 
     selected, scope_label = select_suites(args.scope)
     gates = [gate_audit(), gate_link(), gate_tests(selected)]
+    degraded = collect_degraded(gates)
+
+    # A DEGRADED check did not run. --repair fixes the runtime (setup.py) and
+    # re-runs once; without --repair, point at the fix so it can be run by hand.
+    repair_note = None
+    if degraded and args.repair:
+        _ok, note = run_repair()
+        gates = [gate_audit(), gate_link(), gate_tests(selected)]
+        degraded = collect_degraded(gates)
+        if degraded:
+            repair_note = (f"--repair: {note}; {len(degraded)} check(s) still "
+                           "DEGRADED - fix the runtime manually, then re-run.")
+        else:
+            repair_note = f"--repair: {note}; all checks now run."
+    elif degraded:
+        repair_note = ("Some checks DEGRADED (did not run). Re-run with --repair "
+                       "to auto-fix the runtime (runs setup.py), or run the fix "
+                       "shown above and re-run.")
+
     overall_pass = all(g["passed"] for g in gates)
+    status = overall_status(overall_pass, degraded)
 
     result = {
         "generated_at": now_ts(),
         "scope": args.scope,
         "scope_label": scope_label,
         "passed": overall_pass,
+        # A degraded run keeps passed=true (non-blocking) but is not clean: these
+        # two fields let a consumer of the JSON tell a clean pass from a degraded
+        # one without parsing the human report.
+        "clean": status == "pass",
+        "status": status,
+        "degraded": degraded,
+        "repair_note": repair_note,
         "gates": gates,
     }
     try:
@@ -354,14 +454,18 @@ def main():
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(build_report(scope_label, gates))
+        print(build_report(scope_label, gates, repair_note))
 
-    verdict = "PASS" if overall_pass else "FAIL"
+    verdict = status.upper()
     failed = [g["name"] for g in gates if not g["passed"]]
-    note = (
-        f"Close-out verifier {verdict} (scope: {scope_label}). "
-        + ("All gates green." if overall_pass else f"Failed: {', '.join(failed)}.")
-    )
+    degrade_suffix = f" {len(degraded)} check(s) DEGRADED." if degraded else ""
+    if not overall_pass:
+        body = f"Failed: {', '.join(failed)}."
+    elif degraded:
+        body = "All gates passed, but some checks did not run."
+    else:
+        body = "All gates green."
+    note = f"Close-out verifier {verdict} (scope: {scope_label}). {body}{degrade_suffix}"
     append_log("completed" if overall_pass else "failed", note)
 
     sys.exit(0 if overall_pass else 1)

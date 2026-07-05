@@ -1,13 +1,13 @@
 # Close-out
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-04
 
 ## Purpose
 The executable, mechanical half of the close-out task. It bundles the structural audit, the link audit, and the workflow test suites into one pass/fail verifier, so a "the checks pass" claim is a script exit code rather than prose. It is the enforcement backing for the Verification discipline rule in `AGENTS.md` [[AGENTS]].
 
 ## Contents
-- scripts/ - `workflows/close-out/scripts/` [[workflows/close-out/scripts/CONTEXT]] - holds `run.py`, the verifier that runs the audit and link checks in-process and the selected test suites as subprocesses, then returns one aggregate result.
-- tests/ - `workflows/close-out/tests/` [[workflows/close-out/tests/CONTEXT]] - the test suite for the verifier, including a regression guard for workflow scripts that import project-only dependencies without bootstrapping into the canonical `.venv`.
+- scripts/ - `workflows/close-out/scripts/` [[workflows/close-out/scripts/CONTEXT]] - holds `run.py`, the verifier that runs the audit and link checks in-process and the selected test suites as subprocesses, then returns one aggregate result. It surfaces any DEGRADED check (an advisory hook that could not run) distinctly and non-blocking, and `--repair` runs setup.py to fix the runtime and re-runs the gates once.
+- tests/ - `workflows/close-out/tests/` [[workflows/close-out/tests/CONTEXT]] - the test suite for the verifier, including a regression guard that flags entry-point scripts importing a project-only package without a runtime signal (a `.venv` bootstrap, a `# runtime-guard: degrades without <pkg>` marker, or a `# runtime-guard: launched via <mechanism>` marker).
 - `last-result.json` - the structured result of the most recent run (gitignored; rewritten on every run).
 
 ## Inputs
@@ -26,8 +26,9 @@ The executable, mechanical half of the close-out task. It bundles the structural
 3. Run the structural audit in-process (0 FAIL required to pass; WARN reported but not gating).
 4. Run the link audit in-process (0 dead links required to pass).
 5. Run each selected test file as a subprocess (all must exit 0).
-6. Aggregate into one verdict, write `last-result.json`, print the report, and set the exit code.
-7. Append LOG.md with a completion or failure entry.
+6. Surface any DEGRADED checks (advisory hooks that could not run) distinctly and non-blocking; with `--repair`, run setup.py to fix the runtime and re-run the gates once, otherwise print the fix to run by hand.
+7. Aggregate into one verdict, write `last-result.json`, print the report, and set the exit code.
+8. Append LOG.md with a completion or failure entry.
 
 ## Dependencies
 - `workflows/audit/` [[workflows/audit/CONTEXT]] - imported in-process for the structural audit gate.
@@ -39,7 +40,8 @@ The executable, mechanical half of the close-out task. It bundles the structural
 - The verifier gates on the audit FAIL count (0 required). Audit WARNs, including advisory personal-data and ai-style findings, are reported but do not fail the gate, matching the audit's own advisory semantics. Personal-data leaks are hard-blocked separately by the git pre-commit hook [[workflows/rule-hooks/CONTEXT]].
 - It covers the mechanical checks only. It does not judge whether the planned work is complete, whether LOG.md files are current, or whether CONTEXT.md files are accurate; those remain the human judgement steps of close-out.
 - Affected-scope test selection is only as good as git's changed-file view; when git is unavailable it runs all suites rather than risk under-testing. Changes confined to cross-cutting files (root-level `.md` governance docs or `templates/` [[templates/CONTEXT]]) escalate affected scope to all suites, since no single workflow suite owns those files.
-- It is read-only with respect to project content (it writes only its own `last-result.json` and LOG.md), so like the audit it is exempt from the `--dry-run` convention.
+- It is read-only with respect to project content (it writes only its own `last-result.json` and LOG.md), so like the audit it is exempt from the `--dry-run` convention. The one exception is `--repair`, which is opt-in and runs `setup.py` to repair the project runtime (a `.venv`/pip operation, not a project-content change) only when a check DEGRADED.
+- A DEGRADED check (an advisory hook that could not run, e.g. a guard whose runtime is broken) is non-blocking: it does not flip the verdict to FAIL, but it is counted and shown distinctly so a run where a check never ran can never read as a clean pass. Fix it with `--repair` (auto-runs setup.py and re-runs) or the command shown in the report.
 
 ## Revision History
 - 2026-07-02 - Initial creation. Built as best-practices umbrella child #2 (verification discipline): the executable close-out verifier that backs the new AGENTS.md rule.
@@ -47,3 +49,14 @@ The executable, mechanical half of the close-out task. It bundles the structural
 - 2026-07-03 - Added a runtime-bootstrap regression guard to the close-out tests
   so scripts importing PyYAML must use the canonical `.venv` handoff or
   explicitly document a degrade path.
+- 2026-07-03 - Generalised that guard from PyYAML to the whole `requirements.txt`
+  package set, extended it to `skills/*/scripts/`, scoped it to entry-point
+  scripts, and moved to `# runtime-guard:` marker comments. Added the launcher
+  markers to `server.py`/`mcp_smoke.py` and a degrade marker to
+  `ai-style-guard/run.py`.
+- 2026-07-04 - The verifier now surfaces DEGRADED (a check that could not run)
+  distinctly and non-blocking, reading the audit's DEGRADED findings and adding a
+  `DEGRADED` report section plus a verdict annotation. Added the opt-in `--repair`
+  flag (runs setup.py, then re-runs the gates once, falling back to the printed
+  fix). ai-style-guard was converted from a degrade marker to a `.venv` bootstrap
+  in the same body of work (a guard must run, not silently skip).

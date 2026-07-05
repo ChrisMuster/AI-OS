@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP  # runtime-guard: launched via launch.py
 
 # ---------------------------------------------------------------------------
 # Paths

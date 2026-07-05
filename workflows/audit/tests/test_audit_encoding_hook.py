@@ -62,24 +62,24 @@ class TestRunEncodingCheckGracefulSkip(unittest.TestCase):
             findings = run.run_encoding_check()
         self.assertEqual(len(findings), 1)
         level, label, message = findings[0]
-        self.assertEqual(level, "INFO")
+        self.assertEqual(level, "DEGRADED")
         self.assertEqual(label, "encoding")
-        self.assertIn("skipped", message)
+        self.assertIn("did not run", message)
 
     def test_unparseable_output_returns_single_info(self):
         fake = mock.Mock(stdout="not json", stderr="boom", returncode=1)
         with mock.patch.object(run.subprocess, "run", return_value=fake):
             findings = run.run_encoding_check()
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0][0], "INFO")
-        self.assertIn("skipped", findings[0][2])
+        self.assertEqual(findings[0][0], "DEGRADED")
+        self.assertIn("did not run", findings[0][2])
 
     def test_subprocess_exception_returns_single_info(self):
         with mock.patch.object(run.subprocess, "run", side_effect=OSError("nope")):
             findings = run.run_encoding_check()
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0][0], "INFO")
-        self.assertIn("skipped", findings[0][2])
+        self.assertEqual(findings[0][0], "DEGRADED")
+        self.assertIn("did not run", findings[0][2])
 
     def test_valid_payload_is_merged(self):
         fake = mock.Mock(

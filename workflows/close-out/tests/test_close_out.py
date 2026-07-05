@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "run.py"
 
@@ -185,6 +186,63 @@ class CouplingTests(unittest.TestCase):
     def test_changed_paths_returns_set_or_none(self):
         result = run.changed_paths()
         self.assertTrue(result is None or isinstance(result, set))
+
+
+class DegradedSurfacingTests(unittest.TestCase):
+    """A DEGRADED check is shown loudly and never counted as a pass."""
+
+    def _gates(self, degraded):
+        return [
+            {"name": "structural audit", "passed": True,
+             "detail": "3 dirs checked, 0 FAIL, 0 WARN, 1 DEGRADED",
+             "degraded": degraded},
+            {"name": "link audit", "passed": True, "detail": "0 dead link(s)"},
+            {"name": "tests", "passed": True, "detail": "0 files", "files": []},
+        ]
+
+    def test_collect_degraded_aggregates_across_gates(self):
+        gates = [{"degraded": ["a"]}, {"degraded": ["b"]}, {"detail": "x"}]
+        self.assertEqual(run.collect_degraded(gates), ["a", "b"])
+
+    def test_overall_status_distinguishes_degraded_from_clean_pass(self):
+        self.assertEqual(run.overall_status(True, []), "pass")
+        self.assertEqual(run.overall_status(True, ["x did not run"]), "degraded")
+        self.assertEqual(run.overall_status(False, []), "fail")
+        self.assertEqual(run.overall_status(False, ["x did not run"]), "fail")
+
+    def test_report_surfaces_degraded_and_is_not_a_clean_pass(self):
+        gates = self._gates(["encoding check did not run - boom. Fix: run setup.py"])
+        report = run.build_report("all", gates)
+        self.assertIn("DEGRADED - 1 check(s) did not run", report)
+        self.assertIn("encoding check did not run", report)
+        # The verdict must read as DEGRADED, distinct from a clean pass, so a
+        # reader of only the RESULT line cannot mistake an unrun check for a pass.
+        self.assertIn("RESULT: DEGRADED", report)
+        self.assertNotIn("RESULT: PASS", report)
+
+    def test_report_includes_repair_note_when_given(self):
+        gates = self._gates(["x did not run"])
+        report = run.build_report("all", gates,
+                                  repair_note="--repair: repair ran setup.py (exit 0); all checks now run.")
+        self.assertIn("--repair: repair ran setup.py", report)
+
+
+class RepairTests(unittest.TestCase):
+    def test_missing_setup_py_reports_cleanly(self):
+        with mock.patch.object(run, "SETUP_PY", Path("nope/does-not-exist/setup.py")):
+            ok, note = run.run_repair()
+        self.assertFalse(ok)
+        self.assertIn("setup.py", note)
+
+    def test_run_repair_invokes_setup_py(self):
+        fake = mock.Mock(returncode=0)
+        # Point SETUP_PY at a real file so the existence check passes; mock the run.
+        with mock.patch.object(run, "SETUP_PY", Path(__file__)), \
+             mock.patch.object(run.subprocess, "run", return_value=fake) as spy:
+            ok, note = run.run_repair()
+        self.assertTrue(ok)
+        self.assertIn("setup.py", note)
+        spy.assert_called_once()
 
 
 if __name__ == "__main__":

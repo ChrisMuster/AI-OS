@@ -54,6 +54,8 @@ except Exception:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
+_RUNTIME_SCRIPTS = PROJECT_ROOT / "workflows" / "biblio-tools" / "scripts"
+sys.path.insert(0, str(_RUNTIME_SCRIPTS))
 WORKFLOW_DIR = PROJECT_ROOT / "workflows" / "ai-style-guard"
 CONFIG_FILE = WORKFLOW_DIR / "config" / "ai-tells.yaml"
 # The guard does not police itself: its config and tests legitimately contain
@@ -82,18 +84,17 @@ def load_config(path):
         "phrases":     [(label, regex), ...],   # tier 1 -> WARN
         "words":       [str, ...],              # tier 2 -> INFO
     }
-    On a missing file or unavailable yaml the guard degrades to an empty ruleset
+    On a missing or unreadable config file the guard degrades to an empty ruleset
     plus a single INFO note rather than guessing, keeping one source of truth.
+    PyYAML itself is never optional here: main() bootstraps into the project
+    .venv via ensure_project_runtime() before this runs, so a guard whose whole
+    job is the check can never silently skip for want of its parser.
     """
     empty = {"typographic": [], "phrases": [], "words": []}
     if not path.exists():
         return empty, [("INFO", LABEL,
                         f"config not found at {path.name}; nothing to check")]
-    try:
-        import yaml  # project dependency
-    except ImportError:
-        return empty, [("INFO", LABEL,
-                        "PyYAML not available; AI-style check skipped")]
+    import yaml
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception as exc:
@@ -335,6 +336,13 @@ def main():
     parser.add_argument("--strict", action="store_true",
                         help="Exit 1 if any WARN finding exists (for CI/pre-commit)")
     args = parser.parse_args()
+
+    # This guard's job IS the check, so it must actually run - it must not
+    # silently skip for want of PyYAML. Hand off to the canonical .venv where the
+    # parser is guaranteed present; if the runtime is not set up,
+    # ensure_project_runtime() fails loudly and names the setup.py fix.
+    from runtime import ensure_project_runtime  # noqa: E402
+    ensure_project_runtime()
 
     if args.since is not None:
         since = args.since

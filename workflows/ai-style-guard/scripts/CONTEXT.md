@@ -1,9 +1,9 @@
 # Scripts
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-07-04
 
 ## Purpose
-Holds the AI-style guard's entry point and its pure, unit-tested helpers. The script collects added or changed lines from `git diff` (plus new untracked files), then runs the tier-1 and tier-2 detectors against each added line, reporting file:line locations. It is read-only by design.
+Holds the AI-style guard's entry point and its pure, unit-tested helpers. The script collects added or changed lines from `git diff` (plus new untracked files), then runs the tier-1 and tier-2 detectors against each added line, reporting file:line locations. It is read-only by design. `main()` bootstraps into the project `.venv` (via `ensure_project_runtime()`) before scanning, so PyYAML is guaranteed and this guard runs rather than silently skipping.
 
 ## Contents
 - run.py - `workflows/ai-style-guard/scripts/run.py` [[workflows/ai-style-guard/scripts/CONTEXT]] - The entry point and all logic: the `git diff --unified=0` hunk parser (`parse_diff`), the change collector (`collect_changes`), the config loader (`load_config`), the per-line detectors (`scan_line`), and the CLI (`--check`, `--json`, `--since`, `--base`, `--strict`).
@@ -23,7 +23,7 @@ Holds the AI-style guard's entry point and its pure, unit-tested helpers. The sc
 
 ## Dependencies
 - `workflows/ai-style-guard/config/ai-tells.yaml` [[workflows/ai-style-guard/config/CONTEXT]] - The tells definition, read at runtime.
-- PyYAML (project dependency) and the `git` CLI; otherwise the Python 3.9+ standard library.
+- `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] - `main()` calls `ensure_project_runtime()` to hand off to the project `.venv`, so PyYAML is always present. The `git` CLI is needed for diff discovery; otherwise the Python 3.9+ standard library.
 
 ## Known Issues
 - The hunk parser assumes `--unified=0` output (no context lines). It stays robust to stray context lines but is exercised and tuned for the zero-context form the script itself requests.
@@ -31,3 +31,4 @@ Holds the AI-style guard's entry point and its pure, unit-tested helpers. The sc
 
 ## Revision History
 - 2026-06-25 - Initial creation. `run.py` with the diff hunk parser, change collector, config loader, tier-1/tier-2 detectors, and the CLI flag set.
+- 2026-07-04 - `main()` now bootstraps into the project `.venv` via `ensure_project_runtime()` and `load_config` imports PyYAML unconditionally, so the guard runs rather than silently skipping when PyYAML is absent (a guard that skips reports a false clean).

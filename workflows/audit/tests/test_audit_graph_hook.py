@@ -82,7 +82,7 @@ class TestGraphFindings(unittest.TestCase):
 
 
 class TestRunGraphValidationGracefulSkip(unittest.TestCase):
-    """The validator invocation must never raise — worst case is one INFO note."""
+    """The validator invocation must never raise - worst case is one DEGRADED note."""
 
     def test_missing_cli_returns_single_info(self):
         bogus = Path("workflows/knowledge-graph/scripts/NOPE_does_not_exist.py")
@@ -90,9 +90,9 @@ class TestRunGraphValidationGracefulSkip(unittest.TestCase):
             findings = run.run_graph_validation()
         self.assertEqual(len(findings), 1)
         level, label, message = findings[0]
-        self.assertEqual(level, "INFO")
+        self.assertEqual(level, "DEGRADED")
         self.assertEqual(label, "knowledge-graph")
-        self.assertIn("skipped", message)
+        self.assertIn("did not run", message)
 
     # The real KG_RUN_PY exists in-repo, so .exists() is True for the tests
     # below; only the subprocess boundary needs patching. (Path instance
@@ -104,15 +104,15 @@ class TestRunGraphValidationGracefulSkip(unittest.TestCase):
         with mock.patch.object(run.subprocess, "run", return_value=fake):
             findings = run.run_graph_validation()
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0][0], "INFO")
-        self.assertIn("skipped", findings[0][2])
+        self.assertEqual(findings[0][0], "DEGRADED")
+        self.assertIn("did not run", findings[0][2])
 
     def test_subprocess_exception_returns_single_info(self):
         with mock.patch.object(run.subprocess, "run", side_effect=OSError("nope")):
             findings = run.run_graph_validation()
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0][0], "INFO")
-        self.assertIn("skipped", findings[0][2])
+        self.assertEqual(findings[0][0], "DEGRADED")
+        self.assertIn("did not run", findings[0][2])
 
     def test_valid_payload_is_merged(self):
         fake = mock.Mock(

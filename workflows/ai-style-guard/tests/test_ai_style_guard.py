@@ -185,5 +185,20 @@ class TestConfigLoader(unittest.TestCase):
         self.assertIn("delve", cfg["words"])
 
 
+class BootstrapTests(unittest.TestCase):
+    """This guard's job IS the check, so it must bootstrap, not degrade.
+
+    A guard that silently skips for want of PyYAML would report a false clean.
+    It must hand off to the project .venv (ensure_project_runtime), not carry a
+    "degrades without pyyaml" marker like a genuinely-optional dependency.
+    """
+
+    def test_guard_bootstraps_and_does_not_degrade_on_missing_yaml(self):
+        src = Path(run.__file__).read_text(encoding="utf-8")
+        self.assertIn("ensure_project_runtime()", src)
+        self.assertNotIn("degrades without pyyaml", src)
+        self.assertNotIn("PyYAML not available", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
