@@ -18,7 +18,7 @@ The scripts that implement the check-for-updates workflow. Kept lean and split b
 - The canonical `.venv` (pip, PyYAML); network access for the registry lookups.
 
 ## Outputs
-- The report on stdout (or `--json`), the `workflows/check-for-updates/.last-run` timestamp, and `workflows/check-for-updates/LOG.md` entries.
+- The report on stdout (or `--json`), the `workflows/check-for-updates/.last-run` [[workflows/check-for-updates/CONTEXT]] timestamp, and `workflows/check-for-updates/LOG.md` entries.
 
 ## Steps
 N/A. This directory holds the workflow's scripts; the run sequence is documented in the parent workflow CONTEXT.md `workflows/check-for-updates/CONTEXT.md` [[workflows/check-for-updates/CONTEXT]].
