@@ -1,6 +1,6 @@
 # Triggers
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-06
 
 ## Purpose
 A single, AI-agnostic registry of the natural-language phrases that trigger Book
@@ -50,3 +50,6 @@ triggers" (or "list the skills") and `run.py --list` prints the grouped set.
 - 2026-07-03 - Initial creation. triggers.yaml registry, run.py --list renderer,
   and hermetic tests. The AI-agnostic replacement for a per-AI slash-command set;
   part of best-practices umbrella Bucket-1 child #4.
+- 2026-07-06 - Registered the memory-diff category (the "what changed in memory"
+  trigger) in triggers.yaml, taking the registry to eleven categories; added for
+  best-practices umbrella Bucket-1 child #5.

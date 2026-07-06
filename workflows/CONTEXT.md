@@ -1,6 +1,6 @@
 # Workflows
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-06
 
 ## Purpose
 Parent directory for all workflows in Book Dragon. Each workflow lives in its own subdirectory within this folder.
@@ -25,6 +25,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - Weekly Review - `workflows/weekly-review/` [[workflows/weekly-review/CONTEXT]] - The cron + memory flywheel: a deterministic gather script assembles the week's signal into a briefing packet, and a session-startup staleness gate surfaces "a review is due" so Biblio writes a one-page review into `reviews/` [[reviews/CONTEXT]] and distils durable facts into memory. Startup-gated (not an autonomous cron), so it works identically on every AGENTS-reading AI.
 - Handoff - `workflows/handoff/` [[workflows/handoff/CONTEXT]] - Clean session-to-session transitions: a trigger phrase runs a deterministic gather pass and Biblio writes a rolling `HANDOVER.md`, which a session-startup recovery step (tracked by a seen-watermark) surfaces on the next session. No per-AI slash commands; trigger-driven, so it works identically on every AGENTS-reading AI.
 - Triggers - `workflows/triggers/` [[workflows/triggers/CONTEXT]] - The AI-agnostic replacement for a per-AI slash-command set: a single tracked registry (`config/triggers.yaml`) mapping natural-language phrases to Book Dragon actions, listable on demand via `run.py --list`.
+- Memory Diff - `workflows/memory-diff/` [[workflows/memory-diff/CONTEXT]] - Shows what changed in `memory/` since the last session: a content-watermark diff over `memory/LOG.md` surfaced silently at startup (added / updated / archived) and on the "what changed in memory" trigger. Startup-gated and trigger-driven, so it works identically on every AGENTS-reading AI.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -43,8 +44,7 @@ N/A. This is a container directory, not a workflow itself.
 - The Contents section of this file must be updated every time a new workflow is added or removed. Container directories are easy to forget when the focus is on the new subdirectory itself.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-07-03.
-- 2026-06-24 - Added encoding-guard workflow to Contents.
+Earlier history archived to LOG.md on 2026-07-06.
 - 2026-06-25 - Added personal-data-guard workflow to Contents.
 - 2026-06-25 - Added ai-style-guard workflow to Contents.
 - 2026-06-26 - Added check-for-updates workflow to Contents.
@@ -53,3 +53,4 @@ Earlier history archived to LOG.md on 2026-07-03.
 - 2026-07-02 - Added close-out workflow to Contents (the executable close-out verifier; best-practices umbrella child #2, verification discipline).
 - 2026-07-02 - Added weekly-review workflow to Contents (the cron + memory flywheel; best-practices umbrella child #3).
 - 2026-07-03 - Added handoff and triggers workflows to Contents (best-practices umbrella child #4: session handoff + startup recovery + the trigger registry).
+- 2026-07-06 - Added memory-diff workflow to Contents (best-practices umbrella child #5: the memory diff surfaced at startup).

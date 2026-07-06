@@ -29,6 +29,8 @@
             "Bash(python *workflows/handoff/tests/run_tests.py*)",
             "Bash(python *workflows/triggers/scripts/run.py*)",
             "Bash(python *workflows/triggers/tests/run_tests.py*)",
+            "Bash(python *workflows/memory-diff/scripts/run.py*)",
+            "Bash(python *workflows/memory-diff/tests/run_tests.py*)",
             "mcp__biblio-tools__run_audit",
             "mcp__biblio-tools__run_link_check",
             "mcp__biblio-tools__run_new_month",

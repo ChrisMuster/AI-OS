@@ -1,6 +1,6 @@
 # Triggers - Config
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-06
 
 ## Purpose
 Holds the trigger registry: the single source of truth mapping natural-language
@@ -31,3 +31,6 @@ N/A. This is a data directory.
 - 2026-07-03 - Initial creation. triggers.yaml seeded with handoff, close-out,
   audit, weekly-review, backlog, update-check, link-check, settings-check,
   onboarding, and triggers.
+- 2026-07-06 - Added the memory-diff category (phrases "what changed in memory",
+  "memory diff", "show memory changes", "what is new in memory"), taking
+  triggers.yaml to eleven categories; best-practices umbrella Bucket-1 child #5.

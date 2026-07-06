@@ -50,6 +50,15 @@ categories:
       - do the review
       - weekly review
 
+  - name: memory-diff
+    summary: Show what changed in memory (added, updated, archived) since the last session.
+    runs: python workflows/memory-diff/scripts/run.py --status
+    phrases:
+      - what changed in memory
+      - memory diff
+      - show memory changes
+      - what is new in memory
+
   - name: backlog
     summary: Show the outstanding Active backlog items so you can pick what to work on next.
     runs: Read memory/backlog.md and present the Active items as a numbered list.

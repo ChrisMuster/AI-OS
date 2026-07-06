@@ -97,6 +97,9 @@ workflows/weekly-review/state.json
 # Handoff - local seen-watermark (records which handoff was last surfaced at startup)
 workflows/handoff/state.json
 
+# Memory-diff - local content watermark (the last memory/LOG.md entry surfaced at startup)
+workflows/memory-diff/state.json
+
 # Reddit collector — downloaded posts and state are personal/machine-specific content
 workflows/reddit-collector/collections/
 workflows/reddit-collector/config/feeds.json
