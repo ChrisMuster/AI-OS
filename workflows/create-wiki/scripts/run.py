@@ -123,7 +123,7 @@ def action_label(dry_run: bool, created: bool = True) -> str:
 # ---------------------------------------------------------------------------
 def wiki_root_log(wiki_name: str, ts: str) -> str:
     return (
-        f"# {title(wiki_name)} Wiki — Log\n\n"
+        f"# {title(wiki_name)} Wiki - Log\n\n"
         f"[{ts}] | Actor: Biblio | Action: created"
         f" | Note: Wiki directory scaffolded by create-wiki script.\n"
     )
@@ -135,7 +135,7 @@ def raw_context(wiki_name: str, d: str) -> str:
 **Last modified:** {d}
 
 ## Purpose
-Holds immutable source documents for the {wiki_name} wiki. Files placed here are never modified — they are the ground truth that wiki pages are built from.
+Holds immutable source documents for the {wiki_name} wiki. Files placed here are never modified - they are the ground truth that wiki pages are built from.
 
 ## Contents
 None.
@@ -150,19 +150,19 @@ None. This directory is read-only.
 N/A. This is a storage directory, not a runnable workflow.
 
 ## Dependencies
-- `wikis/{wiki_name}/CONTEXT.md` — The parent wiki's operational instructions, which define how these source files are used.
+- `wikis/{wiki_name}/CONTEXT.md` - The parent wiki's operational instructions, which define how these source files are used.
 
 ## Known Issues
 None.
 
 ## Revision History
-- {d} — Initial creation.
+- {d} - Initial creation.
 """
 
 
 def raw_log(wiki_name: str, ts: str) -> str:
     return (
-        f"# Raw — Log\n\n"
+        f"# Raw - Log\n\n"
         f"[{ts}] | Actor: Biblio | Action: created"
         f" | Note: Created raw/ directory for {wiki_name} wiki. Awaiting source documents.\n"
     )
@@ -177,8 +177,8 @@ def wiki_subdir_context(wiki_name: str, d: str) -> str:
 Holds all wiki pages for the {wiki_name} wiki. Pages are created and maintained by Biblio based on sources in the raw/ directory.
 
 ## Contents
-- index.md — `wikis/{wiki_name}/wiki/index.md` — Table of contents listing all wiki pages with one-line descriptions.
-- operations-log.md — `wikis/{wiki_name}/wiki/operations-log.md` — Append-only record of all wiki operations (ingests, edits, lint passes).
+- index.md - `wikis/{wiki_name}/wiki/index.md` - Table of contents listing all wiki pages with one-line descriptions.
+- operations-log.md - `wikis/{wiki_name}/wiki/operations-log.md` - Append-only record of all wiki operations (ingests, edits, lint passes).
 
 ## Inputs
 Source documents from the sibling raw/ directory.
@@ -190,20 +190,20 @@ Markdown wiki pages covering concepts from the source material.
 N/A. Individual pages are created and updated by Biblio during ingest and editing sessions.
 
 ## Dependencies
-- `wikis/{wiki_name}/CONTEXT.md` — The wiki's operational instructions and rules.
-- `wikis/{wiki_name}/raw/` — Source documents that wiki pages are built from.
+- `wikis/{wiki_name}/CONTEXT.md` - The wiki's operational instructions and rules.
+- `wikis/{wiki_name}/raw/` - Source documents that wiki pages are built from.
 
 ## Known Issues
 None.
 
 ## Revision History
-- {d} — Initial creation.
+- {d} - Initial creation.
 """
 
 
 def wiki_subdir_log(wiki_name: str, ts: str) -> str:
     return (
-        f"# Wiki — Log\n\n"
+        f"# Wiki - Log\n\n"
         f"[{ts}] | Actor: Biblio | Action: created"
         f" | Note: Created wiki/ directory for {wiki_name} wiki.\n"
     )
@@ -211,7 +211,7 @@ def wiki_subdir_log(wiki_name: str, ts: str) -> str:
 
 def wiki_index(wiki_name: str) -> str:
     return (
-        f"# {title(wiki_name)} — Index\n\n"
+        f"# {title(wiki_name)} - Index\n\n"
         "*No pages yet. Add source documents to raw/ and run an ingest session to populate this index.*\n"
     )
 
@@ -267,8 +267,8 @@ def update_wikis_context(wiki_name: str, wiki_topic: str, d: str, dry_run: bool)
     lines = content.splitlines()
     dname      = title(wiki_name)
     topic_str  = wiki_topic.rstrip(".") + "."
-    new_entry  = f"- {dname} — `wikis/{wiki_name}/` — {topic_str}"
-    rev_entry  = f"- {d} — Added {dname} wiki to Contents."
+    new_entry  = f"- {dname} - `wikis/{wiki_name}/` - {topic_str}"
+    rev_entry  = f"- {d} - Added {dname} wiki to Contents."
 
     result        = []
     in_contents   = False
@@ -322,7 +322,7 @@ def scaffold_wiki(wiki_name: str, wiki_topic: str, dry_run: bool) -> None:
         rerun = wiki_dir.exists()
         note  = f"Scaffolding {wiki_name} wiki. Topic: {wiki_topic}."
         if rerun:
-            note += " (re-run — skipping existing files)"
+            note += " (re-run - skipping existing files)"
         append_log(WORKFLOW_LOG, ts, "started", note)
 
     # --- Directories ---
@@ -372,7 +372,7 @@ def scaffold_wiki(wiki_name: str, wiki_topic: str, dry_run: bool) -> None:
         )
         append_log(WORKFLOW_LOG, ts, "completed", note)
         append_log(ROOT_LOG, ts, "completed",
-                   f"create-wiki workflow ran. Created wikis/{wiki_name}/ — topic: {wiki_topic}.")
+                   f"create-wiki workflow ran. Created wikis/{wiki_name}/ - topic: {wiki_topic}.")
         print(f"  [~] workflows/create-wiki/LOG.md updated")
         print(f"  [~] LOG.md (root) updated")
 

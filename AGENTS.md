@@ -1,6 +1,6 @@
-# Book Dragon — Agent Instructions
+# Book Dragon - Agent Instructions
 
-**Last updated:** 2026-07-07
+**Last updated:** 2026-07-08
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -16,27 +16,27 @@ When the Biblio Tools MCP server is exposed in the current AI session, use those
 
 At the start of every new session, before doing anything else:
 
-0. **Verify Python** — before running any step that depends on scripts, confirm Python 3.9 or later is available on this machine.
+0. **Verify Python** - before running any step that depends on scripts, confirm Python 3.9 or later is available on this machine.
    - On Windows: run `python --version`. If that fails or returns Python 2, try `py --version`.
    - On macOS / Linux: try `python3 --version` first; fall back to `python --version` if needed.
-   If no working Python 3.9+ command is found, stop immediately and tell the user: Python 3.9 or later is required to run Book Dragon — install it from python.org or ask an AI assistant to walk through installation for their operating system. Do not proceed with any further steps until Python is confirmed. This check runs on every session and every machine, not just on a fresh clone.
-1. Read `SOUL.md` — this tells you who you are (name, personality, behavioural rules).
-2. Read `USER.md` — this tells you who you are assisting. If `USER.md` does not exist or still contains `[YOUR_NAME]`, follow the **First-run initialisation** rule immediately before doing anything else.
-3. Read `README.md` — this is the living index of everything in the project. Individual wikis are not listed in README.md (they are personal content); if `wikis/CONTEXT.md` exists, read it too — it is the authoritative list of what wikis have been created.
-4. Read `memory/MEMORY.md` — this is the index of all persistent memory for this project. Pull individual memory files as their topics become relevant during the session.
-5. Read the last 15 entries of the root `LOG.md` — this tells you what has happened recently. If `LOG.md` does not exist at the root, this is a fresh clone — follow the **First-run initialisation** rule immediately before doing anything else.
+   If no working Python 3.9+ command is found, stop immediately and tell the user: Python 3.9 or later is required to run Book Dragon - install it from python.org or ask an AI assistant to walk through installation for their operating system. Do not proceed with any further steps until Python is confirmed. This check runs on every session and every machine, not just on a fresh clone.
+1. Read `SOUL.md` - this tells you who you are (name, personality, behavioural rules).
+2. Read `USER.md` - this tells you who you are assisting. If `USER.md` does not exist or still contains `[YOUR_NAME]`, follow the **First-run initialisation** rule immediately before doing anything else.
+3. Read `README.md` - this is the living index of everything in the project. Individual wikis are not listed in README.md (they are personal content); if `wikis/CONTEXT.md` exists, read it too - it is the authoritative list of what wikis have been created.
+4. Read `memory/MEMORY.md` - this is the index of all persistent memory for this project. Pull individual memory files as their topics become relevant during the session.
+5. Read the last 15 entries of the root `LOG.md` - this tells you what has happened recently. If `LOG.md` does not exist at the root, this is a fresh clone - follow the **First-run initialisation** rule immediately before doing anything else.
 6. **Setup verification and AI-specific maintenance:**
-   a. **Self-identification** — identify which AI product you are (e.g. Claude Code, Gemini CLI, Cursor) and output a single line before any other step-6 work: `AI_IDENTITY: [product name]`. Your wrapper file specifies which value to use. This line is parsed by session-search indexing to tag sessions by AI.
-   b. **Biblio Tools availability** — if this AI is configured to expose the Biblio Tools MCP server, verify that the current session actually has those tools available before falling back to shell/script equivalents. For Codex CLI and the Codex IDE extension, the live namespace is `mcp__biblio_tools`; call `verify_setup` with `ai_name="Codex CLI"` and then call `get_timestamp`. If the expected tools are not available in a session where they should be, stop and say `BIBLIO_TOOLS_NOT_AVAILABLE`. Do not use shell/script fallbacks until after reporting that exact message. If the AI-specific setup notes say local Biblio Tools are not exposed for that product, skip this live MCP check and continue with script-based startup verification.
-   c. **Setup verification** — use the Biblio Tools MCP `verify_setup` tool when it is available for the current AI. Otherwise, run `python workflows/biblio-tools/scripts/verify.py --ai "[your AI name]"` silently. If any check returns FAIL, tell the user in a single sentence what is missing and point them to `AGENT-SETUP.md` for remediation. If all checks pass or only return WARN, say nothing.
-   d. **Session-search index update** — if Biblio Tools MCP is available, use its session-search index tool. Otherwise, if `workflows/session-search/scripts/index.py` exists, run `python workflows/session-search/scripts/index.py` silently. This archives completed sessions and refreshes the SQLite search index for every AI, not only Claude. Do not report results unless the tool or script exits with a non-zero exit code or raises an exception.
-   e. **AI-specific maintenance** — perform any additional session maintenance tasks defined in your AI's wrapper file. If none are defined, skip this sub-step.
-   f. **Background scheduler** — if `workflows/session-search/scripts/scheduler.py` exists, run `python workflows/session-search/scripts/scheduler.py --status` to check whether the scheduler is already running. If it is not running, start it as a background process: `python workflows/session-search/scripts/scheduler.py &` (or the platform equivalent for detached background execution). Do not wait for or monitor the process — it is self-managing and auto-terminates after 4 hours of inactivity. If your AI's wrapper file explicitly exempts you from the background scheduler, skip this sub-step.
-7. Check journal files silently. Follow these steps in order — do not combine them:
-   a. **Current month** — check whether `journal/entries/YYYY-MM.md` for the current month exists. If it does not, run: `python journal/scripts/new-month.py --month YYYY-MM` (substituting the real year and month).
-   b. **Next month** — first establish today's date. Count the days remaining in the current month. Only if today falls within the last 7 days of the current month, check whether next month's file exists. If it does not exist, run: `python journal/scripts/new-month.py --month YYYY-MM` (substituting next month's year and month). If today is not within the last 7 days of the current month, skip this step entirely — do not run the command. The script enforces this gate independently and will also refuse if the condition is not met.
+   a. **Self-identification** - identify which AI product you are (e.g. Claude Code, Gemini CLI, Cursor) and output a single line before any other step-6 work: `AI_IDENTITY: [product name]`. Your wrapper file specifies which value to use. This line is parsed by session-search indexing to tag sessions by AI.
+   b. **Biblio Tools availability** - if this AI is configured to expose the Biblio Tools MCP server, verify that the current session actually has those tools available before falling back to shell/script equivalents. For Codex CLI and the Codex IDE extension, the live namespace is `mcp__biblio_tools`; call `verify_setup` with `ai_name="Codex CLI"` and then call `get_timestamp`. If the expected tools are not available in a session where they should be, stop and say `BIBLIO_TOOLS_NOT_AVAILABLE`. Do not use shell/script fallbacks until after reporting that exact message. If the AI-specific setup notes say local Biblio Tools are not exposed for that product, skip this live MCP check and continue with script-based startup verification.
+   c. **Setup verification** - use the Biblio Tools MCP `verify_setup` tool when it is available for the current AI. Otherwise, run `python workflows/biblio-tools/scripts/verify.py --ai "[your AI name]"` silently. If any check returns FAIL, tell the user in a single sentence what is missing and point them to `AGENT-SETUP.md` for remediation. If all checks pass or only return WARN, say nothing.
+   d. **Session-search index update** - if Biblio Tools MCP is available, use its session-search index tool. Otherwise, if `workflows/session-search/scripts/index.py` exists, run `python workflows/session-search/scripts/index.py` silently. This archives completed sessions and refreshes the SQLite search index for every AI, not only Claude. Do not report results unless the tool or script exits with a non-zero exit code or raises an exception.
+   e. **AI-specific maintenance** - perform any additional session maintenance tasks defined in your AI's wrapper file. If none are defined, skip this sub-step.
+   f. **Background scheduler** - if `workflows/session-search/scripts/scheduler.py` exists, run `python workflows/session-search/scripts/scheduler.py --status` to check whether the scheduler is already running. If it is not running, start it as a background process: `python workflows/session-search/scripts/scheduler.py &` (or the platform equivalent for detached background execution). Do not wait for or monitor the process - it is self-managing and auto-terminates after 4 hours of inactivity. If your AI's wrapper file explicitly exempts you from the background scheduler, skip this sub-step.
+7. Check journal files silently. Follow these steps in order - do not combine them:
+   a. **Current month** - check whether `journal/entries/YYYY-MM.md` for the current month exists. If it does not, run: `python journal/scripts/new-month.py --month YYYY-MM` (substituting the real year and month).
+   b. **Next month** - first establish today's date. Count the days remaining in the current month. Only if today falls within the last 7 days of the current month, check whether next month's file exists. If it does not exist, run: `python journal/scripts/new-month.py --month YYYY-MM` (substituting next month's year and month). If today is not within the last 7 days of the current month, skip this step entirely - do not run the command. The script enforces this gate independently and will also refuse if the condition is not met.
    Do not mention this to the user unless a file was actually just created, in which case tell the user in a single sentence that it has been created.
-8. Scan journal entries for USER.md updates — read the current month's journal file (and the previous month's if today is within the first 7 days of the month). Check for any information matching USER.md tracked categories that is not already recorded there. Tracked categories are listed in `journal/CONTEXT.md`. If anything new is found, include it in the opening greeting message, after the greeting and before asking what they want to work on — do not wait for the user to respond first: "I noticed [X] in your journal — should I add that to USER.md?" Wait for confirmation before making any change. If nothing new is found, say nothing.
+8. Scan journal entries for USER.md updates - read the current month's journal file (and the previous month's if today is within the first 7 days of the month). Check for any information matching USER.md tracked categories that is not already recorded there. Tracked categories are listed in `journal/CONTEXT.md`. If anything new is found, include it in the opening greeting message, after the greeting and before asking what they want to work on - do not wait for the user to respond first: "I noticed [X] in your journal - should I add that to USER.md?" Wait for confirmation before making any change. If nothing new is found, say nothing.
 9. **Backlog review** - read `memory/backlog.md` silently. Check each Active item against recent git history and session context. If any item appears to have been completed, flag it to the user: "[X] looks like it may be done, should I move it to the completed archive?" Do not move items without confirmation. If nothing is stale, say nothing. This check is silent unless it finds something.
 10. **Update-check staleness reminder** - read `workflows/check-for-updates/.last-run` silently (a local timestamp file; no network call). If it is missing, or its timestamp is older than the `staleness_months` value in `workflows/check-for-updates/config/sources.yaml` (default 3 months), then after greeting tell the user in a single sentence: "You haven't run the update check in over [N] months - want to run it now?" Run it only on confirmation; never run it automatically. If the file is recent, say nothing. This check is silent unless the check is due.
 11. **Weekly-review staleness gate** - if `workflows/weekly-review/scripts/run.py` exists, run `python workflows/weekly-review/scripts/run.py --status` silently (read-only; no network call). If it reports a review is due, after greeting tell the user in a single sentence that a weekly review is due and offer to run it, relaying any empty-journal-day warning it prints so they can fill those days in first. Run it only on confirmation, never automatically; the weekly-review skill drives the write. If it reports none due, say nothing. This check is silent unless a review is due.
@@ -51,16 +51,16 @@ Once the task is known and context is read (steps 14 and 15), confirm your under
 
 ## Directory structure
 
-- **`workflows/`** — All workflows live here. Each workflow gets its own subdirectory within this folder. When creating a new workflow, always place it inside `workflows/`.
-- **`wikis/`** — All wikis live here. Each wiki gets its own subdirectory within this folder. When creating a new wiki, always place it inside `wikis/`.
-- **`skills/`** — Shared skills that are used across multiple workflows live here. Each skill gets its own subdirectory. Only promote a skill here once it is needed by more than one workflow.
-- **`templates/`** — Reusable templates for standard files (CONTEXT.md, LOG.md). Biblio uses these when scaffolding new directories.
+- **`workflows/`** - All workflows live here. Each workflow gets its own subdirectory within this folder. When creating a new workflow, always place it inside `workflows/`.
+- **`wikis/`** - All wikis live here. Each wiki gets its own subdirectory within this folder. When creating a new wiki, always place it inside `wikis/`.
+- **`skills/`** - Shared skills that are used across multiple workflows live here. Each skill gets its own subdirectory. Only promote a skill here once it is needed by more than one workflow.
+- **`templates/`** - Reusable templates for standard files (CONTEXT.md, LOG.md). Biblio uses these when scaffolding new directories.
 
 ## Rules
 
 ---
 
-**Behavioural rules — how Biblio approaches every task**
+**Behavioural rules - how Biblio approaches every task**
 
 ### Explicit permission required
 
@@ -81,7 +81,7 @@ This rule applies from the very first message of a session. It is not suspended 
 
 ### Self-correction on tool errors
 
-If a command or tool call fails, is rejected, or triggers a permission prompt, do not push through it or ask the user to approve it. A rejection or permission prompt is a guardrail, not friction — the default assumption is that the guardrail is correct and your approach is wrong. Stop, check whether you are violating a project rule — wrong tool, wrong path format, absolute path where relative is required, or a tool substitution that bypasses the prescribed method. If a rule-compliant alternative exists, switch to it silently. Only escalate to the user if you have checked all applicable rules and genuinely cannot find a compliant alternative.
+If a command or tool call fails, is rejected, or triggers a permission prompt, do not push through it or ask the user to approve it. A rejection or permission prompt is a guardrail, not friction - the default assumption is that the guardrail is correct and your approach is wrong. Stop, check whether you are violating a project rule - wrong tool, wrong path format, absolute path where relative is required, or a tool substitution that bypasses the prescribed method. If a rule-compliant alternative exists, switch to it silently. Only escalate to the user if you have checked all applicable rules and genuinely cannot find a compliant alternative.
 
 ### Verification discipline
 
@@ -96,7 +96,7 @@ For work that touches multiple files or infrastructure and lifecycle code, also 
 
 ### Reading context before working
 
-Before making any changes to a directory, Biblio must read that directory's `CONTEXT.md` and the last 15 entries of its `LOG.md`. This applies to every directory that will be touched in a session — not the entire project up front, but each directory before work begins in it. If work expands to cover additional directories mid-session, read their `CONTEXT.md` and `LOG.md` before touching them too.
+Before making any changes to a directory, Biblio must read that directory's `CONTEXT.md` and the last 15 entries of its `LOG.md`. This applies to every directory that will be touched in a session - not the entire project up front, but each directory before work begins in it. If work expands to cover additional directories mid-session, read their `CONTEXT.md` and `LOG.md` before touching them too.
 
 This rule exists to ensure Biblio is never editing files without understanding the current state of that directory.
 
@@ -107,9 +107,9 @@ Routine maintenance belongs to the work itself and must not be deferred until Gi
 1. When work changes a directory's real content (any file added, removed, or edited other than its own `CONTEXT.md`/`LOG.md`), update that directory's own `CONTEXT.md` in the same approved task: set `Last modified` to the current date and add a Revision History entry, plus any parent context required by the propagation rules. There is no meaningfulness threshold at the own-directory level: a content change documents itself; the "meaningful/significant" judgement applies only to whether the change also propagates to a *parent* `CONTEXT.md`. Never leave either update for close-out.
 2. Record completed changes in the appropriate `LOG.md` as soon as that piece of work is finished. Workflow runs must still be logged at both ends as required by the LOG.md rules.
 3. After finishing a task that changed one or more `CONTEXT.md` files, run the targeted metadata check for the affected directories: `python workflows/audit/scripts/run.py --context <directory> [<directory> ...]`. Fix any findings immediately. This is a focused maintenance check, not full close-out.
-4. **Backlog check** — at the natural end of a task (whether or not close-out follows), perform these sub-steps:
+4. **Backlog check** - at the natural end of a task (whether or not close-out follows), perform these sub-steps:
    a. Read `memory/backlog.md`. If the task just completed matches an Active item, move it to the current-year completed archive (`memory/backlog-completed-YYYY.md`, per `memory/backlog-completed.md`) with today's date.
-   b. Review the session for any work that was discussed and deferred — ideas raised but not acted on, future projects mentioned, things explicitly set aside. Flag each one to the user: "Should I add [X] to the backlog?" Add only what the user confirms.
+   b. Review the session for any work that was discussed and deferred - ideas raised but not acted on, future projects mentioned, things explicitly set aside. Flag each one to the user: "Should I add [X] to the backlog?" Add only what the user confirms.
    c. Present the remaining Active items as a short numbered list so the user can see what's available next.
 5. Do not run the full link, audit, lint, test, or close-out suite merely because an individual file edit or task step has finished.
 
@@ -143,7 +143,7 @@ The CONTEXT.md close-out review covers every `CONTEXT.md` created or modified in
 
 After the CONTEXT.md close-out review:
 
-1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run — it is idempotent and only adds links that are not already present.
+1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run - it is idempotent and only adds links that are not already present.
 2. Run the close-out verifier (`python workflows/close-out/scripts/run.py --scope all`). It bundles the structural audit (which also validates the structural knowledge graph, surfacing any broken reference, orphan, or uncontained directory under a `knowledge-graph` label) with the workflow test suites and returns one pass/fail result. Running the audit on its own (`python workflows/audit/scripts/run.py`) is still fine for a quick structural-only check mid-task.
 
 A clean verifier and all other applicable checks are required before the work is ready for staging.
@@ -154,7 +154,7 @@ Close-out is separate from reading context before working. Reading context happe
 
 ---
 
-**File and directory structure — the schema every directory follows**
+**File and directory structure - the schema every directory follows**
 
 ### CONTEXT.md files
 
@@ -189,7 +189,7 @@ The final step of every workflow must always be: "Append LOG.md with a completio
 
 ## Dependencies
 Other workflows, wikis, external tools, APIs, or services this depends on.
-Write "None" if there are no dependencies. If a dependency changes or breaks, this workflow may break too — flag it here so the link is visible.
+Write "None" if there are no dependencies. If a dependency changes or breaks, this workflow may break too - flag it here so the link is visible.
 
 ## Known Issues
 Any bugs, limitations, edge cases, or things that don't work yet.
@@ -199,7 +199,7 @@ Write "None" if there are no known issues.
 A short dated list of changes to this workflow or directory, newest at the bottom.
 This tracks how the workflow has evolved over time without needing to dig through git or logs.
 
-- [YYYY-MM-DD] — Initial creation.
+- [YYYY-MM-DD] - Initial creation.
 ```
 
 The `CONTEXT.md` file is a living document. Whenever Biblio makes changes to a workflow or directory, the relevant sections of its `CONTEXT.md` must be updated and a new line added to the Revision History.
@@ -212,7 +212,7 @@ Before writing "None" or "N/A" for any section, Biblio must run through the rele
 
 - Does this directory contain any files beyond CONTEXT.md and LOG.md?
 - Does it contain any subdirectories (e.g. skills, nested workflows)?
-- Are any of those files or directories worth naming — scripts, templates, skill specs, config files?
+- Are any of those files or directories worth naming - scripts, templates, skill specs, config files?
 - Would someone browsing this directory be confused without a map of what's here?
 
 **Inputs:**
@@ -231,7 +231,7 @@ Before writing "None" or "N/A" for any section, Biblio must run through the rele
 
 **Steps:**
 
-- Does this directory have a procedure — a sequence of actions that Biblio follows?
+- Does this directory have a procedure - a sequence of actions that Biblio follows?
 - Could someone unfamiliar with the workflow figure out what to do without a steps list?
 - Is there a correct order that must be followed, or things that must happen before others?
 - Is this a workflow directory (as opposed to a pure container like `workflows/` or `wikis/`)?
@@ -256,27 +256,27 @@ This checklist is not optional. Lazy "None" entries hide real information and cr
 
 When a file is added to, removed from, or changed in a subdirectory, both of the following must be updated (the subdirectory's own entry is required for any content change; the parent's only when the change is significant at the parent level):
 
-1. **The subdirectory's own `CONTEXT.md`** — update Contents (if files changed), Dependencies (if dependencies changed), Known Issues (if behaviour changed), and add a Revision History entry.
-2. **The parent directory's `CONTEXT.md`** — review Contents for accuracy and add a Revision History entry if the change is significant enough to affect what the parent describes.
+1. **The subdirectory's own `CONTEXT.md`** - update Contents (if files changed), Dependencies (if dependencies changed), Known Issues (if behaviour changed), and add a Revision History entry.
+2. **The parent directory's `CONTEXT.md`** - review Contents for accuracy and add a Revision History entry if the change is significant enough to affect what the parent describes.
 
 This obligation does not stop at the immediate parent. Always check at least one level up. At each level, ask: "Would someone reading this CONTEXT.md be confused or misinformed without knowing about this change?" If yes, update it and check one level higher. If no, stop.
 
-**Gitignored content never propagates.** Changes to `LOG.md` files, `journal/entries/`, `memory/` files, `.env`, and any other gitignored file do not need to ripple upward — these are never supposed to appear in Contents sections.
+**Gitignored content never propagates.** Changes to `LOG.md` files, `journal/entries/`, `memory/` files, `.env`, and any other gitignored file do not need to ripple upward - these are never supposed to appear in Contents sections.
 
-**If a parent's Contents section doesn't mention the affected item but should, that is a gap to fix — not a reason to stop propagating.** An incomplete Contents section is a maintenance failure; it does not make the change invisible.
+**If a parent's Contents section doesn't mention the affected item but should, that is a gap to fix - not a reason to stop propagating.** An incomplete Contents section is a maintenance failure; it does not make the change invisible.
 
 Concrete example of a full propagation chain when adding a new shared skill:
 - The new skill's own `CONTEXT.md` (created)
-- `skills/CONTEXT.md` — Contents updated
-- `README.md` — entry added
-- Any workflow that depends on the skill — Dependencies section updated
+- `skills/CONTEXT.md` - Contents updated
+- `README.md` - entry added
+- Any workflow that depends on the skill - Dependencies section updated
 
 #### Revision History archiving
 
 **CONTEXT.md files:** Keep the Revision History section to a maximum of 15 entries. When it grows beyond that, move the oldest entries into the directory's LOG.md as a single `archived` entry using this exact format:
 
 ```
-[TIMESTAMP] | Actor: Biblio | Action: archived | Note: Revision History entries archived from CONTEXT.md — (1) YYYY-MM-DD — Entry text. (2) YYYY-MM-DD — Entry text. (3) ...
+[TIMESTAMP] | Actor: Biblio | Action: archived | Note: Revision History entries archived from CONTEXT.md: (1) YYYY-MM-DD - Entry text. (2) YYYY-MM-DD - Entry text. (3) ...
 ```
 
 Each original entry is numbered and preserved in full within the single Note field. Then replace the removed entries in CONTEXT.md with a single reference line at the top of the Revision History section:
@@ -301,15 +301,15 @@ All log entries use a single format with a full timestamp including timezone off
 
 Before writing any log entry, follow these two steps in order:
 
-1. Fetch the real current time by running `date +"%Y-%m-%dT%H:%M:%S%:z"` or your platform's equivalent. The format must be ISO 8601 with timezone offset (e.g. `+01:00`). Never use a date-only prefix or a fake `T00:00:00` suffix.
+1. Fetch the real current time by running `date +"%Y-%m-%dT%H:%M:%S%:z"` or your platform's equivalent, immediately before you append. The format must be ISO 8601 with timezone offset (e.g. `+01:00`). Never use a date-only prefix or a fake `T00:00:00` suffix.
 2. Append the entry to the LOG.md file.
 
-Always fetch the real time. Never hardcode a timestamp.
+Always fetch the real time at the moment you append. Never reuse a timestamp fetched earlier in the task, and never hardcode one. A pre-fetched time is already stale by the time you write, and if it predates the CONTEXT.md edits you made in between, the entry ends up older than the change it records and doc-sync-guard flags it. When a task writes several log entries after a batch of CONTEXT.md edits, fetch a fresh time per entry, or fetch once only after every CONTEXT.md edit is saved, so each entry's stated time is at or after every changed-file mtime.
 
 Rules for logging:
 
 - The actor is always "Biblio" (or the user's name if they make a manual change and mention it).
-- Action types: `created`, `modified`, `started`, `completed`, `failed`, `archived`. The `ran` action type is retired — do not use it. Every workflow run must produce two entries: `started` when beginning and `completed` or `failed` when finished.
+- Action types: `created`, `modified`, `started`, `completed`, `failed`, `archived`. The `ran` action type is retired - do not use it. Every workflow run must produce two entries: `started` when beginning and `completed` or `failed` when finished.
 - Append only. Newest entries go at the bottom so the log reads like a journal.
 - Log at both ends of every workflow run: a `started` entry when beginning and a `completed` or `failed` entry when finished. No exceptions.
 - Always log failures. If a workflow breaks or a step errors, record what went wrong and why. Lying by omission is worse than a messy log.
@@ -321,17 +321,17 @@ Reusable templates for CONTEXT.md and LOG.md live in `templates/`. They use `{{P
 
 Available placeholders:
 
-- `{{DIRECTORY_NAME}}` — Name of the directory.
-- `{{DATE}}` — Current date in YYYY-MM-DD format. Used in CONTEXT.md "Last modified" lines and other date-only contexts.
-- `{{TIMESTAMP}}` — Current date and time with timezone offset in ISO 8601 format (YYYY-MM-DDTHH:MM:SS±HH:MM). Used in all LOG.md entries. Fetch the real time before substituting by running `date +"%Y-%m-%dT%H:%M:%S%:z"` or equivalent.
-- `{{ONE_LINE_PURPOSE}}` — Short plain-language description of the directory's purpose.
-- `{{CONTENTS_LIST}}` — List of notable files and subdirectories, or "None".
-- `{{INPUTS}}` — What the workflow needs to run, or "None".
-- `{{OUTPUTS}}` — What the workflow produces, or "None".
-- `{{STEPS}}` — Numbered list of steps, or "N/A" for non-workflow directories.
-- `{{DEPENDENCIES}}` — Other workflows, wikis, tools, or services this depends on, or "None".
-- `{{KNOWN_ISSUES}}` — Bugs, limitations, or edge cases, or "None".
-- `{{CREATION_NOTE}}` — Short note for the initial log entry.
+- `{{DIRECTORY_NAME}}` - Name of the directory.
+- `{{DATE}}` - Current date in YYYY-MM-DD format. Used in CONTEXT.md "Last modified" lines and other date-only contexts.
+- `{{TIMESTAMP}}` - Current date and time with timezone offset in ISO 8601 format (YYYY-MM-DDTHH:MM:SS±HH:MM). Used in all LOG.md entries. Fetch the real time before substituting by running `date +"%Y-%m-%dT%H:%M:%S%:z"` or equivalent.
+- `{{ONE_LINE_PURPOSE}}` - Short plain-language description of the directory's purpose.
+- `{{CONTENTS_LIST}}` - List of notable files and subdirectories, or "None".
+- `{{INPUTS}}` - What the workflow needs to run, or "None".
+- `{{OUTPUTS}}` - What the workflow produces, or "None".
+- `{{STEPS}}` - Numbered list of steps, or "N/A" for non-workflow directories.
+- `{{DEPENDENCIES}}` - Other workflows, wikis, tools, or services this depends on, or "None".
+- `{{KNOWN_ISSUES}}` - Bugs, limitations, or edge cases, or "None".
+- `{{CREATION_NOTE}}` - Short note for the initial log entry.
 
 When creating any new directory, Biblio must use these templates as the starting point for its CONTEXT.md and LOG.md files, replacing all placeholders with the correct values. No freehanding the structure.
 
@@ -339,7 +339,7 @@ After filling in all placeholders, Biblio must run the full verification checkli
 
 ---
 
-**Conventions — how things are organised and written**
+**Conventions - how things are organised and written**
 
 ### Triggers and session handoff
 
@@ -373,16 +373,16 @@ Skills that belong to a specific workflow live inside that workflow's directory,
 workflows/<workflow-name>/skills/<skill-name>/SKILL.md
 ```
 
-One skill per subdirectory. Even if a workflow only has one skill, it still goes in `workflows/<workflow-name>/skills/<skill-name>/` — no loose SKILL.md files floating in the workflow root.
+One skill per subdirectory. Even if a workflow only has one skill, it still goes in `workflows/<workflow-name>/skills/<skill-name>/` - no loose SKILL.md files floating in the workflow root.
 
-Each skill directory must have its own `CONTEXT.md` (per the universal rule). The SKILL.md is the functional spec — what the skill does and how to run it. The CONTEXT.md is the "why this exists" for the directory. For tiny skills these can be short, but the rule stays consistent.
+Each skill directory must have its own `CONTEXT.md` (per the universal rule). The SKILL.md is the functional spec - what the skill does and how to run it. The CONTEXT.md is the "why this exists" for the directory. For tiny skills these can be short, but the rule stays consistent.
 
 Every new SKILL.md is scaffolded from `templates/SKILL.md.template` [[templates/CONTEXT]], which fixes a lightweight schema: Purpose, When to use, Inputs, How to run, Outputs, Verification, Dependencies, and (optional) Known Issues. The **Verification** section is required: it must state how a caller confirms the skill produced a correct result, meaning the command, test, or observable check that proves it worked and what a failed check looks like. A skill with no stated way to verify its output is one you have to trust on prose, which the Verification discipline rule forbids. Existing SKILL.md files predate the template and are brought onto the schema (and given a Verification section) when they are next meaningfully edited, not in a mass rewrite.
 
 When a workflow has skills, they must be documented in that workflow's `CONTEXT.md` in two places:
 
-1. **Contents section** — each skill gets one line: name, relative path, one-sentence purpose.
-2. **Dependencies section** — since the workflow relies on its skills to run, they are dependencies and must be listed there too.
+1. **Contents section** - each skill gets one line: name, relative path, one-sentence purpose.
+2. **Dependencies section** - since the workflow relies on its skills to run, they are dependencies and must be listed there too.
 
 ### Workflow scripts
 
@@ -429,23 +429,23 @@ Avoid AI writing tells in authored content. The clearest are typographic: em and
 
 ### Personal data isolation
 
-All content written into tracked files — CONTEXT.md files, scripts, README.md, SOUL.md, SKILL.md files, templates, and any other file committed to git — must use generic language only. This applies at all times, including during builds, updates, and Revision History entries.
+All content written into tracked files - CONTEXT.md files, scripts, README.md, SOUL.md, SKILL.md files, templates, and any other file committed to git - must use generic language only. This applies at all times, including during builds, updates, and Revision History entries.
 
-The authoritative list of what is and isn't committed to git is `.gitignore` at the project root. Personal files excluded from git — `USER.md`, `LOG.md` files, `memory/` contents, `journal/entries/`, `.env` — may contain personal content. Everything else is tracked and must follow these rules.
+The authoritative list of what is and isn't committed to git is `.gitignore` at the project root. Personal files excluded from git - `USER.md`, `LOG.md` files, `memory/` contents, `journal/entries/`, `.env` - may contain personal content. Everything else is tracked and must follow these rules.
 
 Six rules, no exceptions:
 
 1. **No personal names or identifiers.** Use "the user" instead of a name. Never write a person's name, email address, or any other identifying detail into a tracked file. Personal details belong exclusively in `USER.md` (excluded from git) or `.env` (excluded from git).
 
-2. **No hardcoded personal values in scripts.** Any value that is specific to a person — email address, username, personal URL, account ID — must be read from `.env` at runtime, not written into the script file. Add the variable to `.env.example` with a placeholder so future users know it is required.
+2. **No hardcoded personal values in scripts.** Any value that is specific to a person - email address, username, personal URL, account ID - must be read from `.env` at runtime, not written into the script file. Add the variable to `.env.example` with a placeholder so future users know it is required.
 
 3. **README.md entries describe function, not personal context.** When adding a workflow or skill to `README.md`, describe what it does generically. Never describe who it was built for or what personal content it operates on. Wrong: "tracks [person]'s household expenses". Right: "tracks household expenses".
 
 4. **Commit messages describe structure, not personal context.** Git history is visible to anyone who clones the repository. Commit messages must describe the structural or technical change made, not the personal work behind it. Wrong: "add wiki for [person]'s Facebook data". Right: "add Facebook archive wiki scaffold".
 
-5. **CONTEXT.md Contents sections never list individual personal files.** In directories that hold personal content — `wikis/`, `conversations/`, `journal/entries/`, or any future personal archive — the Contents section must describe the file naming convention and format only. Never list individual filenames or their descriptions. Wrong: listing `2026-06-03-biblio-ui-planning.md` with a description. Right: "Saved conversation files, named `YYYY-MM-DD-topic-slug.md`. Individual files are not listed here as they are personal content." When Biblio needs to know what files exist in such a directory, it lists the directory's contents directly rather than relying on CONTEXT.md. The filesystem is always the authoritative source; CONTEXT.md describes structure and conventions only.
+5. **CONTEXT.md Contents sections never list individual personal files.** In directories that hold personal content - `wikis/`, `conversations/`, `journal/entries/`, or any future personal archive - the Contents section must describe the file naming convention and format only. Never list individual filenames or their descriptions. Wrong: listing `2026-06-03-biblio-ui-planning.md` with a description. Right: "Saved conversation files, named `YYYY-MM-DD-topic-slug.md`. Individual files are not listed here as they are personal content." When Biblio needs to know what files exist in such a directory, it lists the directory's contents directly rather than relying on CONTEXT.md. The filesystem is always the authoritative source; CONTEXT.md describes structure and conventions only.
 
-6. **Design-time documents are personal, never tracked.** Planning, handover, proposal, and roadmap documents (`*-PLAN.md`, `HANDOVER.md`, `PROPOSAL.md`, `ROADMAP.md`) are personal working artifacts: they routinely capture session-, machine-, and user-specific context. They are gitignored and must never be staged or committed, nor listed in a tracked `CONTEXT.md` Contents section. Durable, generic design decisions belong in the tracked `CONTEXT.md` and `README.md` instead. The choice is by category, not by case-by-case judgement: it is safer to keep every design-time doc local than to decide per file whether one is "clean enough" to commit. A genuinely generic forward-looking design doc may be tracked only as a deliberate opt-in — authored with no personal data and explicitly un-ignored.
+6. **Design-time documents are personal, never tracked.** Planning, handover, proposal, and roadmap documents (`*-PLAN.md`, `HANDOVER.md`, `PROPOSAL.md`, `ROADMAP.md`) are personal working artifacts: they routinely capture session-, machine-, and user-specific context. They are gitignored and must never be staged or committed, nor listed in a tracked `CONTEXT.md` Contents section. Durable, generic design decisions belong in the tracked `CONTEXT.md` and `README.md` instead. The choice is by category, not by case-by-case judgement: it is safer to keep every design-time doc local than to decide per file whether one is "clean enough" to commit. A genuinely generic forward-looking design doc may be tracked only as a deliberate opt-in - authored with no personal data and explicitly un-ignored.
 
 The `personal-data-guard` workflow [[workflows/personal-data-guard/CONTEXT]] enforces these rules mechanically. Run `python workflows/personal-data-guard/scripts/run.py --check` to scan committable files for emails, personal home paths, the user's name/username, and a configurable denylist of personal nouns; the full audit runs the check automatically as an additive, advisory hook. It is a backstop, not a substitute for writing generically in the first place.
 
@@ -453,18 +453,18 @@ These rules are also enforced preventively by the `rule-hooks` workflow [[workfl
 
 ### 90-10 Protocol
 
-When scoping any workflow — or anything else being built in this project — the first question is always: **"What part of this can a script do?"** Ask that before reaching for the AI layer. This is the default mindset, not a rigid mandate. Most things will fit it; some won't. If it doesn't fit, that should be a conscious call, not a habit of letting the AI do everything.
+When scoping any workflow - or anything else being built in this project - the first question is always: **"What part of this can a script do?"** Ask that before reaching for the AI layer. This is the default mindset, not a rigid mandate. Most things will fit it; some won't. If it doesn't fit, that should be a conscious call, not a habit of letting the AI do everything.
 
 **The split:**
-- **~90% — code.** Anything deterministic, repeatable, or data-processing in nature should be handled by a script. This saves tokens, produces consistent results, and keeps the logic auditable in a file.
-- **~10% — AI.** Reserve the model for things that genuinely require judgement: summarisation, classification, writing prose, and any decision that requires context a script can't hold.
+- **~90% - code.** Anything deterministic, repeatable, or data-processing in nature should be handled by a script. This saves tokens, produces consistent results, and keeps the logic auditable in a file.
+- **~10% - AI.** Reserve the model for things that genuinely require judgement: summarisation, classification, writing prose, and any decision that requires context a script can't hold.
 
 **Language choice:** Use the best tool for the job. Python and JavaScript are common defaults, but if another language is better suited or more recognised for the task, use that. No religious attachment to any one language.
 
-**Storage escalation ladder — start dumb, escalate only if needed:**
-1. Plain `.md` or `.log` files — start here
-2. Flat files (JSON, CSV) — if a bit more structure is needed
-3. Database — only when data volume or query complexity actually demands it
+**Storage escalation ladder - start dumb, escalate only if needed:**
+1. Plain `.md` or `.log` files - start here
+2. Flat files (JSON, CSV) - if a bit more structure is needed
+3. Database - only when data volume or query complexity actually demands it
 
 Don't jump rungs without a genuine reason to.
 
@@ -473,13 +473,13 @@ Don't jump rungs without a genuine reason to.
 All workflow scripts that modify files must follow two conventions:
 
 **Idempotency**
-Scripts must be safe to re-run. If a script fails partway through, running it again should safely complete the remaining work — not abort, not duplicate, not corrupt. In practice:
+Scripts must be safe to re-run. If a script fails partway through, running it again should safely complete the remaining work - not abort, not duplicate, not corrupt. In practice:
 - Before creating a file or directory, check if it already exists. Skip and note it rather than failing.
 - Before inserting an entry into an existing file (e.g. `README.md`, `wikis/CONTEXT.md`), check whether that entry is already there.
 - Log re-run behaviour clearly so it's obvious what was skipped and what was newly created.
 
 **Dry-run flag**
-Every workflow script that modifies files must accept a `--dry-run` flag. When passed, the script prints each action it would take — prefixed with `[DRY RUN]` — without making any actual changes. No files are created or modified, and nothing is written to any log. Useful for verifying a script before running it for real.
+Every workflow script that modifies files must accept a `--dry-run` flag. When passed, the script prints each action it would take - prefixed with `[DRY RUN]` - without making any actual changes. No files are created or modified, and nothing is written to any log. Useful for verifying a script before running it for real.
 
 Read-only scripts (such as the audit script) are exempt from both requirements.
 
@@ -495,7 +495,7 @@ Whenever a new workflow, skill, or other major addition is created, update `READ
 
 If something is removed, changed in a way that affects its name, purpose, path, or status tag, or archived, update its entry in `README.md` to reflect that. Never leave the README stale.
 
-**Exception — wikis:** individual wikis must never be listed in `README.md`. Wikis are personal content and the `## Wikis` section holds only the generic note already present. Do not add, remove, or modify individual wiki entries regardless of what the user creates.
+**Exception - wikis:** individual wikis must never be listed in `README.md`. Wikis are personal content and the `## Wikis` section holds only the generic note already present. Do not add, remove, or modify individual wiki entries regardless of what the user creates.
 
 ### Archiving
 
@@ -503,24 +503,24 @@ When a workflow, wiki, or other directory is no longer active, it should be arch
 
 **The user's job:** tell Biblio what to archive and why. That's the only judgement call.
 
-**Biblio's job — the steps:**
+**Biblio's job - the steps:**
 
 1. Create `archived/` inside the parent directory if it doesn't already exist (e.g. `workflows/archived/`, `wikis/archived/`). Give it a `CONTEXT.md` and `LOG.md` using the standard templates.
-2. Move the target directory into `archived/` — for example, move `workflows/old-thing/` to `workflows/archived/old-thing/`. Always use forward slashes in paths.
+2. Move the target directory into `archived/` - for example, move `workflows/old-thing/` to `workflows/archived/old-thing/`. Always use forward slashes in paths.
 3. Add a note to the archived directory's own `CONTEXT.md` explaining why it was archived and when.
-4. Update the parent directory's `CONTEXT.md` Contents section — remove the entry from the active list and add it under the `archived/` entry instead.
-5. Update `README.md` — change the status tag to `[archived]` and add a short reason in parentheses.
+4. Update the parent directory's `CONTEXT.md` Contents section - remove the entry from the active list and add it under the `archived/` entry instead.
+5. Update `README.md` - change the status tag to `[archived]` and add a short reason in parentheses.
 6. Append log entries to the archived directory's `LOG.md` and the root `LOG.md`.
 
-No dedicated script is needed for archiving — it happens infrequently enough that Biblio handles it directly. Deletion is never the right choice; archived directories may have future value.
+No dedicated script is needed for archiving - it happens infrequently enough that Biblio handles it directly. Deletion is never the right choice; archived directories may have future value.
 
 ### First-run initialisation
 
 `LOG.md` files and `USER.md` are excluded from the repository (see `.gitignore`) to prevent personal data from leaking into version control. On a fresh clone, both will be absent. This is expected and handled automatically.
 
 **Triggering conditions:** this rule runs when either of the following is true at session startup:
-- Step 2 — `USER.md` does not exist, or still contains `[YOUR_NAME]`.
-- Step 5 — the root `LOG.md` does not exist.
+- Step 2 - `USER.md` does not exist, or still contains `[YOUR_NAME]`.
+- Step 5 - the root `LOG.md` does not exist.
 
 Either condition means the system has not been set up on this machine yet. Perform all steps below before doing anything else.
 
@@ -529,13 +529,13 @@ Either condition means the system has not been set up on this machine yet. Perfo
 1. Verify Python is available and meets the minimum version.
    - On Windows: run `python --version`. If that fails or returns Python 2, try `py --version`.
    - On macOS / Linux: try `python3 --version` first; fall back to `python --version` if needed.
-   The output must show Python 3.9 or later. If no working command is found, or the version is below 3.9, stop immediately and tell the user: Python 3.9 or later is required — install it from python.org or ask an AI assistant to walk through installation for their operating system. Do not proceed with any further steps until Python is confirmed.
+   The output must show Python 3.9 or later. If no working command is found, or the version is below 3.9, stop immediately and tell the user: Python 3.9 or later is required - install it from python.org or ask an AI assistant to walk through installation for their operating system. Do not proceed with any further steps until Python is confirmed.
 2. If `USER.md` is missing or contains `[YOUR_NAME]`:
    a. Ask the user for their name, location, and preferred writing style.
    b. Ask for a brief description of who they are and what they want help with.
    c. Create `USER.md` from `USER.md.template`, filling in the answers provided.
    d. Note that USER.md has been created with several detailed sections currently
-      marked `[not yet recorded]` — household and family, work, career goals,
+      marked `[not yet recorded]` - household and family, work, career goals,
       active projects, background, preferences, and financial context. These help
       Biblio assist far more effectively. Offer to run the USER.md onboarding Q&A
       now or later. If the user chooses now, go through each section in order:
@@ -544,9 +544,9 @@ Either condition means the system has not been set up on this machine yet. Perfo
       saying "run USER.md onboarding Q&A."
 3. Find all directories under the project root, then check each one for a missing `LOG.md`.
 4. For each directory missing a `LOG.md`, create one using the standard `LOG.md` template. Fetch the real timestamp first (run `date +"%Y-%m-%dT%H:%M:%S%:z"` or equivalent), then write the entry:
-   `[YYYY-MM-DDTHH:MM:SS±HH:MM] | Actor: Biblio | Action: created | Note: First-run initialisation — LOG.md created on fresh clone.`
+   `[YYYY-MM-DDTHH:MM:SS±HH:MM] | Actor: Biblio | Action: created | Note: First-run initialisation - LOG.md created on fresh clone.`
 5. If `memory/MEMORY.md` does not exist, create it with just the header line `# Memory Index`. The `memory/LOG.md` will be created by step 4.
-6. **AI-specific first-run setup** — perform any first-run setup tasks defined in your AI's wrapper file. If no AI-specific first-run tasks are defined, skip this step.
+6. **AI-specific first-run setup** - perform any first-run setup tasks defined in your AI's wrapper file. If no AI-specific first-run tasks are defined, skip this step.
 7. For any directory that is also missing a `CONTEXT.md`, flag it to the user rather than creating one silently. CONTEXT.md files require deliberate content and should be written with full knowledge of the directory's purpose.
 8. Check whether `.env` exists at the project root. If it does not exist, note the following to the user without stopping or waiting for a response:
    - Web research will run in free-sources-only mode (Wikipedia, HackerNews, Reddit, arXiv, Semantic Scholar, Stack Exchange, Dev.to, RSS, direct scraper). This is functional but has limited coverage for general web content and current news.
@@ -590,11 +590,11 @@ The canonical memory location for this project is `memory/` at the project root.
 3. Add or update the entry in `memory/MEMORY.md`. One line, under 150 chars, enough signal to decide relevance in future sessions.
 4. Append an entry to `memory/LOG.md`.
 
-**Cross-linking memories:** Link related memories in the body with `[[filename-stem]]` — the target memory's filename without the `.md` extension (e.g. `[[feedback_wait_for_permission]]`, `[[backlog]]`). The filename stem is the canonical link identifier in this project: it is what `MEMORY.md` entries and the knowledge-graph memory layer resolve against. The frontmatter `name:` slug is descriptive metadata used by recall, **not** the link key. This project rule deliberately overrides the built-in memory default of linking by the `name:` slug, so that the documented convention matches actual practice and no drift accumulates. A link to a memory that does not exist yet is allowed — it marks something worth writing later.
+**Cross-linking memories:** Link related memories in the body with `[[filename-stem]]` - the target memory's filename without the `.md` extension (e.g. `[[feedback_wait_for_permission]]`, `[[backlog]]`). The filename stem is the canonical link identifier in this project: it is what `MEMORY.md` entries and the knowledge-graph memory layer resolve against. The frontmatter `name:` slug is descriptive metadata used by recall, **not** the link key. This project rule deliberately overrides the built-in memory default of linking by the `name:` slug, so that the documented convention matches actual practice and no drift accumulates. A link to a memory that does not exist yet is allowed - it marks something worth writing later.
 
 ### General guidelines
 
 - Keep each workflow self-contained within its own subdirectory under `workflows/`.
 - Keep each wiki self-contained within its own subdirectory under `wikis/`.
 - Do not place loose files in the project root unless they are project-level configuration or documentation (like this file).
-- The audit script checks instruction file length against a threshold of 600 lines. When it warns that the threshold has been exceeded, tell the user directly: "The instruction file has exceeded 600 lines — it may be worth extracting rarely-used sections to keep the most critical rules prominent." Do not proceed with other work until the user has acknowledged this.
+- The audit script checks instruction file length against a threshold of 600 lines. When it warns that the threshold has been exceeded, tell the user directly: "The instruction file has exceeded 600 lines - it may be worth extracting rarely-used sections to keep the most critical rules prominent." Do not proceed with other work until the user has acknowledged this.

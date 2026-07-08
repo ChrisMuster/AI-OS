@@ -1,6 +1,6 @@
 # Templates
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-08
 
 ## Purpose
 Holds reusable boilerplate templates for standard files used across Book Dragon. Biblio uses these as the starting point when scaffolding any new directory, ensuring every directory in the project has a consistent structure without freehanding.
@@ -60,3 +60,4 @@ SKILL.md.template adds its own placeholders: `{{SKILL_NAME}}`, `{{WHEN_TO_USE}}`
 - 2026-07-02 - Added SKILL.md.template (with the required Verification section) and documented its placeholders. Part of the verification-discipline work.
 - 2026-07-02 - Corrected the `{{TIMESTAMP}}` description to include the timezone offset (YYYY-MM-DDTHH:MM:SS±HH:MM), matching the AGENTS.md format requirement.
 - 2026-07-03 - Replaced the em dash in the CONTEXT.md.template Revision History placeholder line with a hyphen, so new CONTEXT.md files no longer seed an ai-style-guard em-dash warning.
+- 2026-07-08 - Replaced the em dash with a hyphen in the LOG.md.template and SKILL.md.template H1 titles ("- Log" and "- Skill Specification"), so newly-scaffolded files no longer seed an ai-style-guard em-dash warning. Part of the AGENTS.md em-dash cleanup and durable-tap fixes.

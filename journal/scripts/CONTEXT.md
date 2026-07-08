@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-09
+**Last modified:** 2026-07-08
 
 ## Purpose
 Contains the helper scripts for the journal. Currently one script: new-month.py, which creates the pre-filled entry file for the next (or a specified) month.
@@ -36,3 +36,4 @@ python journal/scripts/new-month.py [--month YYYY-MM] [--dry-run] [--force]
 ## Revision History
 - 2026-05-29 — Initial creation.
 - 2026-06-09 — Added `--force` flag and date gate logic. Next month's file is now blocked by the script itself if today is not within the last 7 days of the current month.
+- 2026-07-08 - Replaced the em dash with a hyphen in new-month.py's generated month H1 ("# Journal - Month YYYY"), so newly-created journal files no longer seed an ai-style-guard em-dash warning. Stdout-only strings left unchanged.

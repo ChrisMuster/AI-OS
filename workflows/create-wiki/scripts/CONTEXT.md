@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-11
+**Last modified:** 2026-07-08
 
 ## Purpose
 Contains deterministic wiki scaffolding and PDF extraction scripts.
@@ -56,3 +56,4 @@ python workflows/create-wiki/scripts/extract_pdf.py wikis/<wiki-name>/raw/<docum
 - 2026-06-11 — Stopped adding individual personal wikis to README.md; wikis/CONTEXT.md remains the authoritative wiki list.
 - 2026-06-11 — Added extract_pdf.py for shared page-preserving PDF extraction with OCR detection.
 - 2026-06-11 — Made extract_pdf.py enter the canonical project runtime automatically.
+- 2026-07-08 - Replaced em dashes with hyphens in run.py's durable generated content and log-writing strings (wiki/raw CONTEXT and LOG headings, Revision History seed lines, the wikis/CONTEXT.md insertion entry, and the rerun and root-LOG notes), so scaffolded files and log entries no longer seed ai-style-guard em-dash warnings. Non-durable strings (docstrings, comments, stdout, argparse help) left unchanged.

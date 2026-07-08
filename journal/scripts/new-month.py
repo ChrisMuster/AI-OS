@@ -79,7 +79,7 @@ def day_heading(day: int, month: int) -> str:
 def generate_month_content(year: int, month: int) -> str:
     """Generate the full content of a monthly journal file."""
     days_in_month = calendar.monthrange(year, month)[1]
-    lines = [f"# Journal — {month_display(year, month)}", ""]
+    lines = [f"# Journal - {month_display(year, month)}", ""]
     for day in range(1, days_in_month + 1):
         lines.append(day_heading(day, month))
         lines.append("")
