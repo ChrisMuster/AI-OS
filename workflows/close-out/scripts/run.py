@@ -232,16 +232,29 @@ def gate_audit():
         mod = load_module(AUDIT_RUN, "closeout_audit")
         findings, dir_count = mod.run_audit(with_graph=True)
         fails = sum(1 for f in findings if f[0] == "FAIL")
-        warns = sum(1 for f in findings if f[0] == "WARN")
+        # doc-sync findings are advisory WARN inside the audit, but close-out is
+        # the deterministic "done means done" gate, so a CONTEXT/LOG drift finding
+        # (label "doc-sync") hard-fails HERE even though it never changes the
+        # audit's own exit code (plan R2-3, Option B). This is the teeth: the same
+        # single in-process audit call is reused - the findings are just inspected
+        # for the label. Counted separately from other WARNs so the detail line
+        # does not double-count them. Only WARN counts as drift: a DEGRADED
+        # doc-sync finding means the guard could not run, which is non-blocking
+        # and surfaces via the DEGRADED path below, not as a hard fail.
+        doc_sync = [f[2] for f in findings if f[0] == "WARN" and f[1] == "doc-sync"]
+        warns = sum(1 for f in findings if f[0] == "WARN" and f[1] != "doc-sync")
         degraded = [f[2] for f in findings if f[0] == "DEGRADED"]
         detail = f"{dir_count} dirs checked, {fails} FAIL, {warns} WARN"
+        if doc_sync:
+            detail += f", {len(doc_sync)} doc-sync drift"
         if degraded:
             detail += f", {len(degraded)} DEGRADED"
         return {
             "name": "structural audit",
-            "passed": fails == 0,
+            "passed": fails == 0 and not doc_sync,
             "detail": detail,
             "degraded": degraded,
+            "doc_sync": doc_sync,
         }
     except Exception as exc:  # a gate that cannot run has not passed
         return {"name": "structural audit", "passed": False,
@@ -356,6 +369,8 @@ def build_report(scope_label, gates, repair_note=None):
     for gate in gates:
         tag = "PASS" if gate["passed"] else "FAIL"
         lines.append(f"[{tag}] {gate['name']} - {gate['detail']}")
+        for msg in gate.get("doc_sync", []):
+            lines.append(f"    [doc-sync] {msg}")
         for fr in gate.get("files", []):
             if not fr["passed"]:
                 lines.append(f"    [FAIL] {fr['file']}")

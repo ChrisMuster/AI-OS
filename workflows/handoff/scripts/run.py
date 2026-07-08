@@ -79,6 +79,7 @@ def cmd_gather(args):
         backlog=gather.active_backlog(_PROJECT_ROOT),
         sessions=gather.recent_sessions(
             _SESSION_DATA, today, config.SESSION_LOOKBACK_DAYS),
+        doc_sync=gather.doc_sync_drift(_PROJECT_ROOT),
     )
     print(packet)
     print("---")

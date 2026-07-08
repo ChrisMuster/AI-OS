@@ -1,6 +1,6 @@
 # Triggers - Tests
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-07
 
 ## Purpose
 Hermetic unit tests for the trigger-registry loader and renderer, plus a
@@ -40,3 +40,5 @@ None.
 - 2026-07-03 - Initial creation. 10 tests in test_registry.py.
 - 2026-07-03 - Added project-runtime handoff to run_tests.py so the documented
   plain-`python` test command can import PyYAML-backed registry code.
+- 2026-07-07 - The shipped-registry integrity test now also asserts the `doc-sync`
+  category is present (doc-sync-guard build part 5).

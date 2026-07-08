@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 6 July 2026
+**Last updated:** 7 July 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -51,6 +51,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Handoff** - Clean session-to-session transitions. A trigger phrase ("do the handoff") runs a deterministic gather pass (branch, working tree, recent commits, changed-directory logs, active backlog, session activity) and Biblio writes a structured, rolling `HANDOVER.md`. On the next session a startup recovery step reads any unread handoff (tracked by a seen-watermark) and opens with an informed greeting, so the new session knows where the last one left off while the user keeps the choice. No per-AI slash commands; it works identically on every AGENTS-reading AI. `workflows/handoff/` `[active]`
 - **Triggers** - The AI-agnostic replacement for a per-AI slash-command set: a single tracked registry (`config/triggers.yaml`) mapping natural-language phrases to Book Dragon actions, referenced by `AGENTS.md` so any AI recognises them. Ask "give me a list of triggers" and `run.py --list` prints the grouped set. `workflows/triggers/` `[active]`
 - **Memory Diff** - Shows what changed in `memory/` since the last session. A content-watermark diff over `memory/LOG.md` surfaces new memory entries (added, updated, archived) silently at session startup and on the "what changed in memory" trigger, then advances the watermark so nothing is shown twice. Startup-gated and trigger-driven (no per-AI adapter), so it works identically on every AGENTS-reading AI. `workflows/memory-diff/` `[active]`
+- **Doc-Sync Guard** - Read-only checker that catches CONTEXT.md / LOG.md drift: for every committable directory whose content changed, it verifies the directory's CONTEXT.md moved (a Revision History entry, Last modified matching the newest entry) and its gitignored LOG.md gained an entry (verified by mtime, since a gitignored file cannot be content-diffed), plus the coarse child add/remove parent-propagation case. It fires at three stopping points: a warn-not-block advisory in the git pre-commit hook, a section in the handoff packet, and a hard fail in the close-out verifier. Makes the AGENTS.md CONTEXT/LOG maintenance rule mechanical rather than discipline-dependent. `workflows/doc-sync-guard/` `[active]`
 
 ## Skills
 

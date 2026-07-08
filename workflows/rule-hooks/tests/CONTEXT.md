@@ -1,12 +1,12 @@
 # Rule Hooks - Tests
 
-**Last modified:** 2026-07-01
+**Last modified:** 2026-07-07
 
 ## Purpose
 Synthetic-event tests for the rule-hooks evaluator: prove each rule blocks what it should and allows what it should (the false-positive guards), and prove each adapter parses its AI's payload and emits the right block contract. Verification discipline: the build is not done until the suite passes and a live block is confirmed.
 
 ## Contents
-- test_rule_hooks.py - `workflows/rule-hooks/tests/test_rule_hooks.py` [[workflows/rule-hooks/tests/CONTEXT]] - The full suite (53 tests): per-rule block/allow cases via the in-process Context pipeline, adapter input-parsing tests, and subprocess tests asserting the real output contracts (Claude exit 2 + stderr; Codex `hookSpecificOutput` JSON deny). Destructive cases use safe synthetic strings only; the B3 detection email is assembled at runtime so the literal never appears in the committed source.
+- test_rule_hooks.py - `workflows/rule-hooks/tests/test_rule_hooks.py` [[workflows/rule-hooks/tests/CONTEXT]] - The full suite (57 tests): per-rule block/allow cases via the in-process Context pipeline, adapter input-parsing tests, subprocess tests asserting the real output contracts (Claude exit 2 + stderr; Codex `hookSpecificOutput` JSON deny), and `TestPrecommitDocSync` (the pre-commit doc-sync advisory: the pure `format_doc_sync_advisory` text, that a personal-data block short-circuits before the advisory, that a clean personal-data check runs the advisory and still allows the commit, and that a doc-sync guard crash is swallowed). Destructive cases use safe synthetic strings only; the B3 detection email is assembled at runtime so the literal never appears in the committed source.
 
 ## Inputs
 - None beyond the workflow scripts under test and the live git repo (the B3 gitignored-vs-committable test uses real `git check-ignore`).
@@ -28,3 +28,4 @@ Synthetic-event tests for the rule-hooks evaluator: prove each rule blocks what 
 ## Revision History
 - 2026-06-30 - Initial creation: 33 tests across A7/A4/A6/B3 rules, A2/A3 trials, both adapters, and the subprocess exit-code contracts.
 - 2026-07-01 - Added Codex regression coverage for the live hook failure: apply_patch payloads using `tool_input.command` and the supported `hookSpecificOutput.permissionDecision="deny"` contract.
+- 2026-07-07 - Added `TestPrecommitDocSync` (4 tests) for the pre-commit doc-sync advisory: the advisory text, personal-data-block short-circuit, clean-then-advisory-and-allow, and swallowed guard crash. 53 -> 57 tests.

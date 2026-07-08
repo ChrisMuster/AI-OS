@@ -1,6 +1,6 @@
 # Book Dragon — Agent Instructions
 
-**Last updated:** 2026-07-06
+**Last updated:** 2026-07-07
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -104,7 +104,7 @@ This rule exists to ensure Biblio is never editing files without understanding t
 
 Routine maintenance belongs to the work itself and must not be deferred until Git close-out:
 
-1. When work meaningfully changes a directory, update its `CONTEXT.md` and any parent context required by the propagation rules as part of that approved task. In the same edit, set `Last modified` to the current date and add the required Revision History entry; never leave either update for close-out.
+1. When work changes a directory's real content (any file added, removed, or edited other than its own `CONTEXT.md`/`LOG.md`), update that directory's own `CONTEXT.md` in the same approved task: set `Last modified` to the current date and add a Revision History entry, plus any parent context required by the propagation rules. There is no meaningfulness threshold at the own-directory level: a content change documents itself; the "meaningful/significant" judgement applies only to whether the change also propagates to a *parent* `CONTEXT.md`. Never leave either update for close-out.
 2. Record completed changes in the appropriate `LOG.md` as soon as that piece of work is finished. Workflow runs must still be logged at both ends as required by the LOG.md rules.
 3. After finishing a task that changed one or more `CONTEXT.md` files, run the targeted metadata check for the affected directories: `python workflows/audit/scripts/run.py --context <directory> [<directory> ...]`. Fix any findings immediately. This is a focused maintenance check, not full close-out.
 4. **Backlog check** — at the natural end of a task (whether or not close-out follows), perform these sub-steps:
@@ -112,6 +112,8 @@ Routine maintenance belongs to the work itself and must not be deferred until Gi
    b. Review the session for any work that was discussed and deferred — ideas raised but not acted on, future projects mentioned, things explicitly set aside. Flag each one to the user: "Should I add [X] to the backlog?" Add only what the user confirms.
    c. Present the remaining Active items as a short numbered list so the user can see what's available next.
 5. Do not run the full link, audit, lint, test, or close-out suite merely because an individual file edit or task step has finished.
+
+The `doc-sync-guard` workflow [[workflows/doc-sync-guard/CONTEXT]] makes items 1-2 a checked obligation rather than discipline alone: it flags a changed directory whose `CONTEXT.md` / `LOG.md` did not move in the same change, at the three definitive stopping points where they are meant to be current: **commit** (a warn-not-block advisory in the git pre-commit hook), **handoff to another AI for review** (surfaced in the handoff gather packet), and **close-out** (a hard fail in the close-out verifier). Run it directly with `python workflows/doc-sync-guard/scripts/run.py --check`. **Immediate-fix rule:** if a doc-sync warning appears at a commit, or the AI otherwise sees one in tool output, update the flagged `CONTEXT.md` / `LOG.md` files before any other action, then commit them (a small follow-up commit is fine); this binds the AI the same way the permission gate does.
 
 A body of work may remain in progress across several edits, tasks, or sessions without being prepared for Git. Full close-out begins only when one of these triggers occurs:
 
@@ -134,10 +136,10 @@ During close-out:
 
 The CONTEXT.md close-out review covers every `CONTEXT.md` created or modified in the body of work. For each one, ask:
 
-1. **Staleness** — does any text describe planned work that has since been completed? Phrases such as "future steps will...", "will be added", "added in later steps", or "Step N:" references in prose are signals that language was written during construction and never updated to reflect the finished state. Rewrite to describe current state only.
-2. **Contents accuracy** — does the Contents section reflect what actually exists in the directory now, including any files added during the build?
-3. **Revision History completeness** — does the Revision History have an entry for every meaningful change made during this build, including changes to child directories that are significant at the parent level? A change is significant at the parent level if it affects what the parent's Contents section describes — a file added, removed, renamed, or its purpose changed. Internal implementation details (e.g. a comment fixed inside a script) are not significant at the parent level.
-4. **Path format** — are all paths project-root-relative? No `../` references anywhere in the file.
+1. **Staleness** - does any text describe planned work that has since been completed? Phrases such as "future steps will...", "will be added", "added in later steps", or "Step N:" references in prose are signals that language was written during construction and never updated to reflect the finished state. Rewrite to describe current state only.
+2. **Contents accuracy** - does the Contents section reflect what actually exists in the directory now, including any files added during the build?
+3. **Revision History completeness** - does each changed directory's own Revision History have an entry for every content change made to it during this build (at the own-directory level there is no meaningfulness threshold: any real content change earns an entry), and do parent directories have an entry only where the change is significant at the parent level? A change is significant at the parent level if it affects what the parent's Contents section describes: a file added, removed, renamed, or its purpose changed. Internal implementation details (e.g. a comment fixed inside a script) are not significant at the parent level.
+4. **Path format** - are all paths project-root-relative? No `../` references anywhere in the file.
 
 After the CONTEXT.md close-out review:
 
@@ -252,7 +254,7 @@ This checklist is not optional. Lazy "None" entries hide real information and cr
 
 #### CONTEXT.md change propagation
 
-When a file is added to, removed from, or meaningfully changed in a subdirectory, both of the following must be updated:
+When a file is added to, removed from, or changed in a subdirectory, both of the following must be updated (the subdirectory's own entry is required for any content change; the parent's only when the change is significant at the parent level):
 
 1. **The subdirectory's own `CONTEXT.md`** — update Contents (if files changed), Dependencies (if dependencies changed), Known Issues (if behaviour changed), and add a Revision History entry.
 2. **The parent directory's `CONTEXT.md`** — review Contents for accuracy and add a Revision History entry if the change is significant enough to affect what the parent describes.
@@ -271,7 +273,7 @@ Concrete example of a full propagation chain when adding a new shared skill:
 
 #### Revision History archiving
 
-**CONTEXT.md files:** Keep the Revision History section to a maximum of 10 entries. When it grows beyond that, move the oldest entries into the directory's LOG.md as a single `archived` entry using this exact format:
+**CONTEXT.md files:** Keep the Revision History section to a maximum of 15 entries. When it grows beyond that, move the oldest entries into the directory's LOG.md as a single `archived` entry using this exact format:
 
 ```
 [TIMESTAMP] | Actor: Biblio | Action: archived | Note: Revision History entries archived from CONTEXT.md — (1) YYYY-MM-DD — Entry text. (2) YYYY-MM-DD — Entry text. (3) ...

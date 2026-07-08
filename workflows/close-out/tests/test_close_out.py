@@ -245,5 +245,87 @@ class RepairTests(unittest.TestCase):
         spy.assert_called_once()
 
 
+class DocSyncTeethTests(unittest.TestCase):
+    """Close-out hard-fails on doc-sync findings while the audit stays advisory.
+
+    Plan R2-3, Option B: doc-sync findings are advisory WARN inside the audit
+    (audit exit code unchanged), but the close-out verifier turns any
+    doc-sync-labelled finding into a hard fail by inspecting the label on the
+    single in-process audit call it already makes.
+    """
+
+    def _fake_audit(self, findings, dir_count=5):
+        fake_mod = mock.Mock()
+        fake_mod.run_audit.return_value = (findings, dir_count)
+        return mock.patch.object(run, "load_module", return_value=fake_mod)
+
+    def test_doc_sync_finding_hard_fails_gate(self):
+        findings = [("WARN", "doc-sync",
+                     "workflows/foo: CONTEXT.md not updated for changes in this "
+                     "directory")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertFalse(gate["passed"])
+        self.assertEqual(len(gate["doc_sync"]), 1)
+        self.assertIn("doc-sync drift", gate["detail"])
+
+    def test_log_drift_also_hard_fails(self):
+        findings = [("WARN", "doc-sync",
+                     "workflows/foo: no LOG.md for a directory whose content "
+                     "changed")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertFalse(gate["passed"])
+
+    def test_non_doc_sync_warn_stays_advisory(self):
+        # ai-style and personal-data WARNs are advisory in the audit and must not
+        # flip the close-out gate; only the doc-sync label is a hard fail.
+        findings = [("WARN", "ai-style", "x.md:3: em dash present"),
+                    ("WARN", "personal-data", "y.md: denylisted term")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["doc_sync"], [])
+
+    def test_degraded_doc_sync_is_not_drift(self):
+        # A DEGRADED doc-sync finding means the guard could not run. It is
+        # non-blocking: it must not count as drift or hard-fail the structural
+        # gate; it surfaces via the DEGRADED path instead. (Regression: the gate
+        # once collected every doc-sync finding regardless of severity, so a
+        # degraded guard wrongly failed close-out as drift.)
+        findings = [("DEGRADED", "doc-sync", "doc-sync check did not run - boom")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["doc_sync"], [])
+        self.assertIn("doc-sync check did not run", " ".join(gate["degraded"]))
+
+    def test_structural_fail_still_fails_gate(self):
+        findings = [("FAIL", "structural", "workflows/foo - Missing CONTEXT.md")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertFalse(gate["passed"])
+
+    def test_clean_audit_passes(self):
+        with self._fake_audit([]):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["doc_sync"], [])
+
+    def test_report_surfaces_doc_sync_drift_and_fails(self):
+        gates = [
+            {"name": "structural audit", "passed": False,
+             "detail": "5 dirs checked, 0 FAIL, 0 WARN, 1 doc-sync drift",
+             "doc_sync": ["workflows/foo: no LOG.md for a directory whose "
+                          "content changed"]},
+            {"name": "link audit", "passed": True, "detail": "0 dead link(s)"},
+            {"name": "tests", "passed": True, "detail": "0 files", "files": []},
+        ]
+        report = run.build_report("all", gates)
+        self.assertIn("RESULT: FAIL", report)
+        self.assertIn("[doc-sync]", report)
+        self.assertIn("no LOG.md", report)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,6 +1,6 @@
 # Rule Hooks
 
-**Last modified:** 2026-07-01
+**Last modified:** 2026-07-07
 
 ## Purpose
 Deterministic rule enforcement: moves Book Dragon's load-bearing always/never rules out of prose and into hooks that fire when an AI acts, so a violation is blocked at the moment it would happen rather than relied on by discipline. Phase 1 wires the two daily-use AIs (Claude Code and Codex) plus an AI-agnostic git pre-commit net that protects every AI and manual commits. The benchmark principle: "hooks guarantee execution; prompts do not."
@@ -19,7 +19,7 @@ Deterministic rule enforcement: moves Book Dragon's load-bearing always/never ru
 
 ## Outputs
 - A block decision rendered in the firing AI's contract (Claude: exit 2 + stderr; Codex: JSON deny `continue:false` + exit 2), carrying the three-part block-and-explain message (Blocked / Why / To do it manually).
-- The git pre-commit gate blocks a commit that would add personal data to tracked files (exit 1) and prints the same block-and-explain.
+- The git pre-commit gate blocks a commit that would add personal data to tracked files (exit 1) and prints the same block-and-explain; it then prints a warn-not-block doc-sync CONTEXT/LOG drift advisory (exit 0, commit proceeds).
 - The SessionStart reminder text (`--reinject`) re-injecting the permission gate and self-correction rules.
 - Trial-rule warns and all blocks appended to the gitignored fire-log.
 
@@ -29,11 +29,12 @@ Deterministic rule enforcement: moves Book Dragon's load-bearing always/never ru
 3. The dispatcher runs the rules for the event category (shell / write); the first block wins, warns are collected.
 4. On a block, the adapter emits the AI's block contract; on a warn or allow, the action proceeds (warns are fire-logged).
 5. Any hook or rule failure degrades to allow + fire-log, so a tooling bug never freezes the agent.
-6. Separately, `--precommit` runs the personal-data gate at commit time, and `--reinject` prints the SessionStart reminder.
+6. Separately, `--precommit` runs the commit-time gates (the personal-data hard block, then the doc-sync drift advisory), and `--reinject` prints the SessionStart reminder.
 7. Append LOG.md with a completion or failure entry. (Per-fire activity is recorded in the gitignored fire-log, never LOG.md.)
 
 ## Dependencies
 - `workflows/personal-data-guard/` [[workflows/personal-data-guard/CONTEXT]] - Reused as the B3 detection source by both the per-write rule and the git pre-commit gate (one detection source, two triggers). If its marker functions change, the B3 rule follows.
+- `workflows/doc-sync-guard/` [[workflows/doc-sync-guard/CONTEXT]] - Reused (in `--staged` mode) as the CONTEXT/LOG drift detection source for the pre-commit warn-not-block advisory. Loaded lazily by the `--precommit` gate; a guard crash is swallowed so it never disrupts a commit.
 - `AGENTS.md` [[AGENTS]] (root) - The source of the rules being enforced (A4, A6, A7, B3, and the trial A2/A3) and the project-root signature marker.
 - `.claude/settings.json` and `.codex/config.toml` - Per-AI hook wiring that invokes `run.py`.
 - `workflows/settings-check/` [[workflows/settings-check/CONTEXT]] - Validates the new hook commands are allowlisted so they never prompt.
@@ -54,3 +55,4 @@ Deterministic rule enforcement: moves Book Dragon's load-bearing always/never ru
 - 2026-06-30 - Bounded hardening of the shell-write detection (deliberately final, not open-ended): added the `>|` / `&>` / `&>>` redirect operators, the `cp -t` / `mv --target-directory` forms, and `sed -i` to `core.shell_write_targets`. Documented the coverage boundary in Known Issues as a deliberate threat-model decision (arbitrary-code interpreters and rare verbs out of scope by design; tool path + gitignore + git pre-commit are the backstop). The full "enumerate every vector" idea was considered and rejected as over-engineering. +7 tests (51 total); all forms confirmed blocking live on Claude Code.
 - 2026-07-01 - Corrected the Codex hook adapter after live verification failed: blocks now use the supported `hookSpecificOutput.permissionDecision="deny"` contract, and apply_patch payloads are parsed from `tool_input.command`. Added regression tests for both failure modes and confirmed the Codex live block for shell redirect, apply_patch, and cp writes to `.env.hooktest`.
 - 2026-07-01 - Phase 1 close-out: committed the build (c4b690f58), corrected two CONTEXT staleness gaps (scripts/ and rules/ shell-write descriptions), and archived HOOKS-PLAN.md into the new `archived/` subdirectory.
+- 2026-07-07 - The git pre-commit gate now runs a second, warn-not-block step after the personal-data block: a doc-sync CONTEXT/LOG drift advisory (doc-sync-guard build part 4). It reuses the doc-sync guard (`--staged`) as detection, prints a loud advisory naming each drift directory, and always allows the commit (close-out is the deterministic gate). Added `TestPrecommitDocSync` (53 -> 57 tests); live-confirmed on a staged drift.

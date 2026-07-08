@@ -1,6 +1,6 @@
 # Handoff - Tests
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-07
 
 ## Purpose
 Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
@@ -11,7 +11,8 @@ Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
   mtime fallback), and the is_unread freshness logic.
 - test_gather.py - changed-directory derivation, LOG tail + entry filtering,
   Active-backlog parsing, recent-session reads (temp sqlite shard), git degrade
-  paths, and packet assembly.
+  paths, the doc-sync drift reader's degrade-to-empty path, and packet assembly
+  (including the "CONTEXT/LOG drift (doc-sync)" section, clean and populated).
 
 ## Inputs
 None. Tests build their own temporary fixtures (temp dirs and an in-memory-style
@@ -35,3 +36,6 @@ Test results to stdout; exit code 0 on success, non-zero on failure.
 
 ## Revision History
 - 2026-07-03 - Initial creation. 22 tests across test_state.py and test_gather.py.
+- 2026-07-07 - Added coverage for the doc-sync drift reader (degrade-to-empty) and
+  the packet's "CONTEXT/LOG drift (doc-sync)" section (clean and populated). 22 ->
+  24 tests (doc-sync-guard build part 5).

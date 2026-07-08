@@ -9,7 +9,8 @@ AI's block contract on a block.
 Modes:
   --ai <id>     evaluate a PreToolUse event read from stdin (the hook path)
   --reinject    print the SessionStart rule reminder (Group C re-injection)
-  --precommit   run personal-data-guard as the git pre-commit gate (rule B3 L2)
+  --precommit   git pre-commit gate: hard-block personal data (rule B3 L2), then
+                a warn-not-block doc-sync CONTEXT/LOG drift advisory
 
 Design notes:
   - Fail mode: a detected violation -> block; ANY hook/tool failure (unparseable
@@ -204,21 +205,26 @@ def run_ai(ai_id, raw_text):
 
 
 # ---------------------------------------------------------------------------
-# Git pre-commit mode (rule B3 layer 2)
+# Git pre-commit mode (rule B3 layer 2 + doc-sync drift advisory)
 # ---------------------------------------------------------------------------
-def run_precommit():
-    """Run personal-data-guard as the commit gate.
+def _load_guard(guard_path, module_name):
+    """Import a guard's run.py by file path (one detection source, reused)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(module_name, str(guard_path))
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    return guard
+
+
+def _precommit_personal_data(root):
+    """Hard-block a personal-data leak at commit time (rule B3 layer 2).
 
     Block (exit 1) on a real personal-data FAIL; warn and ALLOW (exit 0) if the
     guard itself crashes, so a guard bug never locks the user out of committing.
     """
-    root = _git_toplevel() or SCRIPT_RELATIVE_ROOT
     guard_path = root / "workflows" / "personal-data-guard" / "scripts" / "run.py"
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("pdg_guard", str(guard_path))
-        guard = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(guard)
+        guard = _load_guard(guard_path, "pdg_guard")
         findings = guard.run_check(root)
     except Exception as exc:
         sys.stderr.write(
@@ -239,6 +245,68 @@ def run_precommit():
         "commit again. Human override (use sparingly): git commit --no-verify.",
     ) + "\n")
     return 1
+
+
+def format_doc_sync_advisory(warns):
+    """Build the loud, unmissable doc-sync drift advisory (pure; testable).
+
+    Lists each directory and what is missing, ends with an ACTION REQUIRED line,
+    and states plainly that the commit was NOT blocked - close-out is the gate.
+    """
+    detail = "\n".join(f"  - {f[2]}" for f in warns)
+    bar = "=" * 70
+    return (
+        f"\n{bar}\n"
+        "DOC-SYNC ADVISORY - CONTEXT.md / LOG.md drift in this commit\n"
+        f"{bar}\n"
+        "These directories changed without their CONTEXT.md / LOG.md being "
+        "updated in the same commit:\n"
+        f"{detail}\n\n"
+        "ACTION REQUIRED: update these CONTEXT.md / LOG.md files before doing "
+        "anything else, then commit them (a small follow-up commit is fine).\n"
+        "The commit was NOT blocked - close-out is the deterministic gate that "
+        "hard-fails on this same drift.\n"
+        f"{bar}\n"
+    )
+
+
+def _precommit_doc_sync(root):
+    """Advisory doc-sync check at commit time (warn-not-block; never blocks).
+
+    Prints the drift advisory but always allows the commit - the deterministic
+    gate is close-out. Any guard failure is swallowed so a guard bug never
+    disrupts commits.
+    """
+    guard_path = root / "workflows" / "doc-sync-guard" / "scripts" / "run.py"
+    try:
+        guard = _load_guard(guard_path, "dsg_guard")
+        findings = guard.run_check(root, staged=True)
+    except Exception as exc:
+        sys.stderr.write(
+            f"[rule-hooks] WARNING: doc-sync-guard could not run ({exc!r}); "
+            f"skipping the CONTEXT/LOG drift advisory.\n"
+        )
+        return
+    warns = [f for f in findings if f[0] == "WARN"]
+    if warns:
+        sys.stderr.write(format_doc_sync_advisory(warns))
+
+
+def run_precommit():
+    """The git pre-commit gate: a hard block for personal data, then a
+    warn-not-block advisory for CONTEXT/LOG drift.
+
+    Personal data is layer 2 of rule B3 and blocks the commit (exit 1). doc-sync
+    drift prints a loud advisory but lets the commit through (exit 0), because
+    close-out is the deterministic gate. If the commit is already blocked for
+    personal data, the doc-sync advisory is skipped.
+    """
+    root = _git_toplevel() or SCRIPT_RELATIVE_ROOT
+    code = _precommit_personal_data(root)
+    if code != 0:
+        return code
+    _precommit_doc_sync(root)
+    return 0
 
 
 # ---------------------------------------------------------------------------

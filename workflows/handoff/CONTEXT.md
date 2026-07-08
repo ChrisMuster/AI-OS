@@ -1,6 +1,6 @@
 # Handoff
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-07
 
 ## Purpose
 Clean session-to-session transitions for Book Dragon. When the user ends a working
@@ -57,6 +57,7 @@ child #4.
 - `AGENTS.md` [[AGENTS]] - hosts the session-handoff trigger section and the
   startup recovery step.
 - `memory/backlog.md` [[memory/CONTEXT]], `workflows/session-search/` [[workflows/session-search/CONTEXT]] - signal sources for the packet.
+- `workflows/doc-sync-guard/` [[workflows/doc-sync-guard/CONTEXT]] - run read-only for the packet's CONTEXT/LOG drift section, so a handoff surfaces any behind directory before HANDOVER.md is written; degrades to empty if unavailable.
 
 ## Known Issues
 - The trigger is natural language, so recognition is softer than a slash command
@@ -73,3 +74,7 @@ child #4.
   startup recovery).
 - 2026-07-03 - Corrected stale `--record` wording to match the implemented
   `--seen` recovery flow and explicit unread verification after writing.
+- 2026-07-07 - The gather packet now includes a "CONTEXT/LOG drift (doc-sync)"
+  section (via the doc-sync guard, working-tree scope), so a handoff surfaces any
+  directory whose CONTEXT.md / LOG.md is behind before HANDOVER.md is written
+  (doc-sync-guard build part 5).

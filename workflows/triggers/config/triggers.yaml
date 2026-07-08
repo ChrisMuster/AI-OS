@@ -35,12 +35,21 @@ categories:
       - run the verifier
 
   - name: audit
-    summary: Run the full-project structural audit (compliance, encoding, personal-data, ai-style, knowledge-graph hooks).
+    summary: Run the full-project structural audit (compliance, encoding, personal-data, ai-style, doc-sync, knowledge-graph hooks).
     runs: python workflows/audit/scripts/run.py
     phrases:
       - run the audit
       - audit the project
       - check the structure
+
+  - name: doc-sync
+    summary: Check whether every changed directory's CONTEXT.md and LOG.md are current (CONTEXT/LOG drift).
+    runs: python workflows/doc-sync-guard/scripts/run.py --check
+    phrases:
+      - check context is current
+      - are the docs in sync
+      - check for doc drift
+      - is the context up to date
 
   - name: weekly-review
     summary: Gather the week's signal and write the weekly review; also reports whether one is due.

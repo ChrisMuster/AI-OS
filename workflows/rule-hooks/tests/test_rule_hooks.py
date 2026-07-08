@@ -18,6 +18,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 PROJECT_ROOT = SCRIPTS.parent.parent.parent
@@ -372,6 +373,51 @@ class TestSubprocessContracts(unittest.TestCase):
             [sys.executable, str(RUN_PY), "--ai", "claude"],
             input="{not json", capture_output=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0)
+
+
+class TestPrecommitDocSync(unittest.TestCase):
+    """The pre-commit gate: personal data hard-blocks, doc-sync drift is a
+    warn-not-block advisory that never stops the commit."""
+
+    def test_advisory_lists_dirs_and_action_required(self):
+        warns = [
+            ("WARN", "doc-sync",
+             "workflows/foo: CONTEXT.md not updated for changes in this directory"),
+            ("WARN", "doc-sync",
+             "workflows/foo: LOG.md has no entry for this change"),
+        ]
+        text = run_mod.format_doc_sync_advisory(warns)
+        self.assertIn("workflows/foo: CONTEXT.md not updated", text)
+        self.assertIn("LOG.md has no entry", text)
+        self.assertIn("ACTION REQUIRED", text)
+        self.assertIn("NOT blocked", text)
+
+    def test_personal_data_block_skips_doc_sync(self):
+        # A personal-data block (exit 1) short-circuits before the advisory.
+        with mock.patch.object(run_mod, "_precommit_personal_data",
+                               return_value=1), \
+             mock.patch.object(run_mod, "_precommit_doc_sync") as ds, \
+             mock.patch.object(run_mod, "_git_toplevel", return_value=PROJECT_ROOT):
+            code = run_mod.run_precommit()
+        self.assertEqual(code, 1)
+        ds.assert_not_called()
+
+    def test_clean_personal_data_runs_doc_sync_and_allows(self):
+        # No personal data -> run the advisory, but always allow the commit.
+        with mock.patch.object(run_mod, "_precommit_personal_data",
+                               return_value=0), \
+             mock.patch.object(run_mod, "_precommit_doc_sync") as ds, \
+             mock.patch.object(run_mod, "_git_toplevel", return_value=PROJECT_ROOT):
+            code = run_mod.run_precommit()
+        self.assertEqual(code, 0)
+        ds.assert_called_once()
+
+    def test_doc_sync_guard_crash_is_swallowed(self):
+        # A guard bug must never disrupt commits: _precommit_doc_sync swallows it.
+        with mock.patch.object(run_mod, "_load_guard",
+                               side_effect=OSError("boom")):
+            # Must not raise; returns None (advisory skipped).
+            self.assertIsNone(run_mod._precommit_doc_sync(PROJECT_ROOT))
 
 
 if __name__ == "__main__":

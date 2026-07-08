@@ -127,6 +127,11 @@ class TestGitDegrade(unittest.TestCase):
             self.assertEqual(gather.recent_commits(tmp, 5), [])
             self.assertEqual(gather.current_branch(tmp), "")
 
+    def test_doc_sync_drift_degrades_without_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # No doc-sync-guard under this root -> reader degrades to [].
+            self.assertEqual(gather.doc_sync_drift(tmp), [])
+
 
 class TestBuildPacket(unittest.TestCase):
     def test_has_all_sections(self):
@@ -139,9 +144,9 @@ class TestBuildPacket(unittest.TestCase):
             dir_logs=[("workflows", ["[2026-07-03T10:00:00+01:00] | did a thing"])],
             backlog=["Some open item"],
             sessions={"total": 2, "by_ai": {"Claude Code": 2}, "titles": ["t"]})
-        for heading in ("Working tree", "Line churn", "Recent commits",
-                        "Recent LOG.md activity", "Active backlog",
-                        "Recent session activity"):
+        for heading in ("Working tree", "CONTEXT/LOG drift", "Line churn",
+                        "Recent commits", "Recent LOG.md activity",
+                        "Active backlog", "Recent session activity"):
             self.assertIn(heading, packet)
         self.assertIn("a commit", packet)
         self.assertIn("Some open item", packet)
@@ -153,6 +158,19 @@ class TestBuildPacket(unittest.TestCase):
             status=[], diffstat="", commits=[], dir_logs=[], backlog=[],
             sessions={"total": 0, "by_ai": {}, "titles": []})
         self.assertIn("Clean - no uncommitted changes.", packet)
+        # Default doc_sync is empty -> the clean drift message.
+        self.assertIn("every changed directory's CONTEXT.md / LOG.md is current",
+                      packet)
+
+    def test_doc_sync_section_lists_drift(self):
+        packet = gather.build_packet(
+            timestamp="2026-07-03T10:00:00+01:00", branch="main",
+            status=[], diffstat="", commits=[], dir_logs=[], backlog=[],
+            sessions={"total": 0, "by_ai": {}, "titles": []},
+            doc_sync=["workflows/foo: CONTEXT.md not updated for changes in this "
+                      "directory"])
+        self.assertIn("Fix before handing off", packet)
+        self.assertIn("workflows/foo: CONTEXT.md not updated", packet)
 
 
 if __name__ == "__main__":

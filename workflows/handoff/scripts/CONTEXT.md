@@ -1,6 +1,6 @@
 # Handoff - Scripts
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-07
 
 ## Purpose
 The deterministic half of the handoff workflow: gather the session-state packet,
@@ -12,7 +12,9 @@ report whether an unread handoff exists, and mark one as seen.
   seen watermark; `--dry-run`).
 - gather.py - deterministic signal readers (branch, `git status`, `git diff
   --stat`, recent commits, changed-directory LOG tails, active backlog, recent
-  session activity) and the packet builder. Writes nothing.
+  session activity, and `doc_sync_drift` - the doc-sync CONTEXT/LOG drift check so
+  a handoff surfaces any behind directory before HANDOVER.md is written) and the
+  packet builder. Writes nothing.
 - state.py - the seen-watermark: load/save state, read a handoff's `**Created:**`
   timestamp (mtime fallback), and decide whether a handoff is unread.
 - config.py - tunable constants (recent-commit count, LOG tail length, session
@@ -36,7 +38,10 @@ gather mode writes nothing; `--seen` writes state and a LOG entry.
 - `workflows/handoff/` [[workflows/handoff/CONTEXT]] - the parent workflow.
 - `workflows/session-search/data/` [[workflows/session-search/data/CONTEXT]] - session
   shards read for recent activity.
-- Python standard library only (subprocess, sqlite3, json, re). No third-party
+- `workflows/doc-sync-guard/scripts/run.py` [[workflows/doc-sync-guard/scripts/CONTEXT]] -
+  run read-only (default working-tree scope) by `doc_sync_drift` for the packet's
+  CONTEXT/LOG drift section; degrades to an empty result if missing or broken.
+- Python standard library only (subprocess, sqlite3, json, re, sys). No third-party
   packages.
 
 ## Known Issues
@@ -45,3 +50,8 @@ gather mode writes nothing; `--seen` writes state and a LOG entry.
 
 ## Revision History
 - 2026-07-03 - Initial creation. run.py, gather.py, state.py, config.py.
+- 2026-07-07 - gather.py gained `doc_sync_drift` (runs the doc-sync guard read-only
+  at working-tree scope) and `build_packet` a "CONTEXT/LOG drift (doc-sync)"
+  section, so a handoff surfaces any behind directory before HANDOVER.md is
+  written; run.py `--gather` wires it in. Degrades to empty on any failure
+  (doc-sync-guard build part 5).

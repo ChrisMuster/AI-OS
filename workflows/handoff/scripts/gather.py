@@ -21,9 +21,11 @@ Signals gathered:
   - recent session activity  (session-search shards, by AI, for the last day)
 """
 
+import json
 import re
 import sqlite3
 import subprocess
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -208,10 +210,42 @@ def recent_sessions(data_dir, today, lookback_days):
 
 
 # ---------------------------------------------------------------------------
+# doc-sync CONTEXT/LOG drift
+# ---------------------------------------------------------------------------
+def doc_sync_drift(project_root):
+    """Return doc-sync CONTEXT/LOG drift messages for the working tree, or [].
+
+    Runs the doc-sync guard read-only at its default (working-tree) scope and
+    returns the WARN finding messages, so a handoff surfaces any directory whose
+    CONTEXT.md / LOG.md is behind before HANDOVER.md is written - a reviewer
+    reading stale context is worse than none. Degrades to [] on any failure
+    (missing guard, bad JSON, git unavailable), matching the other readers, so a
+    broken guard never breaks the packet.
+    """
+    guard = Path(project_root) / "workflows" / "doc-sync-guard" / "scripts" / "run.py"
+    if not guard.is_file():
+        return []
+    try:
+        result = subprocess.run(
+            [sys.executable, str(guard), "--check", "--json"],
+            capture_output=True, encoding="utf-8", timeout=60,
+            cwd=str(project_root),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    try:
+        payload = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        return []
+    return [f.get("message", "") for f in payload.get("findings", [])
+            if f.get("severity") == "WARN"]
+
+
+# ---------------------------------------------------------------------------
 # packet assembly
 # ---------------------------------------------------------------------------
 def build_packet(*, timestamp, branch, status, diffstat, commits, dir_logs,
-                 backlog, sessions):
+                 backlog, sessions, doc_sync=()):
     """Assemble the handoff briefing packet as a markdown string for the AI."""
     lines = []
     lines.append("# Handoff briefing packet")
@@ -233,6 +267,19 @@ def build_packet(*, timestamp, branch, status, diffstat, commits, dir_logs,
             lines.append(f"- `{code}` {path}")
     else:
         lines.append("Clean - no uncommitted changes.")
+    lines.append("")
+
+    lines.append("## CONTEXT/LOG drift (doc-sync)")
+    if doc_sync:
+        lines.append(
+            "Fix before handing off - a reviewer reading stale context is worse "
+            "than none. These directories changed without their CONTEXT.md / "
+            "LOG.md being updated:")
+        for msg in doc_sync:
+            lines.append(f"- {msg}")
+    else:
+        lines.append(
+            "Clean - every changed directory's CONTEXT.md / LOG.md is current.")
     lines.append("")
 
     lines.append("## Line churn (git diff --stat HEAD)")

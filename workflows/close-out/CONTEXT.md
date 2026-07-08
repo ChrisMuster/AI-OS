@@ -1,6 +1,6 @@
 # Close-out
 
-**Last modified:** 2026-07-04
+**Last modified:** 2026-07-06
 
 ## Purpose
 The executable, mechanical half of the close-out task. It bundles the structural audit, the link audit, and the workflow test suites into one pass/fail verifier, so a "the checks pass" claim is a script exit code rather than prose. It is the enforcement backing for the Verification discipline rule in `AGENTS.md` [[AGENTS]].
@@ -23,7 +23,7 @@ The executable, mechanical half of the close-out task. It bundles the structural
 ## Steps
 1. Re-exec under the project `.venv` interpreter if one exists and differs from the invoking interpreter, so the gate does not depend on which `python` is first on PATH.
 2. Select the test suites to run from `--scope` (affected/default, `all`, or a workflow name); affected falls back to all if git cannot determine the changed set, and escalates to all when the change touches project-wide files no single suite owns (root-level `.md` governance docs or `templates/` [[templates/CONTEXT]]).
-3. Run the structural audit in-process (0 FAIL required to pass; WARN reported but not gating).
+3. Run the structural audit in-process (0 FAIL required to pass; WARN reported but not gating, except `doc-sync`-labelled CONTEXT/LOG drift findings, which hard-fail the gate).
 4. Run the link audit in-process (0 dead links required to pass).
 5. Run each selected test file as a subprocess (all must exit 0).
 6. Surface any DEGRADED checks (advisory hooks that could not run) distinctly and non-blocking; with `--repair`, run setup.py to fix the runtime and re-run the gates once, otherwise print the fix to run by hand.
@@ -37,7 +37,7 @@ The executable, mechanical half of the close-out task. It bundles the structural
 - `AGENTS.md` [[AGENTS]] - defines the Verification discipline rule this workflow enforces and the close-out procedure it slots into.
 
 ## Known Issues
-- The verifier gates on the audit FAIL count (0 required). Audit WARNs, including advisory personal-data and ai-style findings, are reported but do not fail the gate, matching the audit's own advisory semantics. Personal-data leaks are hard-blocked separately by the git pre-commit hook [[workflows/rule-hooks/CONTEXT]].
+- The verifier gates on the audit FAIL count (0 required). Audit WARNs, including advisory personal-data and ai-style findings, are reported but do not fail the gate, matching the audit's own advisory semantics. The one exception is `doc-sync`-labelled findings (CONTEXT/LOG drift): they are advisory WARN inside the audit but a hard fail at close-out (the deterministic "done means done" gate; plan R2-3, Option B), so a directory whose content changed without its CONTEXT.md / LOG.md moving blocks close-out. Personal-data leaks are hard-blocked separately by the git pre-commit hook [[workflows/rule-hooks/CONTEXT]].
 - It covers the mechanical checks only. It does not judge whether the planned work is complete, whether LOG.md files are current, or whether CONTEXT.md files are accurate; those remain the human judgement steps of close-out.
 - Affected-scope test selection is only as good as git's changed-file view; when git is unavailable it runs all suites rather than risk under-testing. Changes confined to cross-cutting files (root-level `.md` governance docs or `templates/` [[templates/CONTEXT]]) escalate affected scope to all suites, since no single workflow suite owns those files.
 - It is read-only with respect to project content (it writes only its own `last-result.json` and LOG.md), so like the audit it is exempt from the `--dry-run` convention. The one exception is `--repair`, which is opt-in and runs `setup.py` to repair the project runtime (a `.venv`/pip operation, not a project-content change) only when a check DEGRADED.
@@ -60,3 +60,8 @@ The executable, mechanical half of the close-out task. It bundles the structural
   flag (runs setup.py, then re-runs the gates once, falling back to the printed
   fix). ai-style-guard was converted from a degrade marker to a `.venv` bootstrap
   in the same body of work (a guard must run, not silently skip).
+- 2026-07-06 - Doc-sync teeth (build part 3, plan R2-3 Option B): the structural-audit
+  gate now also hard-fails on any `doc-sync`-labelled finding, so CONTEXT/LOG drift
+  (advisory WARN inside the audit) becomes a close-out failure with the drift
+  directories listed under the gate. Added `DocSyncTeethTests` to the close-out
+  suite (27 -> 33 tests).

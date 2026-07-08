@@ -26,6 +26,7 @@ Parent directory for all workflows in Book Dragon. Each workflow lives in its ow
 - Handoff - `workflows/handoff/` [[workflows/handoff/CONTEXT]] - Clean session-to-session transitions: a trigger phrase runs a deterministic gather pass and Biblio writes a rolling `HANDOVER.md`, which a session-startup recovery step (tracked by a seen-watermark) surfaces on the next session. No per-AI slash commands; trigger-driven, so it works identically on every AGENTS-reading AI.
 - Triggers - `workflows/triggers/` [[workflows/triggers/CONTEXT]] - The AI-agnostic replacement for a per-AI slash-command set: a single tracked registry (`config/triggers.yaml`) mapping natural-language phrases to Book Dragon actions, listable on demand via `run.py --list`.
 - Memory Diff - `workflows/memory-diff/` [[workflows/memory-diff/CONTEXT]] - Shows what changed in `memory/` since the last session: a content-watermark diff over `memory/LOG.md` surfaced silently at startup (added / updated / archived) and on the "what changed in memory" trigger. Startup-gated and trigger-driven, so it works identically on every AGENTS-reading AI.
+- Doc-Sync Guard - `workflows/doc-sync-guard/` [[workflows/doc-sync-guard/CONTEXT]] - Read-only checker that catches CONTEXT.md / LOG.md drift: for every committable directory whose content changed, it verifies the directory's CONTEXT.md moved (a Revision History entry, Last modified matching the newest entry) and its gitignored LOG.md gained an entry (verified by mtime), plus the coarse child add/remove parent-propagation case. Makes the AGENTS.md maintenance rule mechanical rather than discipline-dependent.
 
 ## Inputs
 None. Individual workflow subdirectories define their own inputs.
@@ -45,8 +46,6 @@ N/A. This is a container directory, not a workflow itself.
 
 ## Revision History
 Earlier history archived to LOG.md on 2026-07-06.
-- 2026-06-25 - Added personal-data-guard workflow to Contents.
-- 2026-06-25 - Added ai-style-guard workflow to Contents.
 - 2026-06-26 - Added check-for-updates workflow to Contents.
 - 2026-06-27 - Updated the check-for-updates entry: Phase 2 advisory landscape mode is now built (`--landscape`).
 - 2026-06-30 - Added rule-hooks workflow to Contents (Phase 1 of the deterministic rule-enforcement hooks).
@@ -54,3 +53,4 @@ Earlier history archived to LOG.md on 2026-07-06.
 - 2026-07-02 - Added weekly-review workflow to Contents (the cron + memory flywheel; best-practices umbrella child #3).
 - 2026-07-03 - Added handoff and triggers workflows to Contents (best-practices umbrella child #4: session handoff + startup recovery + the trigger registry).
 - 2026-07-06 - Added memory-diff workflow to Contents (best-practices umbrella child #5: the memory diff surfaced at startup).
+- 2026-07-06 - Added doc-sync-guard workflow to Contents (CONTEXT/LOG maintenance-reliability guard, build part 1: the standalone read-only checker).

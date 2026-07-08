@@ -59,6 +59,7 @@ KG_RUN_PY    = PROJECT_ROOT / "workflows" / "knowledge-graph" / "scripts" / "run
 ENCODING_RUN_PY = PROJECT_ROOT / "workflows" / "encoding-guard" / "scripts" / "run.py"
 PERSONAL_RUN_PY = PROJECT_ROOT / "workflows" / "personal-data-guard" / "scripts" / "run.py"
 AI_STYLE_RUN_PY = PROJECT_ROOT / "workflows" / "ai-style-guard" / "scripts" / "run.py"
+DOC_SYNC_RUN_PY = PROJECT_ROOT / "workflows" / "doc-sync-guard" / "scripts" / "run.py"
 
 # ---------------------------------------------------------------------------
 # Config
@@ -90,7 +91,7 @@ ARCHIVE_REFERENCE_RE = re.compile(
     r"^Earlier history archived to LOG\.md on (\d{4}-\d{2}-\d{2})\.$",
     re.MULTILINE,
 )
-MAX_REVISION_HISTORY_ENTRIES = 10
+MAX_REVISION_HISTORY_ENTRIES = 15
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +671,63 @@ def run_ai_style_check() -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Doc-sync-guard hook
+# ---------------------------------------------------------------------------
+# The full audit also runs the doc-sync guard, scoped to the working tree (its
+# default HEAD scope - NOT --base main), so CONTEXT.md / LOG.md drift in the
+# current uncommitted body of work surfaces in the same close-out report. Working
+# -tree scope is deliberate (plan R3-1): it keeps the guard's mtime-based LOG
+# check honest and scopes to the current task rather than re-policing earlier,
+# already-closed-out work on the branch. Like the other content hooks it is
+# additive and advisory here - it never changes the audit's exit code, and a
+# missing or broken guard degrades to a DEGRADED finding. The teeth are at
+# close-out, which hard-fails on any doc-sync-labelled finding (Option B).
+
+def doc_sync_findings(payload: dict) -> list[Finding]:
+    """Map a doc-sync-guard ``--check --json`` payload to audit Findings.
+
+    Keeps only the actionable severity (WARN); the guard's message already names
+    the directory and the reason. Pure (dict in, tuples out) for unit testing.
+    """
+    findings: list[Finding] = []
+    for f in payload.get("findings", []):
+        if f.get("severity") != "WARN":
+            continue
+        findings.append(("WARN", "doc-sync", f.get("message", "")))
+    return findings
+
+
+def run_doc_sync_check() -> list[Finding]:
+    """Run the doc-sync guard over the working tree and return its WARN findings.
+
+    Shells out to the guard CLI (the contract) rather than importing it, matching
+    the other hooks, and uses the guard's default HEAD scope (no --base). Degrades
+    gracefully: on any failure the audit gets a DEGRADED finding and never raises,
+    so the exit code stays advisory.
+    """
+    if not DOC_SYNC_RUN_PY.exists():
+        return [degraded("doc-sync", "doc-sync-guard CLI not found",
+                         repairable=False)]
+    try:
+        result = subprocess.run(
+            [sys.executable, str(DOC_SYNC_RUN_PY), "--check", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(PROJECT_ROOT),
+        )
+    except Exception as exc:
+        return [degraded("doc-sync", f"could not run ({exc})")]
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        reason = (result.stderr.strip().splitlines()
+                  or [f"checker exited {result.returncode} with no JSON output"])[-1]
+        return [degraded("doc-sync", reason)]
+    return doc_sync_findings(payload)
+
+
+# ---------------------------------------------------------------------------
 # Per-directory audit
 # ---------------------------------------------------------------------------
 
@@ -934,6 +992,10 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
 
     # AI-style tell check (full mode only; always runs, advisory)
     findings.extend(run_ai_style_check())
+
+    # CONTEXT.md / LOG.md drift check (full mode only; advisory here, working-tree
+    # scope; close-out turns doc-sync findings into a hard fail via the label)
+    findings.extend(run_doc_sync_check())
 
     return findings, len(dirs)
 

@@ -1,12 +1,12 @@
 # Close-out - Tests
 
-**Last modified:** 2026-07-05
+**Last modified:** 2026-07-07
 
 ## Purpose
 Holds the test suite for the close-out verifier.
 
 ## Contents
-- `test_close_out.py` - hermetic tests for scope selection (affected / all / name / git-unavailable fallback / cross-cutting escalation), the interpreter re-exec helpers, the subprocess test runner, gate aggregation, report formatting, the import coupling to the audit and link-check scripts, DEGRADED surfacing (collected across gates, shown non-blocking, verdict annotated, repair note rendered), and the `--repair` path (`run_repair` invoking setup.py and its missing-setup fallback).
+- `test_close_out.py` - hermetic tests for scope selection (affected / all / name / git-unavailable fallback / cross-cutting escalation), the interpreter re-exec helpers, the subprocess test runner, gate aggregation, report formatting, the import coupling to the audit and link-check scripts, DEGRADED surfacing (collected across gates, shown non-blocking, verdict annotated, repair note rendered), the `--repair` path (`run_repair` invoking setup.py and its missing-setup fallback), and the doc-sync teeth (`DocSyncTeethTests`: a `doc-sync`-labelled WARN hard-fails `gate_audit` while other guards' WARNs stay advisory, a `doc-sync` finding at DEGRADED severity is non-blocking and surfaces via the DEGRADED path rather than as drift, a structural FAIL still fails, a clean audit passes, and the report surfaces the drift messages).
 - `test_runtime_bootstrap.py` - regression check that every entry-point script
   (one with a `__main__` block) in a workflow or skill `scripts/` directory
   importing a project-only package (any distribution in the
@@ -53,3 +53,9 @@ N/A - this is a test directory, not a workflow.
   gained `overall_status` coverage and now asserts the verdict reads `RESULT:
   DEGRADED` (distinct from a clean pass) rather than an annotated PASS (26 -> 27
   tests). Codex review-fix pass on the runtime-bootstrap work.
+- 2026-07-06 - Added `DocSyncTeethTests` to `test_close_out.py` for the doc-sync
+  close-out teeth (build part 3): a `doc-sync`-labelled finding hard-fails
+  `gate_audit`, LOG drift also hard-fails, non-doc-sync WARNs (ai-style,
+  personal-data) stay advisory, a structural FAIL still fails, a clean audit
+  passes, and `build_report` surfaces the drift messages (27 -> 33 tests).
+- 2026-07-07 - Codex review fix (finding 3): added `test_degraded_doc_sync_is_not_drift` to `DocSyncTeethTests`, asserting a `doc-sync` finding at DEGRADED severity leaves the structural-audit gate passing and surfaces through the DEGRADED path instead of counting as drift (33 -> 34 tests).

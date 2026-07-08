@@ -1,12 +1,12 @@
 # Close-out - Scripts
 
-**Last modified:** 2026-07-05
+**Last modified:** 2026-07-07
 
 ## Purpose
 Holds the close-out verifier script.
 
 ## Contents
-- `run.py` - the close-out verifier entry point. Runs the structural audit and link audit in-process, runs the selected workflow test suites as subprocesses, and returns one aggregate pass/fail result with an exit code. A check that could not run at all (a degraded advisory hook) is reported as DEGRADED: shown in its own report section, non-blocking (exit stays 0), and never counted as a clean pass. `--repair` runs `setup.py` to fix the runtime and re-runs the gates once.
+- `run.py` - the close-out verifier entry point. Runs the structural audit and link audit in-process, runs the selected workflow test suites as subprocesses, and returns one aggregate pass/fail result with an exit code. The structural-audit gate fails on any audit FAIL and, additionally, on any `doc-sync`-labelled WARN finding: doc-sync CONTEXT/LOG drift is advisory WARN inside the audit (so the audit's own exit code is unchanged) but a hard fail at close-out, the deterministic "done means done" gate (plan R2-3, Option B); the drift messages are listed under the audit gate in the report. Only WARN counts as drift - a `doc-sync` finding at DEGRADED severity means the guard could not run, which is non-blocking and reported through the DEGRADED path, not as a hard fail. A check that could not run at all (a degraded advisory hook) is reported as DEGRADED: shown in its own report section, non-blocking (exit stays 0), and never counted as a clean pass. `--repair` runs `setup.py` to fix the runtime and re-runs the gates once.
 
 ## Inputs
 - Invoked as `python workflows/close-out/scripts/run.py [--scope all|NAME] [--json] [--repair]`. Reads the audit and link-check scripts (imported), the project test suites, and git working-tree state for affected-scope selection.
@@ -30,3 +30,5 @@ N/A - see the parent workflow `CONTEXT.md` for the verifier's step sequence.
 - 2026-07-02 - Initial creation with `run.py` (the close-out verifier).
 - 2026-07-02 - `run.py` now re-execs under the project `.venv` interpreter and escalates affected scope to all suites for cross-cutting changes (root `.md` docs or `templates/` [[templates/CONTEXT]]). Review-fix pass on the verification-discipline work.
 - 2026-07-05 - Documented the DEGRADED status and the opt-in `--repair` flag (added in the loud-degrade work but not previously reflected here). `run.py` now emits a distinct machine-readable verdict: JSON `status` (`pass`/`degraded`/`fail`) plus a `clean` boolean, and the human report reads `RESULT: DEGRADED (gates passed, but N check(s) did not run)` rather than annotating a PASS, so a degraded run can never be mistaken for a clean pass. Codex review-fix pass on the runtime-bootstrap work.
+- 2026-07-06 - Doc-sync teeth (build part 3, plan R2-3 Option B): `gate_audit()` now also fails on any `doc-sync`-labelled finding in the findings it already receives from the single in-process `run_audit` call, counting them separately from other WARNs, and `build_report` lists the drift messages under the audit gate. doc-sync CONTEXT/LOG drift is advisory WARN in the audit but a hard fail at close-out; other guards' WARNs (ai-style, personal-data) stay advisory.
+- 2026-07-07 - Codex review fix (finding 3): the doc-sync drift filter in `gate_audit()` is now scoped to WARN severity, so a `doc-sync` finding at DEGRADED severity (the guard could not run) is no longer miscounted as drift and no longer hard-fails the structural-audit gate; it surfaces through the existing DEGRADED path instead. Added a `DocSyncTeethTests` regression test.

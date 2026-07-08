@@ -93,6 +93,7 @@ class TestShippedRegistry(unittest.TestCase):
         names = [c["name"] for c in cats]
         self.assertIn("handoff", names)
         self.assertIn("triggers", names)
+        self.assertIn("doc-sync", names)
         for cat in cats:
             self.assertTrue(cat.get("summary"), f"{cat['name']} needs a summary")
             self.assertTrue(cat.get("runs"), f"{cat['name']} needs a runs value")

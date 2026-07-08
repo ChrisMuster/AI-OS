@@ -1,6 +1,6 @@
 # Triggers
 
-**Last modified:** 2026-07-06
+**Last modified:** 2026-07-07
 
 ## Purpose
 A single, AI-agnostic registry of the natural-language phrases that trigger Book
@@ -53,3 +53,6 @@ triggers" (or "list the skills") and `run.py --list` prints the grouped set.
 - 2026-07-06 - Registered the memory-diff category (the "what changed in memory"
   trigger) in triggers.yaml, taking the registry to eleven categories; added for
   best-practices umbrella Bucket-1 child #5.
+- 2026-07-07 - Registered the doc-sync category (the "check context is current" /
+  "are the docs in sync" trigger, running the doc-sync guard) in triggers.yaml,
+  taking the registry to twelve categories; doc-sync-guard build part 5.

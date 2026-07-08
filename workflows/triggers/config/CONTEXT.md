@@ -1,6 +1,6 @@
 # Triggers - Config
 
-**Last modified:** 2026-07-06
+**Last modified:** 2026-07-07
 
 ## Purpose
 Holds the trigger registry: the single source of truth mapping natural-language
@@ -34,3 +34,8 @@ N/A. This is a data directory.
 - 2026-07-06 - Added the memory-diff category (phrases "what changed in memory",
   "memory diff", "show memory changes", "what is new in memory"), taking
   triggers.yaml to eleven categories; best-practices umbrella Bucket-1 child #5.
+- 2026-07-07 - Added the doc-sync category (phrases "check context is current",
+  "are the docs in sync", "check for doc drift", "is the context up to date")
+  running the doc-sync guard, taking triggers.yaml to twelve categories; also
+  updated the audit summary to mention the doc-sync hook (doc-sync-guard build
+  part 5).
