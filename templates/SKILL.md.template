@@ -20,6 +20,15 @@
 ## Verification
 {{VERIFICATION}}
 
+## Hardening
+Safety envelope for this skill. All five fields are required. Write "None" only where it genuinely applies (e.g. a read-only skill has no write boundaries), never as a lazy default.
+
+- **Allowed tool intent:** {{HARDENING_TOOL_INTENT}}
+- **Never:** {{HARDENING_NEVER}}
+- **Approval-gated:** {{HARDENING_APPROVAL_GATED}}
+- **Write boundaries:** {{HARDENING_WRITE_BOUNDARIES}}
+- **Verification / escape hatch:** {{HARDENING_VERIFICATION_ESCAPE}}
+
 ## Dependencies
 {{DEPENDENCIES}}
 

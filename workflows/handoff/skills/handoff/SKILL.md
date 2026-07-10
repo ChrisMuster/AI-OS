@@ -63,6 +63,23 @@ update or refresh the handoff document.
   `unread: false` or a null `handoff_timestamp` (missing or unparsable Created
   line) - fix the document rather than declaring success.
 
+## Hardening
+Safety envelope for this skill. All five fields are required.
+
+- **Allowed tool intent:** Run the local handoff gather script (read-only git,
+  LOG, and backlog collection) and write a single `HANDOVER.md` at the project
+  root.
+- **Never:** Stage or commit `HANDOVER.md` (it is gitignored by design);
+  paraphrase away the user's steer; or claim a check passed that did not run.
+- **Approval-gated:** None for writing the gitignored `HANDOVER.md`. Any actual
+  git staging or commit is out of this skill's scope and stays under the normal
+  git-permission rules.
+- **Write boundaries:** `HANDOVER.md` at the project root only (rolling,
+  overwritten, gitignored). No other files.
+- **Verification / escape hatch:** After writing, `run.py --status --json` reports
+  `"unread": true` with a `handoff_timestamp` equal to the `**Created:**` line; a
+  `false` or null result means fix the document rather than declaring success.
+
 ## Dependencies
 - `workflows/handoff/scripts/` - the gather packet and the status/watermark logic.
 - `AGENTS.md` - the session-handoff trigger section and the startup recovery step

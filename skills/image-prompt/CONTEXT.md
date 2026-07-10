@@ -1,6 +1,6 @@
 # Image Prompt (Skill)
 
-**Last modified:** 2026-06-09
+**Last modified:** 2026-07-09
 
 ## Purpose
 Given a piece of written content (article, LinkedIn post, blog post, etc.), this skill analyses the content and recommends the most suitable type of accompanying image — real/personal photo, stock photo, or AI-generated — then delivers the appropriate output for the chosen path. For AI-generated images, it produces a fully structured prompt ready to paste into any image generator (ArtSpace.ai, Canva AI, Midjourney, Adobe Firefly, etc.).
@@ -32,3 +32,4 @@ N/A. This is a skill invoked by Biblio directly, not a standalone workflow with 
 ## Revision History
 - 2026-05-29 — Initial creation. Decision matrix, three output paths, platform specs, and prompt construction guidelines defined.
 - 2026-06-09 — Dependencies updated from CLAUDE.md to AGENTS.md (AI-agnostic transition).
+- 2026-07-09 - Added the required Verification and Hardening sections to SKILL.md (umbrella Bucket-1 child #6). Verification states the two-part correctness check; Hardening documents the read-only, no-write safety envelope.

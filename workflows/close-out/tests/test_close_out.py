@@ -266,7 +266,7 @@ class DocSyncTeethTests(unittest.TestCase):
         with self._fake_audit(findings):
             gate = run.gate_audit()
         self.assertFalse(gate["passed"])
-        self.assertEqual(len(gate["doc_sync"]), 1)
+        self.assertEqual(len(gate["blocking"]["doc-sync"]), 1)
         self.assertIn("doc-sync drift", gate["detail"])
 
     def test_log_drift_also_hard_fails(self):
@@ -285,7 +285,7 @@ class DocSyncTeethTests(unittest.TestCase):
         with self._fake_audit(findings):
             gate = run.gate_audit()
         self.assertTrue(gate["passed"])
-        self.assertEqual(gate["doc_sync"], [])
+        self.assertEqual(gate["blocking"]["doc-sync"], [])
 
     def test_degraded_doc_sync_is_not_drift(self):
         # A DEGRADED doc-sync finding means the guard could not run. It is
@@ -297,7 +297,7 @@ class DocSyncTeethTests(unittest.TestCase):
         with self._fake_audit(findings):
             gate = run.gate_audit()
         self.assertTrue(gate["passed"])
-        self.assertEqual(gate["doc_sync"], [])
+        self.assertEqual(gate["blocking"]["doc-sync"], [])
         self.assertIn("doc-sync check did not run", " ".join(gate["degraded"]))
 
     def test_structural_fail_still_fails_gate(self):
@@ -310,14 +310,14 @@ class DocSyncTeethTests(unittest.TestCase):
         with self._fake_audit([]):
             gate = run.gate_audit()
         self.assertTrue(gate["passed"])
-        self.assertEqual(gate["doc_sync"], [])
+        self.assertEqual(gate["blocking"]["doc-sync"], [])
 
     def test_report_surfaces_doc_sync_drift_and_fails(self):
         gates = [
             {"name": "structural audit", "passed": False,
              "detail": "5 dirs checked, 0 FAIL, 0 WARN, 1 doc-sync drift",
-             "doc_sync": ["workflows/foo: no LOG.md for a directory whose "
-                          "content changed"]},
+             "blocking": {"doc-sync": ["workflows/foo: no LOG.md for a directory "
+                                       "whose content changed"]}},
             {"name": "link audit", "passed": True, "detail": "0 dead link(s)"},
             {"name": "tests", "passed": True, "detail": "0 files", "files": []},
         ]
@@ -325,6 +325,79 @@ class DocSyncTeethTests(unittest.TestCase):
         self.assertIn("RESULT: FAIL", report)
         self.assertIn("[doc-sync]", report)
         self.assertIn("no LOG.md", report)
+
+
+class SkillHardeningTeethTests(unittest.TestCase):
+    """Close-out hard-fails on skill-hardening findings while the audit stays advisory.
+
+    The skill-hardening guard is the second advisory-in-audit / hard-fail-at-
+    close-out label (same treatment as doc-sync): a SKILL.md missing its Hardening
+    section or a required field blocks close-out even though it never changes the
+    audit's own exit code.
+    """
+
+    def _fake_audit(self, findings, dir_count=5):
+        fake_mod = mock.Mock()
+        fake_mod.run_audit.return_value = (findings, dir_count)
+        return mock.patch.object(run, "load_module", return_value=fake_mod)
+
+    def test_skill_hardening_finding_hard_fails_gate(self):
+        findings = [("WARN", "skill-hardening",
+                     "skills/foo/SKILL.md: missing `## Hardening` section")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertFalse(gate["passed"])
+        self.assertEqual(len(gate["blocking"]["skill-hardening"]), 1)
+        self.assertIn("skill-hardening gap", gate["detail"])
+
+    def test_missing_field_also_hard_fails(self):
+        findings = [("WARN", "skill-hardening",
+                     "skills/foo/SKILL.md: Hardening field `Never` is empty")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertFalse(gate["passed"])
+
+    def test_non_blocking_warn_stays_advisory(self):
+        # ai-style and personal-data WARNs must not flip the gate; only doc-sync
+        # and skill-hardening are hard fails.
+        findings = [("WARN", "ai-style", "x.md:3: em dash present"),
+                    ("WARN", "personal-data", "y.md: denylisted term")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["blocking"]["skill-hardening"], [])
+
+    def test_degraded_skill_hardening_is_not_gap(self):
+        # A DEGRADED skill-hardening finding means the guard could not run. It is
+        # non-blocking and surfaces via the DEGRADED path, not as a hard fail.
+        findings = [("DEGRADED", "skill-hardening",
+                     "skill-hardening check did not run - boom")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["blocking"]["skill-hardening"], [])
+        self.assertIn("skill-hardening check did not run",
+                      " ".join(gate["degraded"]))
+
+    def test_clean_audit_passes(self):
+        with self._fake_audit([]):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["blocking"]["skill-hardening"], [])
+
+    def test_report_surfaces_skill_hardening_gap_and_fails(self):
+        gates = [
+            {"name": "structural audit", "passed": False,
+             "detail": "5 dirs checked, 0 FAIL, 0 WARN, 1 skill-hardening gap",
+             "blocking": {"skill-hardening": ["skills/foo/SKILL.md: missing "
+                                              "`## Hardening` section"]}},
+            {"name": "link audit", "passed": True, "detail": "0 dead link(s)"},
+            {"name": "tests", "passed": True, "detail": "0 files", "files": []},
+        ]
+        report = run.build_report("all", gates)
+        self.assertIn("RESULT: FAIL", report)
+        self.assertIn("[skill-hardening]", report)
+        self.assertIn("missing `## Hardening` section", report)
 
 
 if __name__ == "__main__":

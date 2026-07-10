@@ -1,6 +1,6 @@
 # Book Dragon - Agent Instructions
 
-**Last updated:** 2026-07-08
+**Last updated:** 2026-07-09
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -377,7 +377,17 @@ One skill per subdirectory. Even if a workflow only has one skill, it still goes
 
 Each skill directory must have its own `CONTEXT.md` (per the universal rule). The SKILL.md is the functional spec - what the skill does and how to run it. The CONTEXT.md is the "why this exists" for the directory. For tiny skills these can be short, but the rule stays consistent.
 
-Every new SKILL.md is scaffolded from `templates/SKILL.md.template` [[templates/CONTEXT]], which fixes a lightweight schema: Purpose, When to use, Inputs, How to run, Outputs, Verification, Dependencies, and (optional) Known Issues. The **Verification** section is required: it must state how a caller confirms the skill produced a correct result, meaning the command, test, or observable check that proves it worked and what a failed check looks like. A skill with no stated way to verify its output is one you have to trust on prose, which the Verification discipline rule forbids. Existing SKILL.md files predate the template and are brought onto the schema (and given a Verification section) when they are next meaningfully edited, not in a mass rewrite.
+Every new SKILL.md is scaffolded from `templates/SKILL.md.template` [[templates/CONTEXT]], which fixes a lightweight schema: Purpose, When to use, Inputs, How to run, Outputs, Verification, Hardening, Dependencies, and (optional) Known Issues. The **Verification** section is required: it must state how a caller confirms the skill produced a correct result, meaning the command, test, or observable check that proves it worked and what a failed check looks like. A skill with no stated way to verify its output is one you have to trust on prose, which the Verification discipline rule forbids. All existing live SKILL.md files have been retrofitted onto this schema (given Verification and Hardening sections); any new or meaningfully edited skill must follow the template/schema too.
+
+The **Hardening** section is also required. It is a declarative safety envelope: the smallest correct blast radius the skill needs, written down so the boundary is inspectable. It has five required fields, each with real content ("None" only where it genuinely applies, such as a read-only skill's write boundaries):
+
+- **Allowed tool intent** - the tool classes the skill legitimately needs (e.g. read-only file access, git read, no network).
+- **Never** - actions this skill must not perform.
+- **Approval-gated** - side-effecting, destructive, or external operations that require explicit user approval before the skill runs them.
+- **Write boundaries** - where the skill may write, if anywhere.
+- **Verification / escape hatch** - how a reviewer can tell the skill stayed inside those boundaries, and what to do when a boundary turns out to be insufficient.
+
+Hardening is documented intent, not runtime enforcement. Book Dragon's skills are AI-agnostic markdown specs the AI executes, so runtime per-skill tool restriction is not portable across the roster (Claude-native `.claude/skills` now expose partial runtime controls - `disallowed-tools`, skill-scoped `hooks`, `context: fork` - but adopting them as the mechanism would be Claude-only and break cross-AI parity). The portable, checkable deliverable is therefore the declarative section plus a deterministic presence/shape check, enforced by the `skill-hardening-guard` workflow [[workflows/skill-hardening-guard/CONTEXT]]: run `python workflows/skill-hardening-guard/scripts/run.py --check` to confirm every SKILL.md carries a Hardening section with all five fields non-empty. It validates structure, never the truth of the declared policy.
 
 When a workflow has skills, they must be documented in that workflow's `CONTEXT.md` in two places:
 

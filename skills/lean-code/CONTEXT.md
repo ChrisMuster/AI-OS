@@ -1,6 +1,6 @@
 # Lean Code (Skill Set)
 
-**Last modified:** 2026-06-26
+**Last modified:** 2026-07-09
 
 ## Purpose
 Shared skill set that steers AI coding agents toward the smallest correct solution, adapted from the Ponytail project (github.com/DietrichGebert/ponytail) but built as AI-agnostic Book Dragon skills with no external dependencies. It is opt-in per project: most Book Dragon work is documentation rather than code, so the ruleset is applied only where a project asks for it, and it targets external or app code. Inside Book Dragon the 90-10 Protocol already covers this ground.
@@ -35,3 +35,4 @@ N/A. This is a ruleset applied by the AI, not a standalone workflow with a scrip
 
 ## Revision History
 - 2026-06-26 - Initial creation. Built the always-on Lean Code ruleset (decision ladder, three modes, tag vocabulary, `lean:` marker convention, safety carve-out, opt-in convention). Review, audit, and debt skills deferred to a build-only-when-needed backlog item.
+- 2026-07-09 - Added the required Verification and Hardening sections to SKILL.md (umbrella Bucket-1 child #6). Verification frames correctness as vocabulary conformance plus an intact safety carve-out; Hardening documents that the ruleset invokes no tools and writes nothing.

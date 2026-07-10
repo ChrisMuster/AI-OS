@@ -177,3 +177,25 @@ Deliver a single, complete prompt using the structure below. Write it as one coh
 ## Style Default Note
 
 The default image style is **photorealistic**. Honour this unless the content makes another style clearly more appropriate — in which case, use the better-suited style and explain the choice in one sentence after delivering the prompt.
+
+---
+
+## Verification
+
+The skill produced a correct result when both hold:
+
+1. It states exactly one recommendation (real photo, stock, or AI-generated) with a one-sentence reason.
+2. It delivers the full format for the chosen path with every required element present: Path A and Path B deliver all four listed items; a Path C prompt ends with the platform's native aspect ratio and includes the "No text, no watermarks" exclusion.
+
+A failed check looks like a recommendation with no reason, a Path C prompt missing the aspect ratio or the exclusions line, or a deliverable that skips one of its required items. If the content cannot be classified against the decision criteria, say so and ask rather than guessing.
+
+---
+
+## Hardening
+Safety envelope for this skill. All five fields are required.
+
+- **Allowed tool intent:** Read-only access to the supplied content (inline text, or reading a file when a path is given) and text generation only. No network access.
+- **Never:** Fetch or generate an actual image, call an external image API, or write any file. The skill produces prompt text and search guidance, not images.
+- **Approval-gated:** None. The output is text advice with no side effects.
+- **Write boundaries:** None. The skill writes no files; its output is returned in the conversation.
+- **Verification / escape hatch:** A reviewer confirms the output names a type, gives a reason, and matches the chosen path's format (see Verification). If no path fits the content, the skill states that and asks rather than inventing a recommendation.

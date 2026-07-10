@@ -55,3 +55,18 @@ If results appear sparse or missing:
 - **Keyword search only** - FTS5 does not match synonyms or concepts; only exact words. If a query returns nothing, try alternative wording.
 - **Index freshness** - `index.py` runs at startup for every AI that follows AGENTS.md and hourly via scheduled maintenance. A session that is still open or was closed without any hook/scheduler run may not appear yet. Running `index.py` manually catches anything missed.
 - **Cowork lag** - Cowork sessions are captured by scheduled maintenance, not in real time. Recent Cowork sessions may not appear until the next scheduled run or startup index pass.
+
+## Verification
+
+`search.py "query"` returns matching snippets from the index. A correct use cites only snippets that appear in that output, each with its session title, approximate date, and source/AI identity, and refuses to speculate about content not returned.
+
+A failed check looks like an answer describing a conversation that is not in the returned rows, or a citation with no matching snippet. If results look sparse, re-run `index.py` and broaden the search terms (FTS5 is keyword-based) before concluding nothing exists.
+
+## Hardening
+Safety envelope for this skill. All five fields are required.
+
+- **Allowed tool intent:** Read-only query of the local session index via `search.py`, and optionally running `index.py` to refresh it (a read of the local transcript archive that writes only to the local SQLite index).
+- **Never:** Expose or exfiltrate transcript content beyond answering the user's query; fabricate snippets that the search did not return.
+- **Approval-gated:** None. The search is a local read-only query and the index refresh is a safe, idempotent local operation.
+- **Write boundaries:** Only the local session-search SQLite index and archive under the workflow's own data area (via `index.py`). The search path itself writes nothing.
+- **Verification / escape hatch:** A reviewer confirms every cited snippet appears in `search.py` output and none is invented (see Verification). If results are sparse, the skill refreshes the index and broadens terms rather than guessing.

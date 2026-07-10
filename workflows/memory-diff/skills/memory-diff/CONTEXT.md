@@ -1,6 +1,6 @@
 # memory-diff skill
 
-**Last modified:** 2026-07-06
+**Last modified:** 2026-07-09
 
 ## Purpose
 The AI (~10%) half of the memory-diff workflow: take the deterministic delta from
@@ -34,3 +34,6 @@ See SKILL.md for the full procedure.
 ## Revision History
 - 2026-07-06 - Initial creation. SKILL.md on the templates/SKILL.md.template schema
   with a Verification section.
+- 2026-07-09 - Added the required Hardening section to SKILL.md (umbrella Bucket-1
+  child #6): documents the read-only status envelope, the gitignored watermark as
+  the only write boundary, and the do-not-ack-on-anomaly rule.

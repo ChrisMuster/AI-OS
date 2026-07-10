@@ -123,3 +123,22 @@ TAVILY_API_KEY=...       # ✓ configured
 BRAVE_API_KEY=...        # ✓ configured
 GUARDIAN_API_KEY=...     # ✓ configured
 ```
+
+---
+
+## Verification
+
+`research(...)` returns a package dict that is internally consistent: `source_count` equals the length of `sources`, `tier_summary` counts add up to `source_count`, and `corroboration` reflects the actual tier mix. A correct run cites only sources that were really fetched, each with its URL, tier, and `fetched_at`.
+
+A failed check looks like a package that claims sources it did not fetch, a `source_count` that disagrees with the `sources` list, or an unhandled crash when a source is down (a healthy run degrades with a typed unavailable error and returns the sources it did reach). The engine's behaviour is exercised by the web-research workflow test suite (`python workflows/web-research/tests/run_tests.py`); a red run means the package cannot be trusted.
+
+---
+
+## Hardening
+Safety envelope for this skill. All five fields are required.
+
+- **Allowed tool intent:** Outbound HTTPS to the configured research sources; read-only access to the skill's own config (`skills/web-research/config/`) and to API keys from the environment or `.env`. Returns data to the caller.
+- **Never:** Log, echo, or write out API keys or secrets; fabricate sources, URLs, or citations that a real fetch did not return.
+- **Approval-gated:** None for the read-only fetches themselves. Any workflow that persists a report is responsible for its own writes and permission under that workflow's rules.
+- **Write boundaries:** The skill returns a dict and writes no project files. A report file, when produced, is written by the calling workflow (e.g. `workflows/web-research/scripts/run.py`) inside that workflow's own output area, not by this engine.
+- **Verification / escape hatch:** A reviewer confirms the returned counts, tiers, and corroboration match the `sources` list (see Verification). When a source fails it degrades gracefully with a typed unavailable error rather than inventing content; a keyed source with no key is simply skipped, not faked.

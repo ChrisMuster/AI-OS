@@ -115,3 +115,22 @@ Format: `lean: <why this is the minimal choice>[, <upgrade trigger and path>]`. 
 ## Not built yet
 
 The diff-review, repo-audit, and debt-tracker skills do not exist. If a task needs them, build them first (see the backlog item "Lean Code skill set - review/audit/debt skills"), then continue. Do not assume they are available.
+
+---
+
+## Verification
+
+Because this is a passive ruleset rather than a script, a correct result means the guidance was applied faithfully: any findings raised use the fixed tag vocabulary (`delete`, `stdlib`, `native`, `yagni`, `shrink`) in the one-line finding format, `lean:` markers follow the fixed marker format, and the safety carve-out is intact.
+
+A failed check looks like a "leaner" suggestion that removes input validation, security controls, accessibility, or real test coverage; a finding tagged outside the vocabulary; or the ruleset being applied to Book Dragon's own docs and scripts, which the 90-10 Protocol already governs. If applying a rung would weaken correctness or security, the rule itself is to stop and keep the safer version.
+
+---
+
+## Hardening
+Safety envelope for this skill. All five fields are required.
+
+- **Allowed tool intent:** None of its own. It is passive guidance that shapes how the agent writes code in an opted-in project; it invokes no tools and runs no scripts.
+- **Never:** Apply itself to Book Dragon's own documentation or workflow scripts (defer to the 90-10 Protocol); weaken the safety carve-out (validation, security, accessibility, tests) to save lines.
+- **Approval-gated:** None. It is advice only; any code changes it influences go through the host task's own permission and review flow.
+- **Write boundaries:** None. The ruleset writes nothing; code edits happen under the host task's normal rules, not this skill's.
+- **Verification / escape hatch:** A reviewer confirms findings use the fixed vocabulary and the safety carve-out was preserved (see Verification). If applying a rung would weaken correctness or security, the rule is to stop and keep the safer version rather than minimise.

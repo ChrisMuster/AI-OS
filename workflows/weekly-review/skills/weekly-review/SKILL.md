@@ -76,6 +76,25 @@ say go (the startup gate offers, it does not auto-run).
 - A failed check looks like: `--record` exiting 1 with "No review found", or a
   red test run. Do not claim a review was recorded on either.
 
+## Hardening
+Safety envelope for this skill. All five fields are required.
+
+- **Allowed tool intent:** Run the local weekly-review gather script (read-only
+  collection of local signal) and read `journal/`, `memory/`, `reviews/`, and the
+  session index. Write one review file and, only with confirmation, distilled
+  `memory/` files.
+- **Never:** Bulk-copy the packet or review into `memory/`; let an older summary
+  silently override a newer fact; or invent activity that is not in the packet.
+- **Approval-gated:** Writing distilled facts into `memory/` - flag each to the
+  user for confirmation first, via the four-step memory procedure. Never write
+  memory unprompted.
+- **Write boundaries:** `reviews/<label>.md` (the review store) and, with
+  confirmation, `memory/` files. Nothing else is written.
+- **Verification / escape hatch:** `run.py --record` refuses (exit 1) if the
+  review file is missing or empty, and `--status` then reports none due; if the
+  packet cannot be trusted (a red test run), stop before writing a review on top
+  of it rather than proceeding.
+
 ## Dependencies
 - `workflows/weekly-review/scripts/` [[workflows/weekly-review/scripts/CONTEXT]]
   - the gather script and its state/config/gather modules.

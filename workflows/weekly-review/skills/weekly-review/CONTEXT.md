@@ -1,6 +1,6 @@
 # Weekly Review (Skill)
 
-**Last modified:** 2026-07-02
+**Last modified:** 2026-07-09
 
 ## Purpose
 The judgement half of the weekly-review flywheel: how Biblio turns the gather
@@ -37,3 +37,6 @@ reconcile, distil, record). It is not duplicated here.
 ## Revision History
 - 2026-07-02 - Initial creation. Synthesis skill for the weekly-review flywheel
   (best-practices umbrella Bucket-1 child #3), scaffolded from the SKILL template.
+- 2026-07-09 - Added the required Hardening section to SKILL.md (umbrella Bucket-1
+  child #6): documents the write boundaries (reviews/ and, gated on confirmation,
+  memory/) and the never-bulk-copy-to-memory rule.

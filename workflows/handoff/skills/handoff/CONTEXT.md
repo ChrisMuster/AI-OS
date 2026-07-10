@@ -1,6 +1,6 @@
 # Handoff Skill
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-07-09
 
 ## Purpose
 The AI half of the handoff workflow: turn the deterministic gather packet into a
@@ -33,3 +33,4 @@ the required sections, then verify with `--status --json`.
 ## Revision History
 - 2026-07-03 - Initial creation. SKILL.md on the templates/SKILL.md.template schema.
 - 2026-07-03 - Made the user's trigger-time steer ("keep this in mind", "this is where I'm going next session") a first-class input: captured verbatim in a leading "Steer for next session" section, omitted when there is no steer.
+- 2026-07-09 - Added the required Hardening section to SKILL.md (umbrella Bucket-1 child #6): documents the single write boundary (HANDOVER.md at the project root) and the never-stage/commit rule.

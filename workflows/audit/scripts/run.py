@@ -60,6 +60,7 @@ ENCODING_RUN_PY = PROJECT_ROOT / "workflows" / "encoding-guard" / "scripts" / "r
 PERSONAL_RUN_PY = PROJECT_ROOT / "workflows" / "personal-data-guard" / "scripts" / "run.py"
 AI_STYLE_RUN_PY = PROJECT_ROOT / "workflows" / "ai-style-guard" / "scripts" / "run.py"
 DOC_SYNC_RUN_PY = PROJECT_ROOT / "workflows" / "doc-sync-guard" / "scripts" / "run.py"
+SKILL_HARDENING_RUN_PY = PROJECT_ROOT / "workflows" / "skill-hardening-guard" / "scripts" / "run.py"
 
 # ---------------------------------------------------------------------------
 # Config
@@ -728,6 +729,62 @@ def run_doc_sync_check() -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Skill-hardening-guard hook
+# ---------------------------------------------------------------------------
+# The full audit also runs the skill-hardening guard, so a SKILL.md that is
+# missing its Hardening section or a required field surfaces in the same close-out
+# report. Like the other content hooks it is additive and advisory here - only the
+# WARN findings are merged, it never changes the audit's exit code, and a missing
+# or broken guard degrades to a DEGRADED finding. The teeth are at close-out, which
+# hard-fails on any skill-hardening-labelled WARN (mirroring doc-sync).
+
+def skill_hardening_findings(payload: dict) -> list[Finding]:
+    """Map a skill-hardening-guard ``--check --json`` payload to audit Findings.
+
+    Keeps WARN (an actionable Hardening gap) and DEGRADED (a SKILL.md the guard
+    could not read - non-blocking, surfaced distinctly and never a close-out hard
+    fail). Other severities are dropped. The guard's message already names the
+    SKILL.md and the gap. Pure (dict in, tuples out) for unit testing.
+    """
+    findings: list[Finding] = []
+    for f in payload.get("findings", []):
+        sev = f.get("severity")
+        if sev not in ("WARN", "DEGRADED"):
+            continue
+        findings.append((sev, "skill-hardening", f.get("message", "")))
+    return findings
+
+
+def run_skill_hardening_check() -> list[Finding]:
+    """Run the skill-hardening guard and return its WARN findings.
+
+    Shells out to the guard CLI (the contract) rather than importing it, matching
+    the other hooks. Degrades gracefully: on any failure the audit gets a DEGRADED
+    finding and never raises, so the exit code stays advisory.
+    """
+    if not SKILL_HARDENING_RUN_PY.exists():
+        return [degraded("skill-hardening", "skill-hardening-guard CLI not found",
+                         repairable=False)]
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SKILL_HARDENING_RUN_PY), "--check", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(PROJECT_ROOT),
+        )
+    except Exception as exc:
+        return [degraded("skill-hardening", f"could not run ({exc})")]
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        reason = (result.stderr.strip().splitlines()
+                  or [f"checker exited {result.returncode} with no JSON output"])[-1]
+        return [degraded("skill-hardening", reason)]
+    return skill_hardening_findings(payload)
+
+
+# ---------------------------------------------------------------------------
 # Per-directory audit
 # ---------------------------------------------------------------------------
 
@@ -996,6 +1053,10 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
     # CONTEXT.md / LOG.md drift check (full mode only; advisory here, working-tree
     # scope; close-out turns doc-sync findings into a hard fail via the label)
     findings.extend(run_doc_sync_check())
+
+    # SKILL.md Hardening-section check (full mode only; advisory here; close-out
+    # turns skill-hardening findings into a hard fail via the label)
+    findings.extend(run_skill_hardening_check())
 
     return findings, len(dirs)
 

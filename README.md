@@ -1,6 +1,6 @@
 # Book Dragon
 
-**Last updated:** 7 July 2026
+**Last updated:** 9 July 2026
 
 Book Dragon is a personal AI operating system, powered by **Biblio** — an assistant persona you configure for your own life and workflow. Biblio is not an AI in its own right: the intelligence behind it is provided by whichever AI you are running. Book Dragon is AI-agnostic — the underlying model can be swapped while Biblio's identity and rules remain the same.
 
@@ -52,6 +52,7 @@ This project is version-controlled. Personal files — `LOG.md` files, `USER.md`
 - **Triggers** - The AI-agnostic replacement for a per-AI slash-command set: a single tracked registry (`config/triggers.yaml`) mapping natural-language phrases to Book Dragon actions, referenced by `AGENTS.md` so any AI recognises them. Ask "give me a list of triggers" and `run.py --list` prints the grouped set. `workflows/triggers/` `[active]`
 - **Memory Diff** - Shows what changed in `memory/` since the last session. A content-watermark diff over `memory/LOG.md` surfaces new memory entries (added, updated, archived) silently at session startup and on the "what changed in memory" trigger, then advances the watermark so nothing is shown twice. Startup-gated and trigger-driven (no per-AI adapter), so it works identically on every AGENTS-reading AI. `workflows/memory-diff/` `[active]`
 - **Doc-Sync Guard** - Read-only checker that catches CONTEXT.md / LOG.md drift: for every committable directory whose content changed, it verifies the directory's CONTEXT.md moved (a Revision History entry, Last modified matching the newest entry) and its gitignored LOG.md gained an entry (verified by mtime, since a gitignored file cannot be content-diffed), plus the coarse child add/remove parent-propagation case. It fires at three stopping points: a warn-not-block advisory in the git pre-commit hook, a section in the handoff packet, and a hard fail in the close-out verifier. Makes the AGENTS.md CONTEXT/LOG maintenance rule mechanical rather than discipline-dependent. `workflows/doc-sync-guard/` `[active]`
+- **Skill-Hardening Guard** - Read-only checker that verifies every SKILL.md carries a complete `## Hardening` section, the declarative safety envelope required by the SKILL.md schema (five fields: allowed tool intent, never-do actions, approval-gated operations, write boundaries, and a verification / escape hatch). It validates presence and shape only, never the truth of the declared policy, keeping runtime enforcement out of scope so the check stays portable across every AGENTS-reading AI. Advisory WARN in the full audit; a hard fail in the close-out verifier. `workflows/skill-hardening-guard/` `[active]`
 
 ## Skills
 

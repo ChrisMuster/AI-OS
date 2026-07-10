@@ -1,6 +1,6 @@
 # Web Research (Skill)
 
-**Last modified:** 2026-06-27
+**Last modified:** 2026-07-09
 
 ## Purpose
 Shared research engine for Book Dragon. Fetches content from multiple free and paid web sources, deduplicates and tiers the results by credibility, and returns a structured research package. Any workflow that needs to research a topic before acting imports this skill rather than building its own search logic.
@@ -56,3 +56,4 @@ N/A. This is a shared skill module, not a standalone workflow. See `workflows/we
 - 2026-06-11 — Dependencies are now installed through the canonical root setup command rather than per-workflow pip commands.
 - 2026-06-20 — Reworded the Dependencies RSS-config note so the non-existent `workflows/web-research/config/rss_feeds.yaml` contrast path is no longer a backtick token (it was being read as a phantom dependency by the knowledge-graph indexer). The real `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] path is unchanged.
 - 2026-06-27 - Fixed TLS failures under HTTPS interception (Norton Web/Mail Shield re-signs certs with a root absent from certifi). research.py now injects truststore at import so verification uses the OS trust store; declared `truststore>=0.10` in the skill requirements. Restores all sources on affected machines.
+- 2026-07-09 - Added the required Verification and Hardening sections to SKILL.md (umbrella Bucket-1 child #6). Verification states the package internal-consistency check; Hardening documents the outbound-HTTPS/no-secret-leak/no-project-write envelope.

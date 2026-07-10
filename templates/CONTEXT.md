@@ -1,6 +1,6 @@
 # Templates
 
-**Last modified:** 2026-07-08
+**Last modified:** 2026-07-09
 
 ## Purpose
 Holds reusable boilerplate templates for standard files used across Book Dragon. Biblio uses these as the starting point when scaffolding any new directory, ensuring every directory in the project has a consistent structure without freehanding.
@@ -8,7 +8,7 @@ Holds reusable boilerplate templates for standard files used across Book Dragon.
 ## Contents
 - CONTEXT.md.template — `templates/CONTEXT.md.template` [[templates/CONTEXT]] — Boilerplate for new CONTEXT.md files with placeholder variables.
 - LOG.md.template — `templates/LOG.md.template` [[templates/CONTEXT]] — Boilerplate for new LOG.md files with placeholder variables.
-- SKILL.md.template - `templates/SKILL.md.template` [[templates/CONTEXT]] - Boilerplate for new SKILL.md files, fixing the skill schema including the required Verification section.
+- SKILL.md.template - `templates/SKILL.md.template` [[templates/CONTEXT]] - Boilerplate for new SKILL.md files, fixing the skill schema including the required Verification and Hardening sections.
 
 ## Inputs
 - The name of the new directory (e.g. daily-standup, product-catalogue, ai-glossary).
@@ -42,7 +42,7 @@ Available placeholders:
 - `{{KNOWN_ISSUES}}` — Bugs, limitations, or edge cases, or "None".
 - `{{CREATION_NOTE}}` — Short note for the initial log entry.
 
-SKILL.md.template adds its own placeholders: `{{SKILL_NAME}}`, `{{WHEN_TO_USE}}`, `{{HOW_TO_RUN}}`, and `{{VERIFICATION}}` (how a caller confirms the skill produced a correct result), reusing `{{DATE}}`, `{{ONE_LINE_PURPOSE}}`, `{{INPUTS}}`, `{{OUTPUTS}}`, `{{DEPENDENCIES}}`, and `{{KNOWN_ISSUES}}` from the list above. The SKILL.md schema, including the required Verification section, is defined in root AGENTS.md under "Workflow-scoped skills".
+SKILL.md.template adds its own placeholders: `{{SKILL_NAME}}`, `{{WHEN_TO_USE}}`, `{{HOW_TO_RUN}}`, `{{VERIFICATION}}` (how a caller confirms the skill produced a correct result), and the five Hardening fields (`{{HARDENING_TOOL_INTENT}}`, `{{HARDENING_NEVER}}`, `{{HARDENING_APPROVAL_GATED}}`, `{{HARDENING_WRITE_BOUNDARIES}}`, `{{HARDENING_VERIFICATION_ESCAPE}}`), reusing `{{DATE}}`, `{{ONE_LINE_PURPOSE}}`, `{{INPUTS}}`, `{{OUTPUTS}}`, `{{DEPENDENCIES}}`, and `{{KNOWN_ISSUES}}` from the list above. The SKILL.md schema, including the required Verification and Hardening sections, is defined in root AGENTS.md under "Workflow-scoped skills"; the Hardening section is checked mechanically by `workflows/skill-hardening-guard/` [[workflows/skill-hardening-guard/CONTEXT]].
 
 ## Dependencies
 - `AGENTS.md` [[AGENTS]] (root) — Defines the CONTEXT.md schema and LOG.md format that these templates implement. The templates must match the rules in AGENTS.md at all times.
@@ -61,3 +61,4 @@ SKILL.md.template adds its own placeholders: `{{SKILL_NAME}}`, `{{WHEN_TO_USE}}`
 - 2026-07-02 - Corrected the `{{TIMESTAMP}}` description to include the timezone offset (YYYY-MM-DDTHH:MM:SS±HH:MM), matching the AGENTS.md format requirement.
 - 2026-07-03 - Replaced the em dash in the CONTEXT.md.template Revision History placeholder line with a hyphen, so new CONTEXT.md files no longer seed an ai-style-guard em-dash warning.
 - 2026-07-08 - Replaced the em dash with a hyphen in the LOG.md.template and SKILL.md.template H1 titles ("- Log" and "- Skill Specification"), so newly-scaffolded files no longer seed an ai-style-guard em-dash warning. Part of the AGENTS.md em-dash cleanup and durable-tap fixes.
+- 2026-07-09 - Added the required Hardening section (five fields: Allowed tool intent, Never, Approval-gated, Write boundaries, Verification / escape hatch) to SKILL.md.template and documented its placeholders. Part of umbrella Bucket-1 child #6 (per-workflow tool scoping / Hardening sections).

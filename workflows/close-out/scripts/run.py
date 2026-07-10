@@ -227,34 +227,45 @@ def select_suites(scope):
 # ---------------------------------------------------------------------------
 # Gates
 # ---------------------------------------------------------------------------
+# Labels that are advisory WARN inside the audit (they never change the audit's
+# own exit code) but hard-fail close-out - the deterministic "done means done"
+# gate (plan R2-3, Option B). Each maps to the noun used in the detail line. Only
+# a WARN blocks: a DEGRADED finding for one of these labels means the guard could
+# not run, which is non-blocking and surfaces via the DEGRADED path instead. Add
+# a third blocking label by adding one entry here - the gate, detail line, and
+# report all derive from this map, so there is nothing else to wire.
+BLOCKING_LABELS = {"doc-sync": "drift", "skill-hardening": "gap"}
+
+
 def gate_audit():
     try:
         mod = load_module(AUDIT_RUN, "closeout_audit")
         findings, dir_count = mod.run_audit(with_graph=True)
         fails = sum(1 for f in findings if f[0] == "FAIL")
-        # doc-sync findings are advisory WARN inside the audit, but close-out is
-        # the deterministic "done means done" gate, so a CONTEXT/LOG drift finding
-        # (label "doc-sync") hard-fails HERE even though it never changes the
-        # audit's own exit code (plan R2-3, Option B). This is the teeth: the same
-        # single in-process audit call is reused - the findings are just inspected
-        # for the label. Counted separately from other WARNs so the detail line
-        # does not double-count them. Only WARN counts as drift: a DEGRADED
-        # doc-sync finding means the guard could not run, which is non-blocking
-        # and surfaces via the DEGRADED path below, not as a hard fail.
-        doc_sync = [f[2] for f in findings if f[0] == "WARN" and f[1] == "doc-sync"]
-        warns = sum(1 for f in findings if f[0] == "WARN" and f[1] != "doc-sync")
+        # The single in-process audit call is reused: its findings are just
+        # inspected for the blocking labels. Each label's blocking messages are
+        # its WARNs (counted separately from other WARNs so the detail line does
+        # not double-count them).
+        blocking = {
+            label: [f[2] for f in findings
+                    if f[0] == "WARN" and f[1] == label]
+            for label in BLOCKING_LABELS
+        }
+        warns = sum(1 for f in findings
+                    if f[0] == "WARN" and f[1] not in BLOCKING_LABELS)
         degraded = [f[2] for f in findings if f[0] == "DEGRADED"]
         detail = f"{dir_count} dirs checked, {fails} FAIL, {warns} WARN"
-        if doc_sync:
-            detail += f", {len(doc_sync)} doc-sync drift"
+        for label, noun in BLOCKING_LABELS.items():
+            if blocking[label]:
+                detail += f", {len(blocking[label])} {label} {noun}"
         if degraded:
             detail += f", {len(degraded)} DEGRADED"
         return {
             "name": "structural audit",
-            "passed": fails == 0 and not doc_sync,
+            "passed": fails == 0 and not any(blocking.values()),
             "detail": detail,
             "degraded": degraded,
-            "doc_sync": doc_sync,
+            "blocking": blocking,
         }
     except Exception as exc:  # a gate that cannot run has not passed
         return {"name": "structural audit", "passed": False,
@@ -369,8 +380,9 @@ def build_report(scope_label, gates, repair_note=None):
     for gate in gates:
         tag = "PASS" if gate["passed"] else "FAIL"
         lines.append(f"[{tag}] {gate['name']} - {gate['detail']}")
-        for msg in gate.get("doc_sync", []):
-            lines.append(f"    [doc-sync] {msg}")
+        for label, msgs in gate.get("blocking", {}).items():
+            for msg in msgs:
+                lines.append(f"    [{label}] {msg}")
         for fr in gate.get("files", []):
             if not fr["passed"]:
                 lines.append(f"    [FAIL] {fr['file']}")

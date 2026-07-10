@@ -56,6 +56,24 @@ first-run baseline - in those cases say nothing.
   differs from `count` - rewrite the sentence to match the data rather than
   asserting it.
 
+## Hardening
+Safety envelope for this skill. All five fields are required.
+
+- **Allowed tool intent:** Run the local memory-diff status reader (read-only over
+  `memory/LOG.md`) and, at session startup only, advance the watermark via
+  `--ack`.
+- **Never:** Acknowledge (advance the watermark) when an anomaly is reported; or
+  invent memory changes the log does not carry.
+- **Approval-gated:** None. The status read is read-only and the `--ack` watermark
+  advance is a safe, idempotent local state update performed only in the
+  no-anomaly case.
+- **Write boundaries:** The workflow's own gitignored watermark/state file (via
+  `--ack`). It writes no `memory/` files and no project docs.
+- **Verification / escape hatch:** `--status --json` `has_changes`, `count`, and
+  `groups` must match the sentence written; a claim absent from the JSON means
+  rewrite to match. On an anomaly, do not ack - leave the watermark for the user
+  to reset.
+
 ## Dependencies
 - `workflows/memory-diff/scripts/` - the status reader that produces the delta.
 - `AGENTS.md` - the startup surfacing step (13) and the memory-diff trigger.

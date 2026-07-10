@@ -1,6 +1,6 @@
 # Session Search Skill
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-07-09
 
 ## Purpose
 Biblio-invocable skill for searching the Book Dragon session history archive. Wraps search.py with instructions for when to invoke it, how to interpret results, and what limitations apply.
@@ -32,3 +32,4 @@ A list of ranked result snippets from past sessions, including session title, da
 ## Revision History
 - 2026-06-08 - Initial creation.
 - 2026-06-24 - Updated SKILL.md to describe all indexed AI sessions and the universal startup/scheduled indexing freshness model.
+- 2026-07-09 - Added the required Verification and Hardening sections to SKILL.md (umbrella Bucket-1 child #6). Verification frames correctness as citing only returned snippets; Hardening documents the read-only-query envelope (local index write only via index.py).
