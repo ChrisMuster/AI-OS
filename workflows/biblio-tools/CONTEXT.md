@@ -1,6 +1,6 @@
 # Biblio Tools
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-07-10
 
 ## Purpose
 Provides Book Dragon's canonical Python runtime, setup verification, cross-platform workflow launcher, and MCP (Model Context Protocol) server. The same project commands work for every AI; MCP-capable clients additionally receive typed tools, while other clients run the underlying scripts directly.
@@ -9,6 +9,7 @@ Provides Book Dragon's canonical Python runtime, setup verification, cross-platf
 - scripts/ - `workflows/biblio-tools/scripts/` [[workflows/biblio-tools/scripts/CONTEXT]] - Shared runtime setup and hand-off helpers, MCP server, per-AI verification, launcher, protocol smoke tests, and lifecycle checks.
 - tests/ - `workflows/biblio-tools/tests/` [[workflows/biblio-tools/tests/CONTEXT]] - Unit tests for the server's pure helpers (the knowledge-graph query dispatcher's argv assembly and the `_run_json_script` failure paths).
 - requirements.txt - `workflows/biblio-tools/requirements.txt` [[workflows/biblio-tools/CONTEXT]] - MCP dependency included by the root project manifest.
+- archived/ - `workflows/biblio-tools/archived/` [[workflows/biblio-tools/archived/CONTEXT]] - Holds the gitignored CODEX-MCP-AVAILABILITY-PLAN.md investigation notes; local-only.
 
 ## Inputs
 None. The server reads the project structure and calls existing scripts.
@@ -55,3 +56,4 @@ Earlier history archived to LOG.md on 2026-06-17.
 - 2026-06-24 - Raised the verifier's project-venv MCP import probe timeout to prevent slow Windows process startup from producing a false MCP package warning.
 - 2026-06-24 - Fixed Codex project-config path handling: `.codex/config.toml` now launches Biblio Tools from the project root, and verify.py validates the same configured cwd.
 - 2026-06-25 - Added the Codex plugin-backed Biblio Tools route and updated setup verification to check the enabled `biblio_tools` registry entry.
+- 2026-07-10 - Task 3 hygiene sweep: moved the concluded CODEX-MCP-AVAILABILITY-PLAN.md investigation notes into a new `archived/` subdirectory (was loose in the workflow root), per the archive-plans-on-completion rule. No behaviour change.

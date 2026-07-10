@@ -1,6 +1,6 @@
 # Doc-Sync Guard
 
-**Last modified:** 2026-07-07
+**Last modified:** 2026-07-10
 
 ## Purpose
 Catches CONTEXT.md / LOG.md drift the moment a directory's real content changes but its own documentation is not updated in the same change. It is a deterministic, read-only checker in the guard family (same shape as `encoding-guard`, `personal-data-guard`, and `ai-style-guard` [[workflows/ai-style-guard/CONTEXT]]): a standalone CLI that the full audit and the close-out verifier consume. For every committable directory whose content changed (a file added, removed, or edited that is not the directory's own CONTEXT.md/LOG.md), it verifies that the directory's `CONTEXT.md` moved (a new Revision History entry, with `**Last modified:**` matching the newest entry date) and that its gitignored `LOG.md` gained an entry (verified by mtime, since a gitignored file cannot be content-diffed). It also covers the one mechanical parent-propagation case: a child directory added or removed without the parent CONTEXT.md moving. This makes the AGENTS.md "Work maintenance and close-out" rule reliable rather than discipline-dependent. There is deliberately no fix mode: the AI that made the change knows why each directory changed and writes proper entries from that knowledge, where a context-free script could only produce filler.
@@ -8,6 +8,7 @@ Catches CONTEXT.md / LOG.md drift the moment a directory's real content changes 
 ## Contents
 - scripts/ - `workflows/doc-sync-guard/scripts/` [[workflows/doc-sync-guard/scripts/CONTEXT]] - The `run.py` entry point (read-only `--check`, with `--json`, `--since`, `--base`, `--staged`, `--strict`) plus the pure `context_parse` and `logtime` helper modules.
 - tests/ - `workflows/doc-sync-guard/tests/` [[workflows/doc-sync-guard/tests/CONTEXT]] - Unit tests for the pure parsers and ownership logic, plus end-to-end integration tests against throwaway git repositories.
+- archived/ - `workflows/doc-sync-guard/archived/` [[workflows/doc-sync-guard/archived/CONTEXT]] - Holds the gitignored DOC-SYNC-GUARD-PLAN.md design document from the build; local-only.
 
 ## Inputs
 - The current change set, discovered via git: `git diff <base>` (base HEAD by default) plus untracked committable files, or `git diff --cached` in `--staged` mode. Git must be available; without it the guard reports a single WARN finding and scans nothing.
@@ -46,3 +47,4 @@ Catches CONTEXT.md / LOG.md drift the moment a directory's real content changes 
 - 2026-07-07 - Adversarial-review fixes: closed two more silent misses and one staged-mode bug found by probing. Revision History entry detection is now anchored flush-left (an indented dated sub-bullet is no longer counted); the archive-plus-append check now also requires appended entries to be dated no earlier than the newest retained entry (an old entry edited and moved down no longer counts); and `--staged` mode now reads the staged CONTEXT.md blob rather than the working tree, so a partially-staged file is judged as it will be committed. See the scripts CONTEXT for detail.
 - 2026-07-07 - Documented the working-tree-scope trade-off in Known Issues: a `--no-verify` commit bypasses the doc-sync gate and is not re-checked afterward (backstop deliberately not built), with `--base main` available for a manual whole-branch audit.
 - 2026-07-07 - Codex review fixes for the maintenance-reliability review: deleting a documented child directory no longer creates an impossible own-directory warning for the deleted child, and git scan failures now report as doc-sync WARN findings so consumers cannot treat an unrun scan as clean. Test coverage increased from 55 to 58.
+- 2026-07-10 - Task 3 hygiene sweep: archived the completed DOC-SYNC-GUARD-PLAN.md from the project root into a new `archived/` subdirectory, per the archive-plans-on-completion rule. No behaviour change.

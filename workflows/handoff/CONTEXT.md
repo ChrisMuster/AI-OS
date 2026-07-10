@@ -1,6 +1,6 @@
 # Handoff
 
-**Last modified:** 2026-07-07
+**Last modified:** 2026-07-10
 
 ## Purpose
 Clean session-to-session transitions for Book Dragon. When the user ends a working
@@ -24,6 +24,9 @@ child #4.
   - the handoff synthesis skill (the AI half: writes HANDOVER.md from the packet).
 - tests/ - `workflows/handoff/tests/` [[workflows/handoff/tests/CONTEXT]]
   - hermetic unit tests for the gather readers and the watermark logic.
+- archived/ - `workflows/handoff/archived/` [[workflows/handoff/archived/CONTEXT]]
+  - holds the gitignored HANDOFF-PLAN.md build plan; local-only (distinct from the
+    rolling root HANDOVER.md, which is never archived).
 
 ## Inputs
 - The working tree (git branch, status, diff), every project `LOG.md`, recent git
@@ -78,3 +81,6 @@ child #4.
   section (via the doc-sync guard, working-tree scope), so a handoff surfaces any
   directory whose CONTEXT.md / LOG.md is behind before HANDOVER.md is written
   (doc-sync-guard build part 5).
+- 2026-07-10 - Task 3 hygiene sweep: archived the completed HANDOFF-PLAN.md build
+  plan into a new `archived/` subdirectory, per the archive-plans-on-completion
+  rule. No behaviour change.
