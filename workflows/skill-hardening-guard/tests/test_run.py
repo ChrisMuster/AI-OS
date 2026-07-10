@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Hermetic tests for the skill-hardening guard.
 
-Unit tests for the pure parser/checker (check_skill, extract_hardening_section,
-_field_content) and integration tests for find_skill_files over a throwaway tree.
-No git, no network, no dependence on the real project's SKILL.md files.
+Unit tests for the pure parser/checker (check_skill, extract_section,
+_field_content) covering both required load-bearing SKILL.md sections - the
+`## Hardening` safety envelope (five fields) and the `## Verification` section -
+plus integration tests for find_skill_files over a throwaway tree. No git, no
+network, no dependence on the real project's SKILL.md files.
 
     python workflows/skill-hardening-guard/tests/test_run.py
 """
@@ -60,8 +62,10 @@ class CheckSkillTests(unittest.TestCase):
         self.assertEqual(run.check_skill("skills/x/SKILL.md", COMPLETE), [])
 
     def test_missing_section_flagged(self):
-        # A SKILL.md with no Hardening heading at all.
-        text = "# X\n\n## Purpose\nDo a thing.\n\n## Dependencies\nNone.\n"
+        # A SKILL.md with no Hardening heading at all (Verification present so
+        # this stays a single-concern test of the missing-Hardening case).
+        text = ("# X\n\n## Purpose\nDo a thing.\n\n"
+                "## Verification\nCheck it.\n\n## Dependencies\nNone.\n")
         findings = run.check_skill("skills/x/SKILL.md", text)
         self.assertEqual(len(findings), 1)
         self.assertIn("missing `## Hardening` section", findings[0][2])
@@ -96,7 +100,10 @@ class CheckSkillTests(unittest.TestCase):
         self.assertEqual(run.check_skill("skills/x/SKILL.md", COMPLETE), [])
 
     def test_all_fields_missing_reports_five(self):
-        text = "# X\n\n## Hardening\nSome prose but no fields.\n\n## Dependencies\nNone.\n"
+        # Verification present so the count isolates the five missing Hardening
+        # fields (a missing Verification section would otherwise add a sixth).
+        text = ("# X\n\n## Hardening\nSome prose but no fields.\n\n"
+                "## Verification\nCheck it.\n\n## Dependencies\nNone.\n")
         findings = run.check_skill("skills/x/SKILL.md", text)
         self.assertEqual(len(findings), 5)
 
@@ -109,6 +116,7 @@ class CheckSkillTests(unittest.TestCase):
             "- **Never:** Nothing.\n"
             "- **Approval-gated:** None.\n"
             "- **Write boundaries:** None.\n\n"
+            "## Verification\nCheck it.\n\n"
             "## Dependencies\n"
             "- **Verification / escape hatch:** this is in the wrong section.\n"
         )
@@ -152,6 +160,7 @@ class CheckSkillTests(unittest.TestCase):
             "- **Approval-gated** - None.\n"
             "- **Write boundaries** - None.\n"
             "- **Verification / escape hatch** - A reviewer checks.\n\n"
+            "## Verification\nCheck it.\n\n"
             "## Dependencies\nNone.\n"
         )
         self.assertEqual(run.check_skill("skills/x/SKILL.md", text), [])
@@ -172,6 +181,7 @@ class CheckSkillTests(unittest.TestCase):
             "```\n\n"
             "## Hardening\n"
             "- **Allowed tool intent:** Read only.\n\n"
+            "## Verification\nCheck it.\n\n"
             "## Dependencies\nNone.\n"
         )
         findings = run.check_skill("skills/x/SKILL.md", text)
@@ -194,6 +204,53 @@ class CheckSkillTests(unittest.TestCase):
             "- **Write boundaries:** `reviews/<label>.md` and nothing else.\n",
         )
         self.assertEqual(run.check_skill("skills/x/SKILL.md", text), [])
+
+
+class VerificationSectionTests(unittest.TestCase):
+    """The other required load-bearing section: every SKILL.md must carry a
+    non-empty ``## Verification``. COMPLETE has a valid one, so each case perturbs
+    only the Verification section and leaves the Hardening section intact - the
+    finding count therefore isolates the Verification behaviour."""
+
+    def test_complete_verification_passes(self):
+        # Baseline: COMPLETE carries both required sections.
+        self.assertEqual(run.check_skill("skills/x/SKILL.md", COMPLETE), [])
+
+    def test_missing_verification_section_flagged(self):
+        text = COMPLETE.replace("## Verification\nCheck the thing.\n\n", "")
+        findings = run.check_skill("skills/x/SKILL.md", text)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("missing `## Verification` section", findings[0][2])
+
+    def test_empty_verification_section_flagged(self):
+        # Heading present but no content before the next heading.
+        text = COMPLETE.replace(
+            "## Verification\nCheck the thing.\n", "## Verification\n"
+        )
+        findings = run.check_skill("skills/x/SKILL.md", text)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("`## Verification` section is empty", findings[0][2])
+
+    def test_placeholder_verification_section_flagged(self):
+        text = COMPLETE.replace("Check the thing.", "{{VERIFICATION}}")
+        findings = run.check_skill("skills/x/SKILL.md", text)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("unfilled template placeholder", findings[0][2])
+
+    def test_verification_heading_not_matched_by_hardening_field(self):
+        # The `Verification / escape hatch` Hardening FIELD must not satisfy the
+        # `## Verification` SECTION requirement: a skill with a complete Hardening
+        # block but no `## Verification` heading is still flagged.
+        text = COMPLETE.replace("## Verification\nCheck the thing.\n\n", "")
+        self.assertIn(
+            "Verification / escape hatch", text,
+            "fixture should still contain the Hardening field of that name",
+        )
+        findings = run.check_skill("skills/x/SKILL.md", text)
+        self.assertEqual(
+            [f[2] for f in findings],
+            ["skills/x/SKILL.md: missing `## Verification` section"],
+        )
 
 
 class FindSkillFilesTests(unittest.TestCase):
@@ -251,9 +308,17 @@ class FindSkillFilesTests(unittest.TestCase):
             self._write(root, "skills/good/SKILL.md", COMPLETE)
             self._write(root, "skills/bad/SKILL.md", "# Bad\n\n## Purpose\nx\n")
             findings = run.run_check(root)
-            # Only the bad skill (missing whole section) should be flagged.
-            self.assertEqual(len(findings), 1)
-            self.assertIn("skills/bad/SKILL.md", findings[0][2])
+            # The bad skill is missing BOTH required sections, so it earns
+            # exactly two findings and the complete skill contributes nothing.
+            # Asserting the exact messages pins down the count and the gaps, not
+            # just that "some finding" points at the bad file.
+            self.assertEqual(
+                sorted(f[2] for f in findings),
+                sorted([
+                    "skills/bad/SKILL.md: missing `## Hardening` section",
+                    "skills/bad/SKILL.md: missing `## Verification` section",
+                ]),
+            )
 
     def test_unreadable_file_is_degraded_not_warn(self):
         # A SKILL.md the guard cannot decode is a can't-run condition (DEGRADED,
@@ -287,6 +352,19 @@ class TemplateDriftTests(unittest.TestCase):
         self.assertIsNotNone(section, "template has no ## Hardening section")
         labels = re.findall(r"^-[ \t]*\*\*([^*]+?):\*\*", section, re.MULTILINE)
         self.assertEqual(labels, run.REQUIRED_FIELDS)
+
+    def test_template_has_verification_section(self):
+        # The `## Verification` section is the other required load-bearing section
+        # the guard enforces, so lock the template to carry it the way
+        # test_required_fields_match_template locks the Hardening field labels. The
+        # template body is the {{VERIFICATION}} placeholder, so this asserts the
+        # heading is present, not that it is filled in.
+        template = run.PROJECT_ROOT / "templates" / "SKILL.md.template"
+        text = template.read_text(encoding="utf-8")
+        self.assertIsNotNone(
+            run.extract_section(text, "Verification"),
+            "template has no ## Verification section",
+        )
 
 
 class SmokeTests(unittest.TestCase):

@@ -22,6 +22,13 @@ exactly as doc-sync validates that a Revision History entry exists without judgi
 its prose. There is deliberately no fix mode: the author knows the skill's real
 blast radius; a context-free script could only produce filler.
 
+It also enforces the other required load-bearing SKILL.md section: every SKILL.md
+must carry a non-empty `## Verification` section (the caller-facing statement of how
+to confirm the skill's output is correct, required by the schema and by the
+Verification-discipline rule). Both checks report under the one `skill-hardening`
+label, so the close-out gate and the audit hook pick up a missing Verification
+section with no extra wiring.
+
 Scope - every SKILL.md on disk under `skills/` and `workflows/`, excluding the
 guard's own directory (whose test fixtures carry deliberate gaps) and any
 `archived/` path (retired skills are not held to the live schema). This is a
@@ -30,7 +37,8 @@ git and reports the same result regardless of what changed.
 
 Reports (one advisory tier):
     WARN  a SKILL.md with a missing Hardening section, a missing required field,
-          an empty field, or a field left as an unfilled template placeholder
+          an empty field, or a field left as an unfilled template placeholder;
+          or a missing, empty, or unfilled-placeholder `## Verification` section
 
 Exit codes: 0 by default (advisory, matching the other content guards). With
 --strict, 1 when any WARN exists, so the close-out gate or a CI step can gate on
@@ -153,18 +161,28 @@ def strip_code_blocks(text):
     return re.sub(r"```.*?```", "", text, flags=re.DOTALL)
 
 
-def extract_hardening_section(text):
-    """Return the body of the ``## Hardening`` section, or None if absent.
+def extract_section(text, heading):
+    """Return the body of the ``## <heading>`` section, or None if absent.
 
     The body runs from the heading to the next ``## `` heading or end of file.
-    Callers pass text with fenced code blocks already stripped.
+    Callers pass text with fenced code blocks already stripped. The heading match
+    is exact (``## Verification`` does not match ``## Verification / escape hatch``),
+    so a Hardening field label can never be mistaken for a section heading.
     """
     match = re.search(
-        r"^## Hardening[ \t]*\n(.*?)(?=^## |\Z)",
+        r"^## " + re.escape(heading) + r"[ \t]*\n(.*?)(?=^## |\Z)",
         text,
         re.MULTILINE | re.DOTALL,
     )
     return match.group(1) if match else None
+
+
+def extract_hardening_section(text):
+    """Back-compat wrapper: the body of the ``## Hardening`` section, or None.
+
+    Kept as a named entry point for the template-drift guard and unit tests.
+    """
+    return extract_section(text, "Hardening")
 
 
 def _field_content(section, field):
@@ -196,31 +214,59 @@ def _field_content(section, field):
 
 
 def check_skill(rel, text):
-    """Return findings for one SKILL.md. Pure - no filesystem access."""
+    """Return findings for one SKILL.md. Pure - no filesystem access.
+
+    Enforces the two required load-bearing sections independently, so a skill
+    missing both is told about both: the ``## Hardening`` safety envelope (present
+    with all five fields non-empty) and the ``## Verification`` section (present
+    and non-empty). Both report under the one ``skill-hardening`` label.
+    """
     findings = []
-    section = extract_hardening_section(strip_code_blocks(text))
+    stripped = strip_code_blocks(text)
+
+    section = extract_section(stripped, "Hardening")
     if section is None:
         findings.append(
             ("WARN", LABEL, f"{rel}: missing `## Hardening` section")
         )
-        return findings
+    else:
+        for field in REQUIRED_FIELDS:
+            content = _field_content(section, field)
+            if content is None:
+                findings.append(
+                    ("WARN", LABEL,
+                     f"{rel}: Hardening section is missing the `{field}` field")
+                )
+            elif not content:
+                findings.append(
+                    ("WARN", LABEL,
+                     f"{rel}: Hardening field `{field}` is empty")
+                )
+            elif _is_unfilled(content):
+                findings.append(
+                    ("WARN", LABEL,
+                     f"{rel}: Hardening field `{field}` still contains an unfilled "
+                     f"template placeholder")
+                )
 
-    for field in REQUIRED_FIELDS:
-        content = _field_content(section, field)
-        if content is None:
+    # The Verification section is the other required load-bearing section (the
+    # caller-facing "how to confirm this worked"). It has no sub-fields, so the
+    # check is whole-section: present, non-empty, and not an unfilled placeholder.
+    verification = extract_section(stripped, "Verification")
+    if verification is None:
+        findings.append(
+            ("WARN", LABEL, f"{rel}: missing `## Verification` section")
+        )
+    else:
+        body = verification.strip()
+        if not body:
             findings.append(
-                ("WARN", LABEL,
-                 f"{rel}: Hardening section is missing the `{field}` field")
+                ("WARN", LABEL, f"{rel}: `## Verification` section is empty")
             )
-        elif not content:
+        elif _is_unfilled(body):
             findings.append(
                 ("WARN", LABEL,
-                 f"{rel}: Hardening field `{field}` is empty")
-            )
-        elif _is_unfilled(content):
-            findings.append(
-                ("WARN", LABEL,
-                 f"{rel}: Hardening field `{field}` still contains an unfilled "
+                 f"{rel}: `## Verification` section still contains an unfilled "
                  f"template placeholder")
             )
     return findings
@@ -256,7 +302,8 @@ def print_report(findings):
     print("# Skill-Hardening Guard Report\n")
     print(f"**Warnings:** {len(warns)}  **Degraded:** {len(degraded)}\n")
     if not findings:
-        print("Every SKILL.md carries a complete Hardening section.")
+        print("Every SKILL.md carries a complete Hardening section and a "
+              "Verification section.")
         return
     if warns:
         print("## WARN")
@@ -284,7 +331,7 @@ def findings_json(findings):
 def main():
     parser = argparse.ArgumentParser(
         description="Check that every SKILL.md carries a complete Hardening "
-                    "section (read-only)")
+                    "section and a non-empty Verification section (read-only)")
     parser.add_argument("--check", action="store_true",
                         help="Read-only scan (default; the only mode)")
     parser.add_argument("--json", action="store_true",

@@ -1,12 +1,12 @@
 # Skill-Hardening Guard - Scripts
 
-**Last modified:** 2026-07-09
+**Last modified:** 2026-07-10
 
 ## Purpose
-Holds the skill-hardening guard's single entry point. `run.py` is the read-only checker that verifies every SKILL.md carries a complete `## Hardening` section (all five required fields non-empty), reporting WARN findings the full audit and close-out verifier consume.
+Holds the skill-hardening guard's single entry point. `run.py` is the read-only checker that verifies every SKILL.md carries the two required load-bearing sections: a complete `## Hardening` section (all five required fields non-empty) and a non-empty `## Verification` section. It reports WARN findings the full audit and close-out verifier consume.
 
 ## Contents
-- run.py - `workflows/skill-hardening-guard/scripts/run.py` [[workflows/skill-hardening-guard/scripts/CONTEXT]] - The checker: skill discovery, code-fence stripping, Hardening-section parsing, per-field validation, and the `--check` / `--json` / `--strict` CLI. Pure functions (`find_skill_files`, `strip_code_blocks`, `extract_hardening_section`, `_field_content`, `_is_unfilled`, `check_skill`, `run_check`) keep it unit-testable without git or a subprocess.
+- run.py - `workflows/skill-hardening-guard/scripts/run.py` [[workflows/skill-hardening-guard/scripts/CONTEXT]] - The checker: skill discovery, code-fence stripping, required-section parsing, per-field validation, and the `--check` / `--json` / `--strict` CLI. Pure functions (`find_skill_files`, `strip_code_blocks`, `extract_section` (with an `extract_hardening_section` back-compat wrapper), `_field_content`, `_is_unfilled`, `check_skill`, `run_check`) keep it unit-testable without git or a subprocess.
 
 ## Inputs
 - The on-disk SKILL.md files under `skills/` [[skills/CONTEXT]] and `workflows/` [[workflows/CONTEXT]] (read as UTF-8). No git, no network, no config file.
@@ -18,12 +18,12 @@ Holds the skill-hardening guard's single entry point. `run.py` is the read-only 
 
 ## Steps
 1. Discover every SKILL.md under the skill roots via a pruned `os.walk` that drops the guard's own directory, any `archived/` path, hidden and `_`-prefixed (private/scratch) directories, and the standard non-project directories before descending into them.
-2. For each, strip fenced code blocks (so a documented example section is not mistaken for the real one), extract the `## Hardening` section, and validate that all five required fields (`Allowed tool intent`, `Never`, `Approval-gated`, `Write boundaries`, `Verification / escape hatch`) are present and non-empty (and not an unfilled placeholder). Field content may span wrapped continuation lines, and both `**Field:**` and `**Field** -` label forms are accepted.
+2. For each, strip fenced code blocks (so a documented example section is not mistaken for the real one), then check both required sections. Extract the `## Hardening` section and validate that all five required fields (`Allowed tool intent`, `Never`, `Approval-gated`, `Write boundaries`, `Verification / escape hatch`) are present and non-empty (and not an unfilled placeholder); field content may span wrapped continuation lines, and both `**Field:**` and `**Field** -` label forms are accepted. Separately, confirm a `## Verification` section exists and is non-empty (it has no sub-fields, so this is a whole-section presence check). The heading match is exact, so the `Verification / escape hatch` Hardening field never satisfies the `## Verification` section requirement.
 3. Emit a WARN for any gap, or a DEGRADED for a SKILL.md that could not be read; exit 1 under `--strict` only when a WARN exists.
 4. Append LOG.md only when run as a deliberate, logged workflow step (the read-only check and the audit-hook invocation do not log).
 
 ## Dependencies
-- `AGENTS.md` [[AGENTS]] (root) - Defines the SKILL.md schema and the required Hardening section (five fields) this script enforces.
+- `AGENTS.md` [[AGENTS]] (root) - Defines the SKILL.md schema and the required Hardening section (five fields) and Verification section this script enforces.
 - `templates/SKILL.md.template` [[templates/CONTEXT]] - The canonical Hardening field labels the checker keys on; if the template's labels change, `REQUIRED_FIELDS` here must change with them.
 - Python 3.9+ standard library only (no third-party packages, so no `.venv` bootstrap is needed).
 - Consumers: `workflows/audit/` [[workflows/audit/CONTEXT]] runs it as an advisory hook (WARN under a `skill-hardening` label, no change to the audit's exit code); `workflows/close-out/` [[workflows/close-out/CONTEXT]] turns any `skill-hardening` WARN into a hard fail (the deterministic gate).
@@ -37,3 +37,5 @@ Holds the skill-hardening guard's single entry point. `run.py` is the read-only 
 - 2026-07-09 - Initial creation. The read-only checker: skill discovery under skills/ and workflows/ (self/archived/template excluded), Hardening-section extraction, five-field presence/empty/placeholder validation, and the `--check` / `--json` / `--strict` CLI. Umbrella Bucket-1 child #6, Deliverable B.
 - 2026-07-09 - Reworked `find_skill_files` to prune skipped/hidden/archived/self directories with `os.walk` before descending, rather than `rglob` then filtering matches after the fact, so the walk no longer enters ignored or source-data subtrees (Codex review fix).
 - 2026-07-09 - Code-review fixes (child #6): `_field_content` now reads wrapped continuation lines (a multi-line field value is no longer judged empty) and accepts both `**Field:**` and `**Field** -` label forms; added `strip_code_blocks` so a fenced `## Hardening` example cannot be mistaken for the real section; a read/decode error is now DEGRADED (non-blocking) rather than WARN; `find_skill_files` also prunes `_`-prefixed dirs; and `_is_unfilled` flags a bare `<stub>` that is the whole field value while leaving an angle token embedded in real prose (e.g. `reviews/<label>.md`) alone.
+- 2026-07-10 - Extended to also enforce the `## Verification` section (umbrella Bucket-1 child #7): generalised `extract_hardening_section` into `extract_section(text, heading)` (with a back-compat wrapper), and `check_skill` now checks both required load-bearing sections independently - Hardening (five fields) and a non-empty `## Verification` - reporting both under the one `skill-hardening` label so the audit hook and close-out gate pick up a missing Verification section with no extra wiring. The exact-heading match prevents the `Verification / escape hatch` Hardening field from satisfying the section check.
+- 2026-07-10 - Codex review follow-up (child #7): brought the CLI wording in step with the behaviour - the module docstring's "Reports" block and the argparse `description` now name the `## Verification` section alongside Hardening (they previously described Hardening only). No logic change.
