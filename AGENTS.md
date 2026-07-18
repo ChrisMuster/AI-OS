@@ -1,6 +1,6 @@
 # Book Dragon - Agent Instructions
 
-**Last updated:** 2026-07-10
+**Last updated:** 2026-07-16
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -93,6 +93,8 @@ Verification is the single largest quality multiplier: give yourself a way to ob
 The mechanical backing for these rules is the close-out verifier [[workflows/close-out/CONTEXT]]: `python workflows/close-out/scripts/run.py` runs the structural audit, the link audit, and the workflow test suites as one pass/fail gate, so a "checks pass" claim is the script's exit code rather than an assertion. It defaults to the tests for the affected workflows; a full close-out runs `--scope all`. It is triggered by hand, never automatically, and it does not replace the judgement steps of close-out (plan complete, logs current, CONTEXT accurate).
 
 For work that touches multiple files or infrastructure and lifecycle code, also route the diff through a writer/reviewer pass before commit: one agent writes, then a second with fresh context (ideally a different model) reviews the diff for correctness, edge cases, security, and rule adherence, with explicit licence to fail the work. A reviewer with no stake in the writer's reasoning catches what the writer cannot see.
+
+**Assume a second AI will review your work, and build in that expectation from the start.** Treat every non-trivial task as work that will be handed to a different AI for adversarial review once you consider it done. This is a standing expectation, not an occasional one: whichever AI did the work, another will be assigned to try to break it, so plan, build, and document as though a fresh reviewer with no stake in your reasoning is about to check every claim. Do not name a specific model as "the reviewer"; the reviewing AI is whichever one is available at the time.
 
 ### Reading context before working
 
