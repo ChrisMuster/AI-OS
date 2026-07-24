@@ -1,0 +1,25 @@
+{
+  // Book Dragon's Python environment lives in .venv at the project root. Its
+  // site-packages hold ~3,100 .py files against ~160 of project code, which is
+  // enough for Pylance to warn that the workspace has a large number of source
+  // files. Excluding it from analysis keeps indexing to the project's own code.
+  //
+  // This does NOT break completions for installed packages: Pylance resolves
+  // those through the selected interpreter and indexes site-packages as library
+  // code. The exclude list only governs what is treated as first-party source.
+  "python.analysis.exclude": [
+    "**/.venv/**",
+    "**/__pycache__/**"
+  ],
+
+  // Keep the file watcher and find-in-files off the same directories. Separate
+  // from Pylance, but the same reasoning: they are not project source.
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/__pycache__/**": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/__pycache__": true
+  }
+}
