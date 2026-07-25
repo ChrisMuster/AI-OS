@@ -24,4 +24,4 @@ N/A. This is an archive container, not a workflow.
 - The archived plan describes the workflow as it was being designed; it contains planning-phase language by nature and is not maintained. Treat the tracked `workflows/handoff/CONTEXT.md` [[workflows/handoff/CONTEXT]] as the current truth; the document here is historical and local-only.
 
 ## Revision History
-- 2026-07-10 - Created during the Task 3 hygiene sweep. Archived HANDOFF-PLAN.md from `workflows/handoff/` after the handoff build was completed, committed (efe2a4c1e), and pushed, per the "archive plans on completion" rule.
+- 2026-07-10 - Created during the Task 3 hygiene sweep. Archived HANDOFF-PLAN.md from `workflows/handoff/` [[workflows/handoff/CONTEXT]] after the handoff build was completed, committed (efe2a4c1e), and pushed, per the "archive plans on completion" rule.

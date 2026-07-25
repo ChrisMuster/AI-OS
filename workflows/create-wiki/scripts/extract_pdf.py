@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Extract a project PDF into page-preserving temporary JSON."""
+"""Extract a project PDF into page-preserving temporary JSON.
+
+With --text, also writes a page-delimited plain-text rendering beside the
+JSON so the source can be read directly without a separate flatten step.
+"""
 
 import argparse
 import hashlib
@@ -54,6 +58,27 @@ def output_path(source: Path, digest: str) -> Path:
         for character in source.stem
     ).strip("-") or "document"
     return TEMP_ROOT / f"{safe_stem}-{digest[:16]}.json"
+
+
+def text_output_path(destination: Path) -> Path:
+    """Return the flattened-text path that sits beside the extraction JSON."""
+    return destination.with_suffix(".txt")
+
+
+def flatten_pages(payload: dict) -> str:
+    """Render the extracted pages as page-delimited plain text."""
+    blocks = []
+    for page in payload["pages"]:
+        text = page["text"].replace("\r\n", "\n").replace("\r", "\n")
+        blocks.append(f"===== PAGE {page['page']} =====\n{text}")
+    return "\n".join(blocks)
+
+
+def write_flattened_text(payload: dict, destination: Path) -> None:
+    """Write the page-delimited text as UTF-8 with LF line endings."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(flatten_pages(payload))
 
 
 def load_reader():
@@ -137,6 +162,14 @@ def main() -> None:
         help="Re-extract even when the cached temporary JSON already exists.",
     )
     parser.add_argument(
+        "--text",
+        action="store_true",
+        help=(
+            "Also write a page-delimited plain-text rendering beside the JSON, "
+            "for reading the source directly."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show the extraction target without reading or writing the PDF.",
@@ -146,17 +179,21 @@ def main() -> None:
     digest = source_digest(args.pdf)
     destination = output_path(args.pdf, digest)
 
+    text_destination = text_output_path(destination)
+
     if args.dry_run:
-        print(
-            json.dumps(
-                {
-                    "status": "dry-run",
-                    "source": args.pdf.relative_to(PROJECT_ROOT).as_posix(),
-                    "output": str(destination),
-                    "would_extract": not destination.exists() or args.force,
-                }
+        preview = {
+            "status": "dry-run",
+            "source": args.pdf.relative_to(PROJECT_ROOT).as_posix(),
+            "output": str(destination),
+            "would_extract": not destination.exists() or args.force,
+        }
+        if args.text:
+            preview["text_output"] = str(text_destination)
+            preview["would_write_text"] = (
+                not text_destination.exists() or args.force
             )
-        )
+        print(json.dumps(preview))
         return
 
     if destination.exists() and not args.force:
@@ -177,6 +214,15 @@ def main() -> None:
         "empty_or_near_empty_pages": payload["empty_or_near_empty_pages"],
         "extraction_error_count": len(payload["extraction_errors"]),
     }
+
+    if args.text:
+        if text_destination.exists() and not args.force:
+            summary["text_status"] = "cached"
+        else:
+            write_flattened_text(payload, text_destination)
+            summary["text_status"] = "written"
+        summary["text_output"] = str(text_destination)
+
     print(json.dumps(summary, ensure_ascii=False))
 
     if payload["ocr_required"]:

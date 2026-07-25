@@ -212,13 +212,25 @@ def check_global_task_coverage(
 # Script existence check
 # ---------------------------------------------------------------------------
 def extract_script_path(command: str) -> str | None:
-    """Extract the .py script path from a python invocation like 'python path/script.py args'."""
+    """Extract the .py script path from a python invocation like 'python path/script.py args'.
+
+    A leading $CLAUDE_PROJECT_DIR/ (or ${CLAUDE_PROJECT_DIR}/) is stripped so the
+    path resolves against the project root. Hook commands anchor the script to
+    that variable - Claude Code sets it in the hook environment - so the hook
+    launches run.py correctly regardless of the shell's working directory. The
+    variable is left out of the returned path; check_script_existence resolves
+    the remainder against PROJECT_ROOT.
+    """
     parts = command.strip().split()
     if not parts or parts[0] not in ('python', 'python3', 'py'):
         return None
     if len(parts) < 2:
         return None
     script_arg = parts[1].strip('"\'')
+    for prefix in ('$CLAUDE_PROJECT_DIR/', '${CLAUDE_PROJECT_DIR}/'):
+        if script_arg.startswith(prefix):
+            script_arg = script_arg[len(prefix):]
+            break
     if script_arg.endswith('.py'):
         return script_arg
     return None

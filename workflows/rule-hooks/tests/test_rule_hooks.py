@@ -14,8 +14,10 @@ Run: python workflows/rule-hooks/tests/test_rule_hooks.py
 """
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -418,6 +420,60 @@ class TestPrecommitDocSync(unittest.TestCase):
                                side_effect=OSError("boom")):
             # Must not raise; returns None (advisory skipped).
             self.assertIsNone(run_mod._precommit_doc_sync(PROJECT_ROOT))
+
+
+class TestCwdIndependence(unittest.TestCase):
+    """The hook launches run.py by absolute path - settings.json anchors it to
+    $CLAUDE_PROJECT_DIR - so evaluation must work regardless of the shell's
+    working directory. Guards the fix for the cwd-drift failure, where a
+    relative hook script path resolved to a nonexistent file once the Bash cwd
+    moved off the project root and blocked every subsequent tool call."""
+
+    def _run_from(self, cwd, event):
+        # Mirror the fixed hook: absolute path to run.py, CLAUDE_PROJECT_DIR set
+        # (as Claude Code sets it), and an arbitrary working directory.
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(PROJECT_ROOT)}
+        return subprocess.run(
+            [sys.executable, str(RUN_PY), "--ai", "claude"],
+            input=json.dumps(event), capture_output=True, encoding="utf-8",
+            cwd=cwd, env=env)
+
+    def test_blocks_from_foreign_cwd(self):
+        # A .env write must still block when run.py is launched from a directory
+        # that is not the project root - the real-world drift scenario.
+        with tempfile.TemporaryDirectory() as foreign:
+            r = self._run_from(foreign, {
+                "tool_name": "Write",
+                "tool_input": {"file_path": ".env", "content": "X=1"}})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("BLOCKED", r.stderr)
+
+    def test_allows_from_foreign_cwd(self):
+        with tempfile.TemporaryDirectory() as foreign:
+            r = self._run_from(foreign, {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "app.py", "content": "print(1)"}})
+        self.assertEqual(r.returncode, 0)
+
+    def test_settings_hooks_anchor_project_dir(self):
+        # The shipped hook commands must anchor run.py to $CLAUDE_PROJECT_DIR, or
+        # a drifted cwd resolves the relative script path to a nonexistent file
+        # and every tool call is blocked. Guards against a revert to a bare path.
+        settings = json.loads(
+            (PROJECT_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        commands = [
+            hook["command"]
+            for entries in settings.get("hooks", {}).values()
+            for entry in entries
+            for hook in entry.get("hooks", [])
+            if hook.get("type") == "command" and hook.get("command")
+        ]
+        run_py_cmds = [c for c in commands if "rule-hooks/scripts/run.py" in c]
+        self.assertTrue(run_py_cmds,
+                        "expected rule-hooks hook commands in settings.json")
+        for cmd in run_py_cmds:
+            self.assertIn("$CLAUDE_PROJECT_DIR", cmd,
+                          f"hook command not anchored to $CLAUDE_PROJECT_DIR: {cmd}")
 
 
 if __name__ == "__main__":

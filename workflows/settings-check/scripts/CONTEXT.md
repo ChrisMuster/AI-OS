@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-26
+**Last modified:** 2026-07-25
 
 ## Purpose
 Contains the health validator script for the settings-check workflow. Runs four checks: permission coverage across project and global settings, script existence, Python syntax, and absolute path audit on tracked files.
@@ -41,3 +41,4 @@ python workflows/settings-check/scripts/run.py [--verbose]
 - 2026-06-08 — Extended run.py with global settings coverage, script existence, Python syntax, and absolute path audit checks.
 - 2026-06-24 - Encoding hardening: pinned `encoding="utf-8"` on the `git ls-files` `subprocess.run` call so it decodes as UTF-8 rather than the Windows cp1252 default. No behavioural change.
 - 2026-06-26 - Absolute path audit refined: `ABS_PATH_PATTERNS` now capture the account-name segment, and new helpers `_is_placeholder_user` / `_line_has_real_abs_path` skip placeholder accounts (`Name`, `<username>`, `user`, ...) so documentation examples and test fixtures are no longer flagged; a real account name is still caught (and now also when it follows a placeholder on the same line). Added a local `PLACEHOLDER_USERS` set mirroring the personal-data-guard convention.
+- 2026-07-25 - `extract_script_path` now strips a leading `$CLAUDE_PROJECT_DIR/` or `${CLAUDE_PROJECT_DIR}/` before resolving, so the script-existence check passes for hook commands that anchor their script to that variable. The rule-hooks and session-search hook commands in `.claude/settings.json` were changed to `python "$CLAUDE_PROJECT_DIR/.../script.py" ...` so they launch regardless of the shell's working directory; without this change the checker resolved the literal `$CLAUDE_PROJECT_DIR` segment against the project root and reported a false "script not found". The allowlist glob and the absolute-path audit were unaffected (the variable is not a machine-specific path).
