@@ -1,0 +1,47 @@
+# Doc-Verify - Scripts
+
+**Last modified:** 2026-07-30
+
+## Purpose
+Holds the doc-verify entry point and its pure checker functions. `run.py` reads each target file as **bytes**, runs the binary hygiene check on them, then decodes, blanks fenced code blocks (preserving line numbers so every finding cites the real line), and runs four more checks over what remains: table uniformity, enumerated-sequence and numbered-heading contiguity, distance-reference candidates, and code-citation resolution. Reading binary first is load-bearing rather than tidy: a text-mode read on Windows translates CRLF to LF, so a decode-first implementation can never see a CR byte and reports a CRLF file as clean. Every parsing function is pure text-in/findings-out so the definitions can be unit-tested without a document or a repository.
+
+## Contents
+- run.py - `workflows/doc-verify/scripts/run.py` [[workflows/doc-verify/scripts/CONTEXT]] - The CLI (`--check`, `--strict`, `--json`, `--only`) and the checker functions: `physical_line_count`, `check_hygiene`, `blank_fenced_lines`, `cell_count`, `find_tables`, `check_tables`, `check_sequences`, `find_numbered_headings`, `check_heading_order`, `logical_lines`, `check_distance`, `find_citations`, `check_citations`, `check_document`, `check_file`.
+
+## Inputs
+- Markdown file paths from the command line (read as UTF-8).
+- For citation resolution only: the cited files, read from the project root in binary and decoded UTF-8 with replacement, so a non-UTF-8 target cannot crash a line count.
+
+## Outputs
+- A findings report on stdout (text or `--json`), with per-document counts of lines, tables, table rows, and citations.
+- Exit code 0, or 1 under `--strict` when a FAIL or WARN exists, or 1 whenever a target file cannot be read.
+- No files written.
+
+## Steps
+1. Read the target as bytes and run the hygiene check on them (CR, tabs, trailing whitespace, final newline, codepoints above U+007F), then decode as UTF-8.
+2. Blank fenced code blocks, keeping line count intact.
+3. Find tables by separator row (0 to 3 leading spaces, leading pipe), then check header and body cell counts against the separator's.
+4. Check enumerated tables and numbered headings for gaps, duplicates, and members out of ascending order, each scoped to the table or parent section that owns it.
+5. Join consecutive prose lines into logical lines, then report distance references and ordinals into growing lists as INFO candidates for human adjudication, each at the line it starts on.
+6. Resolve every `path:line` citation against the repository and flag path-less shorthand.
+7. Print the report, or the JSON payload, and set the exit code.
+8. Append LOG.md only when run as a deliberate, logged workflow step.
+
+## Dependencies
+- Python 3.9+ standard library only (`argparse`, `json`, `re`, `pathlib`, `sys`).
+- `workflows/doc-verify/tests/` [[workflows/doc-verify/tests/CONTEXT]] - the suite that proves each checker's definition before its result is believed. A change to any regex or threshold here without a corresponding control there is the failure mode this workflow exists to prevent.
+
+## Known Issues
+- `physical_line_count` counts newline-terminated lines plus a trailing unterminated remainder, so an empty file has none. It exists as one function because the script previously carried two disagreeing definitions of that quantity: the citation resolver counted correctly while the stats block used `len(text.split("\n"))`, which is one higher on any file ending with a newline. Since the hygiene check requires a final newline, the wrong spelling was wrong for every valid document.
+- The distance-reference word lists (cardinals, ordinals, structural units, directions) are hardcoded rather than configurable. A new phrasing is a code edit plus a test, deliberately, so the definition and its controls move together.
+- Citation matching requires a recognised file extension, listed in `_CITED_EXTS`. A cited file with an unlisted extension is silently not checked; extending the list is a one-line change plus a test.
+- `check_document` calls `find_citations` a second time to build the stats block, so a very large document parses citations twice. Measured in milliseconds on a 7,500-line file and left simple on purpose.
+
+## Revision History
+- 2026-07-30 - Initial creation: `run.py` with the four text checks, pure parser functions, and the CLI.
+- 2026-07-30 - Added `find_numbered_headings` and `check_heading_order` to the `sequences` check, covering gaps, duplicates, and descending order in dotted section numbers, scoped per parent.
+- 2026-07-30 - Added `check_hygiene` (bytes in, findings out) and made `check_file` read binary before decoding, so CR bytes survive to be counted. `check_document` gained `data=` and reports a FAIL rather than skipping silently when hygiene is selected without bytes.
+- 2026-07-30 - `check_citations` now caches a resolution *status* (`ok` / `missing` / `unreadable`) beside the line count instead of collapsing both failure modes to `None`, which had produced two findings for an unreadable file and reported the second as "does not exist" for every later citation of it. `check_hygiene`'s trailing-whitespace test strips one trailing CR before judging, so a CRLF file is not reported once per line on top of its CR finding, and the blank-line guard that also hid whitespace-only lines is gone.
+- 2026-07-30 - `check_sequences` now checks that enumerated table rows ascend, comparing `(number, suffix)` so 13 sorts before 13a. Gaps and duplicates could not see this class at all: 1, 3, 2 has neither, so a row placed out of position passed every check. Both order checks carry the value just read rather than a high-water mark, so one badly misplaced member reports once instead of blaming every member after it; `check_heading_order` was changed to match, because two recovery rules inside one check would make "out of order" mean two things. Added `physical_line_count` and routed both the stats block and the citation resolver through it, replacing the `len(text.split("\n"))` spelling that reported every newline-terminated document as one line longer than it is.
+- 2026-07-30 - Added `logical_lines` and routed `check_distance` through it. The distance patterns cap the span between the count and the direction with a character class that excludes the newline as well as the full stop; the full stop is the rule and the newline was an accident of the spelling, and in a hard-wrapped document that accident decided the result. A reference broken by a wrap was invisible while the identical phrase on one line was reported, so the reported count measured the formatting rather than the content. Consecutive prose lines are now joined before matching, with each character's origin tracked so a candidate is reported at the line it starts on; a blank line ends a run and a table row is a run of its own, so a match can never span two cells. The sentence boundary and the span cap, which are what actually stop an unrelated direction word being swept in, are unchanged. Measured on the document this workflow was built for: 12 candidates had been hidden by wrapping alone, three of them live defects that every sweep since the workflow was built had reported clear.
+- 2026-07-30 - `check_file` now runs byte-level hygiene before decoding and only then runs the selected text checks, so an invalid UTF-8 target reaches `check_hygiene`'s named `not valid UTF-8` finding through the normal CLI path instead of being reported only as a generic read failure.
