@@ -13,6 +13,7 @@ nothing here runs a real destructive command.
 Run: python workflows/rule-hooks/tests/test_rule_hooks.py
 """
 
+import ast
 import json
 import os
 import subprocess
@@ -25,6 +26,7 @@ from unittest import mock
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 PROJECT_ROOT = SCRIPTS.parent.parent.parent
 RUN_PY = SCRIPTS / "run.py"
+CODEX_CONFIG = PROJECT_ROOT / ".codex" / "config.toml"
 sys.path.insert(0, str(SCRIPTS))
 
 # A guard-detectable email, assembled at runtime so the literal address never
@@ -474,6 +476,53 @@ class TestCwdIndependence(unittest.TestCase):
         for cmd in run_py_cmds:
             self.assertIn("$CLAUDE_PROJECT_DIR", cmd,
                           f"hook command not anchored to $CLAUDE_PROJECT_DIR: {cmd}")
+
+    def _codex_commands(self, *needles):
+        commands = []
+        for line in CODEX_CONFIG.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if (
+                not stripped.startswith("command = ")
+                or not all(needle in stripped for needle in needles)
+            ):
+                continue
+            commands.append(ast.literal_eval(stripped.split("=", 1)[1].strip()))
+        return commands
+
+    def test_codex_hooks_anchor_git_root(self):
+        # Codex has no project-root environment variable, so the shipped hook
+        # commands resolve the repo with git before launching the real scripts.
+        commands = (
+            self._codex_commands("rule-hooks", "run.py")
+            + self._codex_commands("session-search", "index.py")
+        )
+        self.assertEqual(len(commands), 4)
+        for cmd in commands:
+            self.assertNotIn("python workflows/", cmd,
+                             f"hook command reverted to cwd-relative path: {cmd}")
+            self.assertIn("git", cmd)
+            self.assertIn("rev-parse", cmd)
+            self.assertIn("--show-toplevel", cmd)
+
+    def test_codex_hook_blocks_from_project_subdir(self):
+        commands = [
+            c for c in self._codex_commands("rule-hooks", "run.py")
+            if "--ai" in c and "codex" in c
+        ]
+        self.assertTrue(commands, "expected Codex PreToolUse rule-hook command")
+        event = {
+            "tool_name": "shell",
+            "tool_input": {"command": "rm -rf x"},
+            "cwd": str(PROJECT_ROOT / "workflows"),
+        }
+        r = subprocess.run(
+            commands[0], input=json.dumps(event), capture_output=True,
+            encoding="utf-8", shell=True, cwd=PROJECT_ROOT / "workflows")
+        self.assertEqual(r.returncode, 0)
+        payload = json.loads(r.stdout)
+        hook_output = payload["hookSpecificOutput"]
+        self.assertEqual(hook_output["permissionDecision"], "deny")
+        self.assertIn("BLOCKED", hook_output["permissionDecisionReason"])
 
 
 if __name__ == "__main__":

@@ -20,24 +20,25 @@ tool_timeout_sec = 300
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
 type = "command"
-command = "python workflows/session-search/scripts/index.py"
+command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'session-search', 'scripts', 'index.py')])\""
 
 # Deterministic rule-enforcement hooks (workflows/rule-hooks). PreToolUse fires
 # before a shell or file-edit tool runs; run.py evaluates the rules and denies
-# on a violation. SessionStart re-injects the permission-gate reminder.
+# on a violation. SessionStart re-injects the permission-gate reminder. Commands
+# resolve the git root before execing scripts so hook launch survives cwd drift.
 [[hooks.PreToolUse]]
 matcher = "Bash"
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "python workflows/rule-hooks/scripts/run.py --ai codex"
+command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'rule-hooks', 'scripts', 'run.py'), '--ai', 'codex'])\""
 
 [[hooks.PreToolUse]]
 matcher = "apply_patch"
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "python workflows/rule-hooks/scripts/run.py --ai codex"
+command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'rule-hooks', 'scripts', 'run.py'), '--ai', 'codex'])\""
 
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "python workflows/rule-hooks/scripts/run.py --reinject"
+command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'rule-hooks', 'scripts', 'run.py'), '--reinject'])\""

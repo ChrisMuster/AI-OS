@@ -1,12 +1,12 @@
 # Codex
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-07-31
 
 ## Purpose
 Stores project-scoped Codex configuration for Book Dragon.
 
 ## Contents
-- config.toml - `.codex/config.toml` [[.codex/CONTEXT]] - Stores Codex lifecycle hook configuration and keeps the older raw Biblio MCP registration disabled.
+- config.toml - `.codex/config.toml` [[.codex/CONTEXT]] - Stores Codex lifecycle hook configuration with git-root-anchored script launchers and keeps the older raw Biblio MCP registration disabled.
 - plugins/ - `.codex/plugins/` [[.codex/plugins/CONTEXT]] - Project-local Codex marketplace and Biblio Tools plugin wrapper.
 
 ## Inputs
@@ -16,6 +16,7 @@ Stores project-scoped Codex configuration for Book Dragon.
 ## Outputs
 - Codex sessions use the lifecycle hook settings.
 - New Codex sessions can discover the plugin-backed `biblio_tools` MCP server once the project-local plugin is installed.
+- The Stop hook refreshes session-search indexing through a git-root-anchored launcher.
 
 ## Steps
 N/A. This is a configuration directory, not a workflow.
@@ -38,3 +39,4 @@ N/A. This is a configuration directory, not a workflow.
 - 2026-06-24 - Added explicit Biblio Tools MCP startup and tool timeouts for slower Windows process startup and longer project workflow calls.
 - 2026-06-24 - Updated the Codex Stop hook to run the session-search indexer so completed Codex sessions become searchable immediately.
 - 2026-06-25 - Added the project-local Biblio Tools Codex plugin route and disabled the older raw Codex MCP server entry.
+- 2026-07-31 - Anchored Codex lifecycle hook launch commands to the git project root so PreToolUse, SessionStart, and Stop hooks keep working after a session cwd drift.
