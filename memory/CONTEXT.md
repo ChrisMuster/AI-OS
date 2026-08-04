@@ -1,6 +1,6 @@
 # Memory
 
-**Last modified:** 2026-06-09
+**Last modified:** 2026-08-04
 
 ## Purpose
 
@@ -11,6 +11,7 @@ Project-scoped persistent memory for Book Dragon. All memory lives here rather t
 - `CONTEXT.md` — this file. Structural documentation; tracked in git.
 - `MEMORY.md` — the index. Loaded at every session start. One line per memory, under 150 chars each. Not tracked in git; created on first-run.
 - `LOG.md` — append-only journal of all memory changes. Not tracked in git; created on first-run.
+- `backlog-backups/` - `memory/backlog-backups/` [[memory/backlog-backups/CONTEXT]] - Local exact-copy snapshots of `memory/backlog.md`, maintained by backlog-guard. Not tracked in git.
 - Individual memory files, named `<type>_<short-name>.md`. Types: `feedback`, `reference`, `user`, `project`. Not tracked in git.
 
 ## Inputs
@@ -38,3 +39,4 @@ N/A. This is a store directory, not a workflow. See the "Project memory" rule in
 - 2026-06-05 — Initial creation. Project-scoped memory system established per user specification.
 - 2026-06-05 — Stripped to standard CONTEXT.md schema. Procedural content consolidated into project memory rule. Privacy and git rules added.
 - 2026-06-09 — Dependencies and references updated from CLAUDE.md to AGENTS.md. Removed stale Known Issue about AI-agnostic transition (now complete).
+- 2026-08-04 - Added backlog-backups/ as the local snapshot store used by the new backlog-guard workflow, and documented it in Contents.

@@ -1,6 +1,6 @@
 # Book Dragon - Agent Instructions
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-08-04
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -110,9 +110,10 @@ Routine maintenance belongs to the work itself and must not be deferred until Gi
 2. Record completed changes in the appropriate `LOG.md` as soon as that piece of work is finished. Workflow runs must still be logged at both ends as required by the LOG.md rules.
 3. After finishing a task that changed one or more `CONTEXT.md` files, run the targeted metadata check for the affected directories: `python workflows/audit/scripts/run.py --context <directory> [<directory> ...]`. Fix any findings immediately. This is a focused maintenance check, not full close-out.
 4. **Backlog check** - at the natural end of a task (whether or not close-out follows), perform these sub-steps:
-   a. Read `memory/backlog.md`. If the task just completed matches an Active item, move it to the current-year completed archive (`memory/backlog-completed-YYYY.md`, per `memory/backlog-completed.md`) with today's date.
-   b. Review the session for any work that was discussed and deferred - ideas raised but not acted on, future projects mentioned, things explicitly set aside. Flag each one to the user: "Should I add [X] to the backlog?" Add only what the user confirms.
-   c. Present the remaining Active items as a short numbered list so the user can see what's available next.
+   a. Before editing `memory/backlog.md`, run `python workflows/backlog-guard/scripts/run.py --snapshot --reason "<why>"` whenever the workflow exists. After editing it, run `python workflows/backlog-guard/scripts/run.py --check`; if the edit deliberately moved items to the completed archive or Build Only When Needed, pass only the explicit count-drop allowance for the number deliberately moved. If the check reports a missing section, unexpected count drop, or oversized backlog item, stop and recover from `memory/backlog-backups/` before continuing.
+   b. Read `memory/backlog.md`. If the task just completed matches an Active item, move it to the current-year completed archive (`memory/backlog-completed-YYYY.md`, per `memory/backlog-completed.md`) with today's date.
+   c. Review the session for any work that was discussed and deferred - ideas raised but not acted on, future projects mentioned, things explicitly set aside. Flag each one to the user: "Should I add [X] to the backlog?" Add only what the user confirms.
+   d. Present the remaining Active items as a short numbered list so the user can see what's available next.
 5. Do not run the full link, audit, lint, test, or close-out suite merely because an individual file edit or task step has finished.
 
 The `doc-sync-guard` workflow [[workflows/doc-sync-guard/CONTEXT]] makes items 1-2 a checked obligation rather than discipline alone: it flags a changed directory whose `CONTEXT.md` / `LOG.md` did not move in the same change, at the three definitive stopping points where they are meant to be current: **commit** (a warn-not-block advisory in the git pre-commit hook), **handoff to another AI for review** (surfaced in the handoff gather packet), and **close-out** (a hard fail in the close-out verifier). Run it directly with `python workflows/doc-sync-guard/scripts/run.py --check`. **Immediate-fix rule:** if a doc-sync warning appears at a commit, or the AI otherwise sees one in tool output, update the flagged `CONTEXT.md` / `LOG.md` files before any other action, then commit them (a small follow-up commit is fine); this binds the AI the same way the permission gate does.
