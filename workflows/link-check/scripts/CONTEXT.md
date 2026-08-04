@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-03
+**Last modified:** 2026-08-04
 
 ## Purpose
 Contains the run.py script for the link-check workflow. Handles three operations: inserting Obsidian wiki links into CONTEXT.md files (--link), auditing those links for dead targets (--audit), and auto-fixing dead links where possible (--fix).
@@ -40,3 +40,4 @@ python workflows/link-check/scripts/run.py [--link|--audit|--fix] [--dry-run] [-
 
 ## Revision History
 - 2026-06-03 — Initial creation.
+- 2026-08-04 - Line endings pinned on all four text writes in `run.py` (the LOG.md append, the two CONTEXT.md rewrites in the `--link` and retarget paths, and the `--save` report), which now pass `newline="\n"` explicitly. This directory rewrites other directories' CONTEXT.md files wholesale, so a translated newline here converted a whole file to CRLF on every link pass. Part of the project-wide pass closing this defect class at all 48 write sites.

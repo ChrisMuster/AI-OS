@@ -640,10 +640,8 @@ class ReaderData:
     def _save_cache(self, cache_file):
         """Write post metadata to a JSON cache file."""
         try:
-            cache_file.write_text(
-                json.dumps({"posts": self.post_meta}, ensure_ascii=False),
-                encoding="utf-8", newline="\n",
-            )
+            with cache_file.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(json.dumps({"posts": self.post_meta}, ensure_ascii=False))
         except OSError:
             pass
 
@@ -1244,8 +1242,8 @@ def _write_pid(port, subreddit, token):
         ),
         "token": token,
     }
-    PID_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8",
-                        newline="\n")
+    with PID_FILE.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(payload, indent=2))
     atexit.register(_remove_pid)
 
 

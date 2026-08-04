@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Unit tests for the handoff deterministic gather readers."""
+import json
 import sqlite3
 import sys
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+TESTS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = TESTS_DIR.parent.parent.parent
+sys.path.insert(0, str(TESTS_DIR.parent / "scripts"))
 
 import gather  # noqa: E402
 
@@ -38,13 +42,12 @@ class TestLogTail(unittest.TestCase):
 
     def test_tail_and_entry_filter(self):
         (self.root / "sub").mkdir()
-        (self.root / "sub" / "LOG.md").write_text(
-            "# Log\n"
-            "[2026-07-01T10:00:00+01:00] | one\n"
-            "not an entry line\n"
-            "[2026-07-02T10:00:00+01:00] | two\n"
-            "[2026-07-03T10:00:00+01:00] | three\n",
-            encoding="utf-8")
+        (self.root / "sub" / "LOG.md").write_bytes(
+            b"# Log\n"
+            b"[2026-07-01T10:00:00+01:00] | one\n"
+            b"not an entry line\n"
+            b"[2026-07-02T10:00:00+01:00] | two\n"
+            b"[2026-07-03T10:00:00+01:00] | three\n")
         tail = gather.log_tail(self.root, "sub", 2)
         self.assertEqual(len(tail), 2)
         self.assertIn("two", tail[0])
@@ -54,8 +57,8 @@ class TestLogTail(unittest.TestCase):
         self.assertEqual(gather.log_tail(self.root, "nope", 5), [])
 
     def test_root_dir(self):
-        (self.root / "LOG.md").write_text(
-            "[2026-07-03T10:00:00+01:00] | root entry\n", encoding="utf-8")
+        (self.root / "LOG.md").write_bytes(
+            b"[2026-07-03T10:00:00+01:00] | root entry\n")
         tail = gather.log_tail(self.root, ".", 5)
         self.assertEqual(len(tail), 1)
         self.assertIn("root entry", tail[0])
@@ -71,15 +74,14 @@ class TestActiveBacklog(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_only_active_top_level_titles(self):
-        (self.root / "memory" / "backlog.md").write_text(
-            "# Task Backlog\n\n"
-            "## Active\n\n"
-            "- **First item** - description one.\n"
-            "  - **Nested child** - should be ignored.\n"
-            "- **Second item** - description two.\n\n"
-            "## Completed\n\n"
-            "- **Done item** - should be ignored.\n",
-            encoding="utf-8")
+        (self.root / "memory" / "backlog.md").write_bytes(
+            b"# Task Backlog\n\n"
+            b"## Active\n\n"
+            b"- **First item** - description one.\n"
+            b"  - **Nested child** - should be ignored.\n"
+            b"- **Second item** - description two.\n\n"
+            b"## Completed\n\n"
+            b"- **Done item** - should be ignored.\n")
         titles = gather.active_backlog(self.root)
         self.assertEqual(titles, ["First item", "Second item"])
 
@@ -131,6 +133,49 @@ class TestGitDegrade(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             # No doc-sync-guard under this root -> reader degrades to [].
             self.assertEqual(gather.doc_sync_drift(tmp), [])
+
+
+class TestDocSyncDriftSeverity(unittest.TestCase):
+    """The packet's drift section carries drift and nothing else.
+
+    `doc_sync_drift` keeps `severity == "WARN"`, so the guard's DEGRADED
+    findings (a component of the guard that could not run, today its
+    output-inventory probe on an interpreter without PyYAML) never reach
+    HANDOVER.md. That boundary is documented in this workflow's CONTEXT.md and
+    in `workflows/handoff/scripts/CONTEXT.md`; these tests keep the
+    documentation and the code from drifting apart.
+
+    The guard is stubbed at the subprocess boundary rather than run for real, so
+    the assertion is about the filter and not about the state of the working
+    tree at test time.
+    """
+
+    DEGRADE = {"severity": "DEGRADED", "label": "doc-sync",
+               "message": "output inventory unavailable - no doc-sync "
+                          "exceptions applied"}
+    DRIFT = {"severity": "WARN", "label": "doc-sync",
+             "message": "workflows/foo: CONTEXT.md not updated for changes in "
+                        "this directory"}
+
+    def _drift_for(self, findings):
+        payload = json.dumps({"findings": list(findings)})
+        completed = mock.Mock(returncode=0, stdout=payload, stderr="")
+        with mock.patch.object(gather.subprocess, "run",
+                               return_value=completed):
+            return gather.doc_sync_drift(PROJECT_ROOT)
+
+    def test_drift_alone_is_returned(self):
+        # Positive control: the stub payload does reach the reader, so an empty
+        # result below is the filter's doing rather than a broken harness.
+        self.assertEqual(self._drift_for([self.DRIFT]),
+                         [self.DRIFT["message"]])
+
+    def test_a_degrade_alone_returns_nothing(self):
+        self.assertEqual(self._drift_for([self.DEGRADE]), [])
+
+    def test_a_degrade_never_masks_real_drift(self):
+        self.assertEqual(self._drift_for([self.DEGRADE, self.DRIFT]),
+                         [self.DRIFT["message"]])
 
 
 class TestBuildPacket(unittest.TestCase):

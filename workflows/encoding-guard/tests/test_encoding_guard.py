@@ -5,6 +5,7 @@ Fixtures are built with chr()/bytes so this test file stays pure ASCII and is
 never itself flagged by the guard.
 """
 
+import os
 import sys
 import tempfile
 import unittest
@@ -118,6 +119,131 @@ class TestHasEncodingProblem(unittest.TestCase):
         self.assertTrue(run._has_encoding_problem(b"bad " + bytes([0x97])))
 
 
+class TestCrlfDetection(unittest.TestCase):
+    """The line-ending half of the AGENTS.md 'UTF-8 with LF' rule.
+
+    Until 2026-08-04 the LF half was enforced only inside --fix, so --check (and
+    therefore the audit hook that shells out to it) reported a project full of
+    CRLF files as clean. These are written against the stated rule rather than
+    against the implementation.
+    """
+
+    def test_positive_control_crlf_is_reported(self):
+        self.assertIn("crlf", run.scan_text("line one\r\nline two\n"))
+
+    def test_positive_control_lone_cr_is_reported(self):
+        # Old-Mac endings are equally off-policy and equally invisible before.
+        self.assertIn("crlf", run.scan_text("line one\rline two"))
+
+    def test_negative_control_lf_only_is_clean(self):
+        self.assertEqual(run.scan_text("line one\nline two\n"), [])
+
+    def test_crlf_is_independent_of_the_other_codes(self):
+        codes = run.scan_text(BOM + "a " + run._mojibake(EM_DASH) + " b\r\n")
+        self.assertEqual(sorted(codes), ["bom", "crlf", "mojibake"])
+
+    def test_classify_file_reports_crlf_as_warn(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "note.md"
+            target.write_bytes(b"first\r\nsecond\r\n")
+            findings = run.classify_file(root, target)
+            self.assertEqual(
+                [(sev, lab) for sev, lab, _ in findings], [("WARN", "encoding")]
+            )
+            self.assertIn("CR line endings", findings[0][2])
+
+    def test_check_reads_bytes_so_text_mode_cannot_hide_the_defect(self):
+        # The trap this check is most likely to be broken by later: reading the
+        # file in text mode strips \r on the way in, so a CRLF file would decode
+        # to LF and scan clean. Assert the real pipeline sees the CR.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.md").write_bytes(b"x\r\ny\r\n")
+            findings = run.run_check(root)
+            self.assertTrue(any("CR line endings" in m for _, _, m in findings))
+
+
+class TestProblemCodes(unittest.TestCase):
+    def test_crlf_only_file_reports_just_crlf(self):
+        self.assertEqual(run.problem_codes(b"a\r\nb\r\n"), ["crlf"])
+
+    def test_invalid_utf8_short_circuits(self):
+        self.assertEqual(run.problem_codes(b"bad " + bytes([0x97])), ["invalid-utf8"])
+
+    def test_clean_file_has_no_codes(self):
+        self.assertEqual(run.problem_codes(b"clean\n"), [])
+
+
+class TestNewlineOnlyRepair(unittest.TestCase):
+    """A CRLF file is not a corrupted file, and must not be repaired like one."""
+
+    def test_repair_newlines_leaves_legitimate_punctuation_alone(self):
+        raw = ("title " + EM_DASH + " subtitle\r\n").encode("utf-8")
+        self.assertEqual(
+            run.repair_newlines(raw).decode("utf-8"),
+            "title " + EM_DASH + " subtitle\n",
+        )
+
+    def test_repair_newlines_is_idempotent(self):
+        once = run.repair_newlines(b"a\r\nb\rc\n")
+        self.assertEqual(run.repair_newlines(once), once)
+
+    def test_fix_uses_the_narrow_path_for_a_crlf_only_file(self):
+        # The regression that matters: routing a CRLF-only file through
+        # repair_bytes would silently fold its em dash to a hyphen, rewriting
+        # content in a pass the user asked for line endings.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "doc.md"
+            target.write_bytes(("keep " + EM_DASH + " me\r\n").encode("utf-8"))
+            changed, skipped = run.run_fix(root, dry_run=False)
+            self.assertEqual(changed, ["doc.md"])
+            self.assertEqual(skipped, [])
+            self.assertEqual(
+                target.read_bytes().decode("utf-8"), "keep " + EM_DASH + " me\n"
+            )
+
+    def test_fix_still_fully_repairs_a_genuinely_corrupted_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "doc.md"
+            target.write_bytes(("x " + run._mojibake(EM_DASH) + " y\r\n").encode("utf-8"))
+            run.run_fix(root, dry_run=False)
+            self.assertEqual(target.read_bytes(), b"x - y\n")
+
+    def test_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "doc.md"
+            target.write_bytes(b"a\r\nb\r\n")
+            changed, _ = run.run_fix(root, dry_run=True)
+            self.assertEqual(changed, ["doc.md"])
+            self.assertEqual(target.read_bytes(), b"a\r\nb\r\n")
+
+    def test_preserve_mtime_keeps_the_original_timestamp(self):
+        # doc-sync-guard reads LOG.md mtime as evidence a directory logged its
+        # change. A bulk newline pass without this flag would touch every
+        # LOG.md and make every directory look freshly logged.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "LOG.md"
+            target.write_bytes(b"entry\r\n")
+            os.utime(target, (1_000_000_000, 1_000_000_000))
+            run.run_fix(root, dry_run=False, preserve_mtime=True)
+            self.assertEqual(target.read_bytes(), b"entry\n")
+            self.assertEqual(int(target.stat().st_mtime), 1_000_000_000)
+
+    def test_without_the_flag_mtime_moves(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "LOG.md"
+            target.write_bytes(b"entry\r\n")
+            os.utime(target, (1_000_000_000, 1_000_000_000))
+            run.run_fix(root, dry_run=False)
+            self.assertNotEqual(int(target.stat().st_mtime), 1_000_000_000)
+
+
 class TestCodeCheck(unittest.TestCase):
     def test_flags_text_mode_subprocess_without_encoding(self):
         src = "import subprocess\nsubprocess.run(cmd, capture_output=True, text=True)\n"
@@ -151,6 +277,86 @@ class TestCodeCheck(unittest.TestCase):
         self.assertEqual(run.check_python_code("x.py", src), [])
 
 
+class TestNewlineCheck(unittest.TestCase):
+    """The newline clause of the project's text I/O rule.
+
+    Until 2026-08-04 ``check_python_code`` returned as soon as it saw
+    ``encoding=``, so a text write that pinned the encoding and omitted
+    ``newline=`` was reported clean - the exact class the rule exists to stop,
+    because Windows text mode turns every LF into CRLF on the way out. The
+    positive controls below are constructed from the rule in AGENTS.md rather
+    than copied out of the tree, so they prove the check reads the right
+    definition and not merely that it fires on something.
+    """
+
+    def _newline_findings(self, src):
+        return [f for f in run.check_python_code("x.py", src) if "newline=" in f[2]]
+
+    # -- positive controls: each MUST be caught --------------------------------
+    def test_flags_write_text_with_encoding_but_no_newline(self):
+        src = 'Path("x.md").write_text("a\\n", encoding="utf-8")\n'
+        findings = self._newline_findings(src)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0][0], "WARN")
+
+    def test_flags_open_write_modes_with_encoding_but_no_newline(self):
+        for mode in ("'w'", "'a'", "'x'", "'w+'", "'r+'"):
+            with self.subTest(mode=mode):
+                src = f'open(path, {mode}, encoding="utf-8")\n'
+                self.assertEqual(len(self._newline_findings(src)), 1)
+
+    def test_flags_open_with_mode_keyword(self):
+        src = 'open(path, mode="w", encoding="utf-8")\n'
+        self.assertEqual(len(self._newline_findings(src)), 1)
+
+    # -- negative controls: none may fire --------------------------------------
+    def test_compliant_writes_are_clean(self):
+        for src in (
+            'Path("x.md").write_text("a", encoding="utf-8", newline="\\n")\n',
+            'open(path, "w", encoding="utf-8", newline="\\n")\n',
+            # csv wants newline="" - the rule is that newline is passed
+            # explicitly, not that it always carries one particular value.
+            'open(path, "w", encoding="utf-8", newline="")\n',
+        ):
+            with self.subTest(src=src):
+                self.assertEqual(self._newline_findings(src), [])
+
+    def test_reads_and_binary_writes_are_clean(self):
+        for src in (
+            'Path("x.md").read_text(encoding="utf-8")\n',
+            'open(path, encoding="utf-8")\n',
+            'open(path, "r", encoding="utf-8")\n',
+            'open(path, "rb")\n',
+            'open(path, "wb")\n',
+            'subprocess.run(cmd, text=True, encoding="utf-8")\n',
+        ):
+            with self.subTest(src=src):
+                self.assertEqual(self._newline_findings(src), [])
+
+    def test_computed_mode_is_not_guessed_at(self):
+        # An unreadable mode must stay silent rather than guess and misreport.
+        src = 'open(path, mode, encoding="utf-8")\n'
+        self.assertEqual(self._newline_findings(src), [])
+
+    def test_prose_is_not_flagged(self):
+        src = '"""write_text(p, encoding="utf-8") in a docstring"""\nx = 1\n'
+        self.assertEqual(self._newline_findings(src), [])
+
+    # -- the two clauses are independent ---------------------------------------
+    def test_missing_both_reports_both_clauses(self):
+        """A write missing encoding AND newline reports one finding per clause.
+
+        This is the structural guarantee: neither check may swallow the other,
+        which is how the newline clause went unenforced in the first place.
+        """
+        findings = run.check_python_code("x.py", 'Path("x.md").write_text("a")\n')
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(
+            {"encoding=" in f[2] and "newline=" not in f[2] for f in findings},
+            {True, False},
+        )
+
+
 class TestHiddenDirWalk(unittest.TestCase):
     """The blind-spot fix: iter_text_files must descend into authored hidden
     config dirs (.codex, .github, ...) while still pruning system/tooling
@@ -163,24 +369,24 @@ class TestHiddenDirWalk(unittest.TestCase):
             # Authored hidden config dir with a tracked text file, plus a
             # nested hidden dir under it (mirrors .codex/plugins/.agents/).
             (root / ".codex").mkdir()
-            (root / ".codex" / "config.toml").write_text("ok\n", encoding="utf-8")
+            (root / ".codex" / "config.toml").write_bytes(b"ok\n")
             (root / ".codex" / ".sub").mkdir()
-            (root / ".codex" / ".sub" / "CONTEXT.md").write_text("ok\n", encoding="utf-8")
+            (root / ".codex" / ".sub" / "CONTEXT.md").write_bytes(b"ok\n")
 
             # A normal tracked file at the root.
-            (root / "README.md").write_text("ok\n", encoding="utf-8")
+            (root / "README.md").write_bytes(b"ok\n")
 
             # A system dot-dir holding a text-extension file: must stay skipped.
             (root / ".venv").mkdir()
-            (root / ".venv" / "pyvenv.cfg").write_text("x\n", encoding="utf-8")
+            (root / ".venv" / "pyvenv.cfg").write_bytes(b"x\n")
 
             # A newly denylisted IDE dir: must stay skipped.
             (root / ".vscode").mkdir()
-            (root / ".vscode" / "settings.json").write_text("{}\n", encoding="utf-8")
+            (root / ".vscode" / "settings.json").write_bytes(b"{}\n")
 
             # A verbatim-data exemption: must stay pruned.
             (root / "raw").mkdir()
-            (root / "raw" / "scraped.md").write_text("x\n", encoding="utf-8")
+            (root / "raw" / "scraped.md").write_bytes(b"x\n")
 
             found = {p.relative_to(root).as_posix() for p in run.iter_text_files(root)}
 

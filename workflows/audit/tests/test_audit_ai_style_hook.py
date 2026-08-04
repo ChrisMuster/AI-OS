@@ -57,11 +57,16 @@ class TestAiStyleFindings(unittest.TestCase):
         ]}
         for finding in run.ai_style_findings(payload):
             self.assertEqual(len(finding), 3)
+            # DEGRADED is deliberately absent: this merge helper filters the
+            # payload to WARN only, so it cannot emit one. DEGRADED belongs to
+            # the run_ai_style_check wrapper (the check-did-not-run path),
+            # which is asserted in TestRunAiStyleCheckGracefulSkip below.
+            # Widening this tuple would stop it pinning the helper's contract.
             self.assertIn(finding[0], ("FAIL", "WARN", "INFO"))
 
 
 class TestRunAiStyleCheckGracefulSkip(unittest.TestCase):
-    def test_missing_cli_returns_single_info(self):
+    def test_missing_cli_returns_degraded(self):
         bogus = Path("workflows/ai-style-guard/scripts/NOPE_does_not_exist.py")
         with mock.patch.object(run, "AI_STYLE_RUN_PY", bogus):
             findings = run.run_ai_style_check()
@@ -71,7 +76,7 @@ class TestRunAiStyleCheckGracefulSkip(unittest.TestCase):
         self.assertEqual(label, "ai-style")
         self.assertIn("did not run", message)
 
-    def test_unparseable_output_returns_single_info(self):
+    def test_unparseable_output_returns_degraded(self):
         fake = mock.Mock(stdout="not json", stderr="boom", returncode=1)
         with mock.patch.object(run.subprocess, "run", return_value=fake):
             findings = run.run_ai_style_check()
@@ -79,7 +84,7 @@ class TestRunAiStyleCheckGracefulSkip(unittest.TestCase):
         self.assertEqual(findings[0][0], "DEGRADED")
         self.assertIn("did not run", findings[0][2])
 
-    def test_subprocess_exception_returns_single_info(self):
+    def test_subprocess_exception_returns_degraded(self):
         with mock.patch.object(run.subprocess, "run", side_effect=OSError("nope")):
             findings = run.run_ai_style_check()
         self.assertEqual(len(findings), 1)

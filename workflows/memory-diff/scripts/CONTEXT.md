@@ -1,6 +1,6 @@
 # Memory Diff - Scripts
 
-**Last modified:** 2026-07-06
+**Last modified:** 2026-08-04
 
 ## Purpose
 The deterministic (~90%) half of the memory-diff workflow: read `memory/LOG.md`,
@@ -78,3 +78,4 @@ stays read-only.
   empty/whitespace `seen_line`, e.g. `{}`, now raises `StateError("malformed")`),
   so a present-but-invalid state file is a loud anomaly rather than a silent
   first-run re-baseline. Only a missing file is a first run.
+- 2026-08-04 - Line endings pinned on both text writes (the LOG.md append in `run.py` and the `state.json` save in `state.py`), which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.

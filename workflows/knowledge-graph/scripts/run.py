@@ -77,7 +77,8 @@ def _append_log(path: Path, ts: str, action: str, note: str) -> None:
             return
         content = path.read_text(encoding="utf-8")
         sep = "" if content.endswith("\n") else "\n"
-        path.write_text(content + sep + entry, encoding="utf-8")
+        with path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content + sep + entry)
     except OSError:
         pass
 
@@ -255,7 +256,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     if args.save:
         try:
-            REPORT_PATH.write_text(report + "\n", encoding="utf-8")
+            with REPORT_PATH.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(report + "\n")
             if not args.json:
                 print(f"\nReport saved to {common.rel(REPORT_PATH)}")
         except OSError as exc:

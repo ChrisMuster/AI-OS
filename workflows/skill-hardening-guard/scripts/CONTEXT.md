@@ -1,6 +1,6 @@
 # Skill-Hardening Guard - Scripts
 
-**Last modified:** 2026-07-10
+**Last modified:** 2026-08-04
 
 ## Purpose
 Holds the skill-hardening guard's single entry point. `run.py` is the read-only checker that verifies every SKILL.md carries the two required load-bearing sections: a complete `## Hardening` section (all five required fields non-empty) and a non-empty `## Verification` section. It reports WARN findings the full audit and close-out verifier consume.
@@ -26,7 +26,7 @@ Holds the skill-hardening guard's single entry point. `run.py` is the read-only 
 - `AGENTS.md` [[AGENTS]] (root) - Defines the SKILL.md schema and the required Hardening section (five fields) and Verification section this script enforces.
 - `templates/SKILL.md.template` [[templates/CONTEXT]] - The canonical Hardening field labels the checker keys on; if the template's labels change, `REQUIRED_FIELDS` here must change with them.
 - Python 3.9+ standard library only (no third-party packages, so no `.venv` bootstrap is needed).
-- Consumers: `workflows/audit/` [[workflows/audit/CONTEXT]] runs it as an advisory hook (WARN under a `skill-hardening` label, no change to the audit's exit code); `workflows/close-out/` [[workflows/close-out/CONTEXT]] turns any `skill-hardening` WARN into a hard fail (the deterministic gate).
+- Consumers: `workflows/audit/` [[workflows/audit/CONTEXT]] runs it as an advisory hook (WARN gaps and DEGRADED unreadable-file findings under a `skill-hardening` label, no change to the audit's exit code); `workflows/close-out/` [[workflows/close-out/CONTEXT]] hard-fails on a `skill-hardening` WARN only, with DEGRADED surfaced but non-blocking (the deterministic gate).
 
 ## Known Issues
 - The check validates presence and shape only, never the truth of the declared policy: a Hardening section with all five fields filled in but describing the wrong blast radius still passes. Correctness of the declaration stays a human/AI review judgement, exactly as doc-sync validates that a Revision History entry exists without judging its prose.
@@ -39,3 +39,5 @@ Holds the skill-hardening guard's single entry point. `run.py` is the read-only 
 - 2026-07-09 - Code-review fixes (child #6): `_field_content` now reads wrapped continuation lines (a multi-line field value is no longer judged empty) and accepts both `**Field:**` and `**Field** -` label forms; added `strip_code_blocks` so a fenced `## Hardening` example cannot be mistaken for the real section; a read/decode error is now DEGRADED (non-blocking) rather than WARN; `find_skill_files` also prunes `_`-prefixed dirs; and `_is_unfilled` flags a bare `<stub>` that is the whole field value while leaving an angle token embedded in real prose (e.g. `reviews/<label>.md`) alone.
 - 2026-07-10 - Extended to also enforce the `## Verification` section (umbrella Bucket-1 child #7): generalised `extract_hardening_section` into `extract_section(text, heading)` (with a back-compat wrapper), and `check_skill` now checks both required load-bearing sections independently - Hardening (five fields) and a non-empty `## Verification` - reporting both under the one `skill-hardening` label so the audit hook and close-out gate pick up a missing Verification section with no extra wiring. The exact-heading match prevents the `Verification / escape hatch` Hardening field from satisfying the section check.
 - 2026-07-10 - Codex review follow-up (child #7): brought the CLI wording in step with the behaviour - the module docstring's "Reports" block and the argparse `description` now name the `## Verification` section alongside Hardening (they previously described Hardening only). No logic change.
+- 2026-08-04 - Docstring correction in `run.py`, no behaviour change: the module docstring's opening line said every SKILL.md must carry a complete Hardening section, omitting the Verification section the same docstring documents ten lines further down and the code enforces. The opening line now names both.
+- 2026-08-04 - Consumers entry corrected to match the severity contract Outputs above already stated: it described the audit hook as merging WARN findings and close-out as hard-failing on any WARN, with no mention of the DEGRADED unreadable-file finding that is surfaced but never blocks. One file, two sections, two different answers about the same severities. No code or test change.

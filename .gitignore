@@ -123,6 +123,13 @@ workflows/rule-hooks/fire-log.jsonl
 **/PROPOSAL.md
 **/ROADMAP.md
 
+# Doc-sync-guard certification output and ignored-content state
+workflows/doc-sync-guard/certification/*
+!workflows/doc-sync-guard/certification/.gitkeep
+!workflows/doc-sync-guard/certification/CONTEXT.md
+workflows/doc-sync-guard/ignored-state.jsonl*
+workflows/ai-style-guard/tell-baseline.jsonl*
+
 # OS
 .DS_Store
 Thumbs.db

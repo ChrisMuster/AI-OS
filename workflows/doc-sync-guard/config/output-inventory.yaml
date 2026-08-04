@@ -1,0 +1,520 @@
+# Doc-sync-guard classified output inventory
+#
+# One row per non-comment .gitignore line, plus the guard output destinations
+# named before they exist. Read only through
+# workflows/doc-sync-guard/scripts/inventory.py - nothing else parses this file.
+#
+# Row fields:
+#   path        the .gitignore line, or a concrete path. Always quoted: an
+#               unquoted scalar beginning with * is a YAML alias.
+#   assertion   assert-ignored | assert-tracked | out-of-scope
+#   example     a path the pattern must match, present only on a patterned
+#               assertion row. A concrete row has no example key at all.
+#   seed        whether the path seeds the unregistered-output check.
+#   doc_sync    the documentation answer for the path, on assertion rows only:
+#               E10 | E11 | E12 | E13 | checked | not-policed.
+#   reason      why the path is out of scope, on out-of-scope rows only.
+#   provenance  which derivation named the row: sweep-1 (every non-comment
+#               .gitignore line), sweep-2 (write-mode operations across every
+#               scripts/ directory), sweep-3 (every workflow CONTEXT.md Outputs
+#               section), or decision-13a (named by the plan; no sweep could
+#               have found it, because the path does not exist yet).
+#
+# Signature exclusion is not stored here. It is derived by the loader from the
+# assertion, the doc-sync answer, and the basename.
+#
+# Examples below a personal container (wikis/, conversations/, journal/entries/,
+# reviews/, user-inputs/, memory/) are synthetic. Never write a real item name
+# into this file: it is committed, and a real name here is the leak the
+# personal-data guard exists to stop.
+
+version: 1
+
+rows:
+
+  # -----------------------------------------------------------------------
+  # Assert ignored: paths that must be ignored before anything writes them.
+  # -----------------------------------------------------------------------
+  - path: ".env"
+    assertion: assert-ignored
+    seed: false
+    doc_sync: not-policed
+    provenance: ["sweep-1"]
+
+  - path: "**/LOG.md"
+    assertion: assert-ignored
+    example: "workflows/audit/LOG.md"
+    seed: true
+    doc_sync: checked
+    provenance: ["sweep-1", "sweep-2"]
+
+  - path: "workflows/web-research/outputs/*.json"
+    assertion: assert-ignored
+    example: "workflows/web-research/outputs/research-example-2026-01-01.json"
+    seed: true
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/web-research/outputs/*.md"
+    assertion: assert-ignored
+    example: "workflows/web-research/outputs/report-example-2026-01-01.md"
+    seed: false
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-3"]
+
+  - path: "workflows/audit/last-report.md"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/link-check/last-report.md"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/close-out/last-result.json"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/weather/locations.json"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2"]
+
+  - path: "memory/*"
+    assertion: assert-ignored
+    example: "memory/example.md"
+    seed: false
+    doc_sync: E10
+    provenance: ["sweep-1"]
+
+  - path: "user-inputs/*"
+    assertion: assert-ignored
+    example: "user-inputs/example-cv.pdf"
+    seed: false
+    doc_sync: E10
+    provenance: ["sweep-1"]
+
+  - path: "USER.md"
+    assertion: assert-ignored
+    seed: false
+    doc_sync: not-policed
+    provenance: ["sweep-1"]
+
+  - path: "/LOG.md"
+    assertion: assert-ignored
+    example: "LOG.md"
+    seed: true
+    doc_sync: checked
+    provenance: ["sweep-1", "sweep-2"]
+
+  - path: "wikis/*"
+    assertion: assert-ignored
+    example: "wikis/example/wiki/index.md"
+    seed: true
+    doc_sync: checked
+    provenance: ["sweep-1", "sweep-2"]
+
+  - path: "journal/entries/*"
+    assertion: assert-ignored
+    example: "journal/entries/example.md"
+    seed: true
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "conversations/*"
+    assertion: assert-ignored
+    example: "conversations/example.md"
+    seed: false
+    doc_sync: E10
+    provenance: ["sweep-1"]
+
+  - path: "reviews/*"
+    assertion: assert-ignored
+    example: "reviews/example-review.md"
+    seed: false
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-3"]
+
+  - path: "workflows/session-search/data/*"
+    assertion: assert-ignored
+    example: "workflows/session-search/data/example.db"
+    seed: true
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/knowledge-graph/index/*"
+    assertion: assert-ignored
+    example: "workflows/knowledge-graph/index/nodes.json"
+    seed: true
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/knowledge-graph/last-report.md"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2"]
+
+  - path: "workflows/personal-data-guard/config/denylist.txt"
+    assertion: assert-ignored
+    seed: false
+    doc_sync: E13
+    provenance: ["sweep-1", "sweep-3"]
+
+  - path: "workflows/check-for-updates/.last-run"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/weekly-review/.last-run"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/weekly-review/state.json"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/handoff/state.json"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/memory-diff/state.json"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/reddit-collector/collections/"
+    assertion: assert-ignored
+    example: "workflows/reddit-collector/collections/example/posts/example.md"
+    seed: true
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/reddit-collector/config/feeds.json"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E13
+    provenance: ["sweep-1", "sweep-2"]
+
+  - path: "workflows/reddit-collector/state/"
+    assertion: assert-ignored
+    example: "workflows/reddit-collector/state/example.json"
+    seed: true
+    doc_sync: E10
+    provenance: ["sweep-1", "sweep-2"]
+
+  - path: "workflows/reddit-collector/Read *.bat"
+    assertion: assert-ignored
+    example: "workflows/reddit-collector/Read example.bat"
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1", "sweep-3"]
+
+  - path: "workflows/reddit-collector/Stop *.bat"
+    assertion: assert-ignored
+    example: "workflows/reddit-collector/Stop example.bat"
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1", "sweep-3"]
+
+  - path: "workflows/reddit-collector/.reader_server.pid"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "workflows/rule-hooks/fire-log.jsonl"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["sweep-1", "sweep-2", "sweep-3"]
+
+  - path: "**/*-PLAN.md"
+    assertion: assert-ignored
+    example: "workflows/example/EXAMPLE-PLAN.md"
+    seed: false
+    doc_sync: E12
+    provenance: ["sweep-1"]
+
+  - path: "**/HANDOVER.md"
+    assertion: assert-ignored
+    example: "HANDOVER.md"
+    seed: false
+    doc_sync: E12
+    provenance: ["sweep-1", "sweep-3"]
+
+  - path: "**/PROPOSAL.md"
+    assertion: assert-ignored
+    example: "workflows/example/PROPOSAL.md"
+    seed: false
+    doc_sync: E12
+    provenance: ["sweep-1"]
+
+  - path: "**/ROADMAP.md"
+    assertion: assert-ignored
+    example: "workflows/example/ROADMAP.md"
+    seed: false
+    doc_sync: E12
+    provenance: ["sweep-1"]
+
+  # -----------------------------------------------------------------------
+  # Assert tracked: negation lines. Each must stay visible to git.
+  # -----------------------------------------------------------------------
+  - path: "workflows/web-research/outputs/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "memory/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "memory/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "user-inputs/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "user-inputs/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "wikis/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "journal/entries/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "journal/entries/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "conversations/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "conversations/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "reviews/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "reviews/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "workflows/session-search/data/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "workflows/session-search/data/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "workflows/knowledge-graph/index/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  - path: "workflows/knowledge-graph/index/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["sweep-1"]
+
+  # -----------------------------------------------------------------------
+  # Out of scope: not this project's content, so no documentation answer.
+  # Visible to seed_paths() only.
+  # -----------------------------------------------------------------------
+  - path: "__pycache__/"
+    assertion: out-of-scope
+    reason: interpreter bytecode cache
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: "*.py[cod]"
+    assertion: out-of-scope
+    reason: interpreter bytecode files
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: "*.egg-info/"
+    assertion: out-of-scope
+    reason: package metadata
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: "dist/"
+    assertion: out-of-scope
+    reason: packaging output
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: "build/"
+    assertion: out-of-scope
+    reason: packaging build tree
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: ".venv/"
+    assertion: out-of-scope
+    reason: project setup deliberately creates it, but it holds third-party package content
+    seed: true
+    provenance: ["sweep-1"]
+
+  - path: "venv/"
+    assertion: out-of-scope
+    reason: alternate virtualenv location
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: ".DS_Store"
+    assertion: out-of-scope
+    reason: macOS metadata
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: "Thumbs.db"
+    assertion: out-of-scope
+    reason: Windows metadata
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: ".obsidian/"
+    assertion: out-of-scope
+    reason: Obsidian application config
+    seed: false
+    provenance: ["sweep-1"]
+
+  - path: ".claude/settings.local.json"
+    assertion: out-of-scope
+    reason: Claude Code local override
+    seed: false
+    provenance: ["sweep-1"]
+
+  # -----------------------------------------------------------------------
+  # Guard output destinations named before they exist. No sweep could have
+  # found these, so their provenance is the decision that named them.
+  # -----------------------------------------------------------------------
+  - path: "workflows/doc-sync-guard/certification/*"
+    assertion: assert-ignored
+    example: "workflows/doc-sync-guard/certification/example-certification.json"
+    seed: true
+    doc_sync: E10
+    provenance: ["decision-13a"]
+
+  # Patterned, not concrete, and deliberately so. The name is synthetic (the
+  # real one is <run-id>-certification.md), and seed_paths() returns row paths
+  # rather than examples, so a concrete row here would hand the unregistered-
+  # output check a destination no writer will ever write. As a pattern the
+  # synthetic name stays in `example`, which no seed view reads, and the row
+  # still asserts that a .md report shape is ignored. Same shape as the .json
+  # row above.
+  - path: "workflows/doc-sync-guard/certification/*.md"
+    assertion: assert-ignored
+    example: "workflows/doc-sync-guard/certification/example-certification.md"
+    seed: true
+    doc_sync: E10
+    provenance: ["decision-13a"]
+
+  - path: "workflows/doc-sync-guard/certification/acceptances.jsonl"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E10
+    provenance: ["decision-13a"]
+
+  - path: "workflows/doc-sync-guard/certification/adjudications.jsonl"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E10
+    provenance: ["decision-13a"]
+
+  - path: "workflows/doc-sync-guard/ignored-state.jsonl"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["decision-13a"]
+
+  - path: "workflows/doc-sync-guard/ignored-state.jsonl.tmp"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["decision-13a"]
+
+  - path: "workflows/ai-style-guard/tell-baseline.jsonl"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["decision-13a"]
+
+  - path: "workflows/ai-style-guard/tell-baseline.jsonl.tmp"
+    assertion: assert-ignored
+    seed: true
+    doc_sync: E11
+    provenance: ["decision-13a"]
+
+  - path: "workflows/doc-sync-guard/certification/.gitkeep"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["decision-13a"]
+
+  - path: "workflows/doc-sync-guard/certification/CONTEXT.md"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["decision-13a"]
+
+  - path: "workflows/doc-sync-guard/config/output-inventory.yaml"
+    assertion: assert-tracked
+    seed: false
+    doc_sync: checked
+    provenance: ["decision-13a"]

@@ -1,6 +1,6 @@
 # Weekly Review - Tests
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-08-04
 
 ## Purpose
 Hermetic unit tests for the weekly-review gather logic. They cover the parts
@@ -43,6 +43,10 @@ None. Pass/fail via exit code.
   glue over the tested modules.
 
 ## Revision History
+- 2026-07-02 - Initial creation. 28 tests across state and gather.
 - 2026-07-03 - Added three tests for the run-day rule (excluded from inclusion,
   deferred when empty, caught by the next review). 28 -> 31.
-- 2026-07-02 - Initial creation. 28 tests across state and gather.
+- 2026-08-04 - Maintenance, no test change: the two entries above were reordered
+  into the newest-at-bottom order the schema requires, after the audit's new
+  Revision History ordering check flagged them. Recorded rather than left silent,
+  for the reason given in the parent workflow's matching entry.

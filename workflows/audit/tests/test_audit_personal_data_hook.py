@@ -52,11 +52,16 @@ class TestPersonalFindings(unittest.TestCase):
         ]}
         for finding in run.personal_findings(payload):
             self.assertEqual(len(finding), 3)
+            # DEGRADED is deliberately absent: this merge helper filters the
+            # payload to WARN/FAIL, so it cannot emit one. DEGRADED belongs to
+            # the run_personal_data_check wrapper (the check-did-not-run path),
+            # which is asserted in TestRunPersonalDataCheckGracefulSkip below.
+            # Widening this tuple would stop it pinning the helper's contract.
             self.assertIn(finding[0], ("FAIL", "WARN", "INFO"))
 
 
 class TestRunPersonalDataCheckGracefulSkip(unittest.TestCase):
-    def test_missing_cli_returns_single_info(self):
+    def test_missing_cli_returns_degraded(self):
         bogus = Path("workflows/personal-data-guard/scripts/NOPE_does_not_exist.py")
         with mock.patch.object(run, "PERSONAL_RUN_PY", bogus):
             findings = run.run_personal_data_check()
@@ -66,7 +71,7 @@ class TestRunPersonalDataCheckGracefulSkip(unittest.TestCase):
         self.assertEqual(label, "personal-data")
         self.assertIn("did not run", message)
 
-    def test_unparseable_output_returns_single_info(self):
+    def test_unparseable_output_returns_degraded(self):
         fake = mock.Mock(stdout="not json", stderr="boom", returncode=1)
         with mock.patch.object(run.subprocess, "run", return_value=fake):
             findings = run.run_personal_data_check()
@@ -74,7 +79,7 @@ class TestRunPersonalDataCheckGracefulSkip(unittest.TestCase):
         self.assertEqual(findings[0][0], "DEGRADED")
         self.assertIn("did not run", findings[0][2])
 
-    def test_subprocess_exception_returns_single_info(self):
+    def test_subprocess_exception_returns_degraded(self):
         with mock.patch.object(run.subprocess, "run", side_effect=OSError("nope")):
             findings = run.run_personal_data_check()
         self.assertEqual(len(findings), 1)

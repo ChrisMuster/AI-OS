@@ -54,7 +54,7 @@ def now_ts() -> str:
 
 def append_log(path: Path, ts: str, action: str, note: str) -> None:
     entry = f"[{ts}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with path.open("a", encoding="utf-8") as f:
+    with path.open("a", encoding="utf-8", newline="\n") as f:
         f.write(entry)
 
 
@@ -165,7 +165,8 @@ def main() -> None:
         print(f"[DRY RUN] would create journal/entries/{month_str}.md")
     else:
         content = generate_month_content(year, month)
-        file_path.write_text(content, encoding="utf-8")
+        with file_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
         print(f"[+] journal/entries/{month_str}.md created")
         append_log(
             JOURNAL_LOG,

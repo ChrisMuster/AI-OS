@@ -14,6 +14,7 @@ Run: python workflows/rule-hooks/tests/test_rule_hooks.py
 """
 
 import ast
+import io
 import json
 import os
 import subprocess
@@ -422,6 +423,51 @@ class TestPrecommitDocSync(unittest.TestCase):
                                side_effect=OSError("boom")):
             # Must not raise; returns None (advisory skipped).
             self.assertIsNone(run_mod._precommit_doc_sync(PROJECT_ROOT))
+
+
+class TestPrecommitDocSyncSeverity(unittest.TestCase):
+    """The advisory reports drift and nothing else.
+
+    `_precommit_doc_sync` keeps the guard's WARN findings only, so a DEGRADED
+    finding - a component of the guard that could not run, today its
+    output-inventory probe on an interpreter without PyYAML - prints nothing at
+    commit time. That is deliberate while nothing consumes the inventory
+    answers, and it is the documented boundary in this workflow's CONTEXT.md and
+    in `workflows/rule-hooks/git-hooks/CONTEXT.md`. Without these tests the
+    documentation rests on a code read, so a later change to the filter would
+    silently contradict three CONTEXT.md files.
+    """
+
+    DEGRADE = ("DEGRADED", "doc-sync",
+               "output inventory unavailable - no doc-sync exceptions applied")
+    DRIFT = ("WARN", "doc-sync",
+             "workflows/foo: CONTEXT.md not updated for changes in this directory")
+
+    def _advisory_for(self, findings):
+        """Run the advisory against a stubbed guard; return what it printed."""
+        guard = mock.Mock()
+        guard.run_check.return_value = list(findings)
+        err = io.StringIO()
+        with mock.patch.object(run_mod, "_load_guard", return_value=guard), \
+             mock.patch.object(run_mod.sys, "stderr", err):
+            run_mod._precommit_doc_sync(PROJECT_ROOT)
+        return err.getvalue()
+
+    def test_drift_alone_prints_the_advisory(self):
+        # The positive control: the stub reaches the real formatter, so a silent
+        # run below means the filter dropped the finding, not that the harness
+        # never printed anything.
+        text = self._advisory_for([self.DRIFT])
+        self.assertIn("workflows/foo: CONTEXT.md not updated", text)
+        self.assertIn("ACTION REQUIRED", text)
+
+    def test_a_degrade_alone_prints_nothing(self):
+        self.assertEqual(self._advisory_for([self.DEGRADE]), "")
+
+    def test_a_degrade_never_masks_real_drift(self):
+        text = self._advisory_for([self.DEGRADE, self.DRIFT])
+        self.assertIn("workflows/foo: CONTEXT.md not updated", text)
+        self.assertNotIn("output inventory unavailable", text)
 
 
 class TestCwdIndependence(unittest.TestCase):

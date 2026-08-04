@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-08-04
 
 ## Purpose
 Python modules for the Reddit collector workflow. The main entry point is `run.py`; supporting modules handle API communication, state tracking, post formatting, historical backfill, series detection, and the local reader server.
@@ -47,3 +47,4 @@ Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-19 — Manual curation overrides: `_apply_overrides()` reads `collections/<sub>/_overrides.json` and forces canonical series membership/order where auto-detection cannot, removing claimed/excluded posts from auto series; `build_series_indexes` writes related-works frontmatter and shows Prologue/Epilogue/Interlude in the # column; `build_reader.py` hides excluded posts everywhere and renders related cross-links. First entry: The Soldier Becomes a Cultivator (Connect_Study3875). Test suite expanded to 105 assertions.
 - 2026-06-19 — Reader server-side search: `search_dataset()` + the `/api/search` endpoint in `build_reader.py` query the full in-memory dataset (all series, groups, standalones) so author/title searches reach every standalone, not just the 100 on the current index page. Capped results with true totals; `SEARCH_JS` rewritten to a debounced fetch with stale-response guarding; dead `data-searchable` attributes removed. New `test_reader_search.py` (21 assertions). Fixes the search gap that was blocking Phase 4 manual review.
 - 2026-06-24 - Encoding hardening: pinned `encoding="utf-8"` on the `date` `subprocess.run` call in run.py so it decodes as UTF-8 rather than the Windows cp1252 default. No behavioural change.
+- 2026-08-04 - Line endings pinned on all seven text writes across `run.py`, `tracker.py`, `build_reader.py` and `series_detector.py`. Six already passed `newline="\n"`, but did so through `Path.write_text`, which only accepts that argument on Python 3.10 while the project states a 3.9 floor - so those six would have raised `TypeError` on the minimum supported interpreter. All seven now use an explicit `open(..., newline="\n")`, which is correct on 3.9. Part of the project-wide pass closing this defect class at all 48 write sites.

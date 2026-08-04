@@ -66,7 +66,7 @@ def _timestamp():
 
 def _append_log(action, note):
     line = f"[{_timestamp()}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with open(_LOG_PATH, "a", encoding="utf-8") as handle:
+    with open(_LOG_PATH, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(line)
 
 
@@ -187,7 +187,7 @@ def cmd_record(args):
         return 0
 
     state_mod.save_state(_STATE_PATH, new_state)
-    with open(_LAST_RUN_PATH, "w", encoding="utf-8") as handle:
+    with open(_LAST_RUN_PATH, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(new_state["last_run"] + "\n")
     _append_log("completed",
                 f"Recorded weekly review {label} (covered through {end.isoformat()}; "

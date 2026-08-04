@@ -123,7 +123,7 @@ def now_ts() -> str:
 
 def append_log(action: str, note: str) -> None:
     line = f"[{now_ts()}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with open(LOG_FILE, "a", encoding="utf-8") as fh:
+    with open(LOG_FILE, "a", encoding="utf-8", newline="\n") as fh:
         fh.write(line)
 
 
@@ -474,7 +474,8 @@ def main():
         "gates": gates,
     }
     try:
-        RESULT_FILE.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        with RESULT_FILE.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(result, indent=2))
     except Exception:
         pass  # durable result is a convenience, not a gate
 

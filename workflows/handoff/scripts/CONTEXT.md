@@ -1,6 +1,6 @@
 # Handoff - Scripts
 
-**Last modified:** 2026-07-07
+**Last modified:** 2026-08-04
 
 ## Purpose
 The deterministic half of the handoff workflow: gather the session-state packet,
@@ -13,8 +13,8 @@ report whether an unread handoff exists, and mark one as seen.
 - gather.py - deterministic signal readers (branch, `git status`, `git diff
   --stat`, recent commits, changed-directory LOG tails, active backlog, recent
   session activity, and `doc_sync_drift` - the doc-sync CONTEXT/LOG drift check so
-  a handoff surfaces any behind directory before HANDOVER.md is written) and the
-  packet builder. Writes nothing.
+  a handoff surfaces any behind directory before HANDOVER.md is written, keeping
+  the guard's WARN findings only) and the packet builder. Writes nothing.
 - state.py - the seen-watermark: load/save state, read a handoff's `**Created:**`
   timestamp (mtime fallback), and decide whether a handoff is unread.
 - config.py - tunable constants (recent-commit count, LOG tail length, session
@@ -40,13 +40,26 @@ gather mode writes nothing; `--seen` writes state and a LOG entry.
   shards read for recent activity.
 - `workflows/doc-sync-guard/scripts/run.py` [[workflows/doc-sync-guard/scripts/CONTEXT]] -
   run read-only (default working-tree scope) by `doc_sync_drift` for the packet's
-  CONTEXT/LOG drift section; degrades to an empty result if missing or broken.
+  CONTEXT/LOG drift section. Only the guard's WARN findings are kept; a missing or
+  broken guard, and any finding at another severity, produce an empty result.
 - Python standard library only (subprocess, sqlite3, json, re, sys). No third-party
   packages.
 
 ## Known Issues
 - Untracked new directories are reported by git as a single path, so the changed
   directory shown is the parent. Acceptable: the LOG tail still gives context.
+- `doc_sync_drift` keeps `severity == "WARN"` findings only, so the guard's
+  DEGRADED severity (a component of the guard that could not run, today its
+  output-inventory probe on an interpreter without PyYAML) never reaches the
+  packet. That is the intended boundary while nothing consumes the inventory
+  answers - the section names directories needing a documentation update, and a
+  missing package is not one - but it means a handoff written on such a machine
+  reports nothing about it. It stops being safe once the guard acts on the
+  inventory, and the guard-coverage scope extension carries a locked decision
+  requiring this function to be made degrade-aware at that point, presenting the
+  degrade on its own line rather than folding it into the drift list. The
+  producer half of the boundary is recorded in
+  `workflows/doc-sync-guard/scripts/CONTEXT.md` [[workflows/doc-sync-guard/scripts/CONTEXT]].
 
 ## Revision History
 - 2026-07-03 - Initial creation. run.py, gather.py, state.py, config.py.
@@ -55,3 +68,9 @@ gather mode writes nothing; `--seen` writes state and a LOG entry.
   section, so a handoff surfaces any behind directory before HANDOVER.md is
   written; run.py `--gather` wires it in. Degrades to empty on any failure
   (doc-sync-guard build part 5).
+- 2026-08-04 - Documented `doc_sync_drift`'s severity filter where the code that
+  applies it lives: it keeps WARN only, so the guard's DEGRADED findings are
+  invisible in the packet. Deliberate today, and required to change when the
+  guard starts acting on the output inventory. Contents, Dependencies and Known
+  Issues updated; no behaviour change.
+- 2026-08-04 - Line endings pinned on both text writes (the LOG.md append in `run.py` and the `state.json` save in `state.py`), which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.

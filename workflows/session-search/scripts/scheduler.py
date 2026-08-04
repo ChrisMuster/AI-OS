@@ -90,7 +90,8 @@ def _is_process_alive(pid: int) -> bool:
 def _write_pid() -> None:
     """Write current PID to the PID file."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    with PID_FILE.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(str(os.getpid()))
 
 
 def _remove_pid() -> None:

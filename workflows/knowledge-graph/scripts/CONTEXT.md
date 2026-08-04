@@ -1,6 +1,6 @@
 # Knowledge Graph — Scripts
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-08-04
 
 ## Purpose
 Holds the Python implementation of the knowledge-graph indexer: the tolerant CONTEXT.md parser, the node/edge graph model with atomic serialisation plus adjacency and traversal, the gitignore-aware builder that resolves relationships into edges, the opt-in content layers (memory, wiki, journal, and conversation) with their shared parsing helpers, the validation checks, the shared report formatter, shared constants and path helpers, and the run.py command-line entry point.
@@ -62,3 +62,4 @@ Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-24 - Encoding hardening: pinned `encoding="utf-8"` on the `git check-ignore` `subprocess.run` calls in builder.py and validate.py so they decode as UTF-8 rather than the Windows cp1252 default. No behavioural change to graph output.
 - 2026-06-24 - Rebuild speed optimisation (builder.py): rewrote `collect_dirs` to walk breadth-first and batch one `git check-ignore --stdin -z` call per depth level (NUL-separated bytes, immune to Windows newline translation) instead of one `subprocess` per directory; added `_is_git_worktree` (filesystem `.git` check) to skip git entirely outside a worktree, and `_git_check_ignored_batch`. Pruning semantics and graph output are byte-for-byte identical (185 nodes / 571 edges / 7 broken / 18 findings); git spawns on a full build dropped from 22 to ~5 and the directory walk from ~9s to ~1s.
 - 2026-06-24 — Session-search cross-reference: run.py gained the read-only `sessions <id>` command plus the pure `session_query_terms` helper (title-first FTS5 term derivation with a `--terms` override and id-segment fallback) and the `run_session_search` wrapper (subprocess call to `workflows/session-search/scripts/search.py` [[workflows/session-search/scripts/CONTEXT]] in `--json` mode, returning `[]` on any failure — script missing, non-zero exit, unparseable/non-list output — never raising). Exposes `--limit`/`--since`/`--ai`/`--source` passthroughs. Added `re`/`subprocess` imports and the `SESSION_SEARCH_PY` constant. Build/validate and the other nine query commands are untouched; nothing is persisted and no personal data reaches a tracked file.
+- 2026-08-04 - Line endings pinned on both text writes in `run.py` (the LOG.md append and the `--save` report), which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.

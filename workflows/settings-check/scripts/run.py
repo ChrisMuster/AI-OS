@@ -80,7 +80,7 @@ def now_ts() -> str:
 
 def append_log(path: Path, ts: str, action: str, note: str) -> None:
     entry = f'[{ts}] | Actor: Biblio | Action: {action} | Note: {note}\n'
-    with path.open('a', encoding='utf-8') as f:
+    with path.open('a', encoding='utf-8', newline='\n') as f:
         f.write(entry)
 
 

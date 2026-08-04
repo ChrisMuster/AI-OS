@@ -1,6 +1,6 @@
 # Triggers - Config
 
-**Last modified:** 2026-07-07
+**Last modified:** 2026-08-04
 
 ## Purpose
 Holds the trigger registry: the single source of truth mapping natural-language
@@ -39,3 +39,4 @@ N/A. This is a data directory.
   running the doc-sync guard, taking triggers.yaml to twelve categories; also
   updated the audit summary to mention the doc-sync hook (doc-sync-guard build
   part 5).
+- 2026-08-04 - Corrected the audit category summary: it enumerated the full audit's hooks but omitted skill-hardening, which has run as a sixth hook since 2026-07-09. This summary is what `run.py --list` prints when the user asks for the trigger list, so the omission was a live description, not a comment. Found by sweeping every enumeration of the audit's hooks rather than only the files a review had named.

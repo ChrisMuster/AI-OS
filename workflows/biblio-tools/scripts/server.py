@@ -221,8 +221,8 @@ async def run_audit(save: bool = False, with_graph: bool = True) -> dict:
     validates the structural knowledge graph and merges its actionable (WARN/FAIL)
     findings under a `knowledge-graph` label, so a graph regression surfaces in
     the same report; this is additive and advisory (the result is unchanged when
-    the graph is clean) and degrades to a single INFO note if the graph cannot
-    be validated.
+    the graph is clean) and reports a DEGRADED finding if the graph cannot be
+    validated.
 
     Args:
         save: Save the report to workflows/audit/last-report.md.
@@ -579,7 +579,8 @@ async def append_log(
     try:
         content = log_path.read_text(encoding="utf-8")
         sep = "" if content.endswith("\n") else "\n"
-        log_path.write_text(content + sep + entry + "\n", encoding="utf-8")
+        with log_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content + sep + entry + "\n")
         return {"success": True, "entry": entry}
     except Exception as exc:
         return {"success": False, "error": str(exc)}

@@ -221,6 +221,13 @@ def doc_sync_drift(project_root):
     reading stale context is worse than none. Degrades to [] on any failure
     (missing guard, bad JSON, git unavailable), matching the other readers, so a
     broken guard never breaks the packet.
+
+    WARN only is deliberate. The guard's DEGRADED severity means a component of
+    it could not run, which is not a directory needing a documentation update,
+    so it is dropped here rather than listed as drift - and therefore never
+    appears in the packet at all. That boundary is documented in this
+    directory's CONTEXT.md, and it has to change when the guard starts acting on
+    its output inventory.
     """
     guard = Path(project_root) / "workflows" / "doc-sync-guard" / "scripts" / "run.py"
     if not guard.is_file():

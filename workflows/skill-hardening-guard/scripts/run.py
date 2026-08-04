@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Skill-hardening guard - every SKILL.md must carry a complete Hardening section.
+"""Skill-hardening guard - every SKILL.md must carry a complete Hardening section
+and a non-empty Verification section.
 
 Read-only structural check in the guard family (same shape as `encoding-guard`,
 `personal-data-guard`, `ai-style-guard`, and `doc-sync-guard`): a standalone CLI

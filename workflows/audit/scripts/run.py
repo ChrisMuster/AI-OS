@@ -16,7 +16,7 @@ Also runs code hygiene checks across all Python scripts in the project:
 A full audit additionally rebuilds and validates the structural knowledge graph
 and merges its actionable (WARN/FAIL) findings under a `knowledge-graph` label,
 so a graph regression surfaces in the same report. This is additive and advisory
-(the exit code is unchanged) and degrades to a single INFO note if the graph
+(the exit code is unchanged) and reports a DEGRADED finding if the graph
 cannot be validated. Use --no-graph to skip it; targeted --context mode never
 validates the graph.
 
@@ -116,7 +116,7 @@ def rel(path: Path) -> str:
 
 def append_log(path: Path, ts: str, action: str, note: str) -> None:
     entry = f"[{ts}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with path.open("a", encoding="utf-8") as f:
+    with path.open("a", encoding="utf-8", newline="\n") as f:
         f.write(entry)
 
 
@@ -205,6 +205,26 @@ def check_context_metadata(content: str) -> list[str]:
         warnings.append(
             f"Revision History has {visible_entries} visible entries "
             f"(maximum: {MAX_REVISION_HISTORY_ENTRIES})"
+        )
+
+    # Newest at the bottom (the CONTEXT.md schema). Entries are compared in the
+    # order they appear, so an equal pair (a second entry the same day) is fine
+    # and only a date older than the one above it is a violation. This is the
+    # one schema rule that used to be discipline alone: a review caught an
+    # out-of-order entry that had passed every automated check, and a sweep then
+    # found two more elsewhere in the project.
+    out_of_order = [
+        (revision_dates[i - 1], revision_dates[i])
+        for i in range(1, len(revision_dates))
+        if revision_dates[i] < revision_dates[i - 1]
+    ]
+    if out_of_order:
+        earlier, later = out_of_order[0]
+        extra = (f" (and {len(out_of_order) - 1} more)"
+                 if len(out_of_order) > 1 else "")
+        warnings.append(
+            f"Revision History is out of order: {later} follows {earlier}"
+            f"{extra}; newest entry goes at the bottom"
         )
 
     nonblank_lines = [
@@ -373,17 +393,23 @@ _REPAIR_HINT = (
 )
 
 
-def degraded(label: str, reason: str, repairable: bool = True) -> Finding:
+def degraded(label: str, reason: str, repairable: bool = True,
+             what: str = "check") -> Finding:
     """Build a DEGRADED finding for a check that could not run.
 
     A degrade means the check did not actually run, so it must be visible and
     carry its own remediation. ``repairable=True`` (a runtime/dependency reason
     setup.py can fix) appends the setup.py hint; ``repairable=False`` is for a
     genuinely absent guard whose workflow is missing, which setup.py cannot fix.
+
+    ``what`` names the thing that did not run, and defaults to the whole check
+    because that is the usual case. A guard whose main check completed while one
+    component could not (the doc-sync inventory probe) passes its own noun, so
+    the message does not claim more went wrong than actually did.
     """
     tail = _REPAIR_HINT if repairable else (
         f"The {label} workflow appears to be missing; reinstall or restore it.")
-    return (DEGRADED, label, f"{label} check did not run - {reason}. {tail}")
+    return (DEGRADED, label, f"{label} {what} did not run - {reason}. {tail}")
 
 
 # ---------------------------------------------------------------------------
@@ -437,8 +463,8 @@ def check_python_scripts() -> list[Finding]:
 # graph and merges its actionable findings, so a graph regression (a new broken
 # reference, orphan, or uncontained directory) shows up in the same report the
 # AI already reads at close-out. The hook is additive and advisory — it never
-# changes the audit's exit code, and a missing or broken graph layer degrades to
-# a single INFO note rather than failing the audit.
+# changes the audit's exit code, and a missing or broken graph layer reports a
+# DEGRADED finding rather than failing the audit.
 
 def graph_findings(payload: dict) -> list[Finding]:
     """Map a knowledge-graph ``validate --json`` payload to audit Findings.
@@ -473,9 +499,9 @@ def run_graph_validation() -> list[Finding]:
     names; ``--no-backrefs`` skips the advisory back-reference check (its gaps
     are INFO and dropped anyway).
 
-    Degrades gracefully: on any failure — KG run.py missing, a crash, or
-    unparseable output — returns a single INFO note and never raises, so the
-    audit always completes with exit 0.
+    Degrades gracefully: on any failure (KG run.py missing, a crash, or
+    unparseable output) it returns a single DEGRADED finding and never raises, so
+    the audit always completes with exit 0.
     """
     if not KG_RUN_PY.exists():
         return [degraded("knowledge-graph", "knowledge-graph CLI not found",
@@ -510,10 +536,11 @@ def run_graph_validation() -> list[Finding]:
 # ---------------------------------------------------------------------------
 # The full audit also runs the encoding-guard check and merges its actionable
 # findings, so an encoding regression (a file that stops being valid UTF-8, new
-# mojibake, or a text-mode subprocess call with no explicit encoding) surfaces in
-# the same close-out report. Like the graph hook it is additive and advisory —
-# it never changes the audit's exit code, and a missing or broken encoding-guard
-# degrades to a single INFO note.
+# mojibake, a text-mode subprocess call with no explicit encoding, or a
+# text-mode write with no explicit newline) surfaces in the same close-out
+# report. Like the graph hook it is additive and advisory - it never changes the
+# audit's exit code, and a missing or broken encoding-guard reports a DEGRADED
+# finding.
 
 def encoding_findings(payload: dict) -> list[Finding]:
     """Map an encoding-guard ``--check --json`` payload to audit Findings.
@@ -536,7 +563,7 @@ def run_encoding_check() -> list[Finding]:
 
     Shells out to the encoding-guard CLI (the contract) rather than importing it,
     matching the graph hook. Degrades gracefully: on any failure the audit gets a
-    single INFO note and never raises, so the exit code stays advisory.
+    single DEGRADED finding and never raises, so the exit code stays advisory.
     """
     if not ENCODING_RUN_PY.exists():
         return [degraded("encoding", "encoding-guard CLI not found",
@@ -568,7 +595,7 @@ def run_encoding_check() -> list[Finding]:
 # personal home path, the user's name, or a denylisted noun) surfaces in the same
 # close-out report. Like the graph and encoding hooks it is additive and advisory:
 # it never changes the audit's exit code, and a missing or broken guard
-# degrades to a single INFO note. The standalone CLI still exits 1 on a FAIL so a
+# reports a DEGRADED finding. The standalone CLI still exits 1 on a FAIL so a
 # pre-commit hook or CI can gate on it directly.
 
 def personal_findings(payload: dict) -> list[Finding]:
@@ -592,7 +619,8 @@ def run_personal_data_check() -> list[Finding]:
 
     Shells out to the guard CLI (the contract) rather than importing it, matching
     the graph and encoding hooks. Degrades gracefully: on any failure the audit
-    gets a single INFO note and never raises, so the exit code stays advisory.
+    gets a single DEGRADED finding and never raises, so the exit code stays
+    advisory.
     """
     if not PERSONAL_RUN_PY.exists():
         return [degraded("personal-data", "personal-data-guard CLI not found",
@@ -624,8 +652,8 @@ def run_personal_data_check() -> list[Finding]:
 # AI writing tell introduced on the branch surfaces in the same close-out report.
 # Like the other content hooks it is additive and advisory: only the tier-1 WARN
 # findings are merged (the tier-2 single-word denylist stays INFO and is dropped),
-# it never changes the audit's exit code, and a missing or broken guard degrades
-# to a single INFO note. The standalone CLI can still gate via --strict.
+# it never changes the audit's exit code, and a missing or broken guard reports a
+# DEGRADED finding. The standalone CLI can still gate via --strict.
 
 def ai_style_findings(payload: dict) -> list[Finding]:
     """Map an ai-style-guard ``--check --json`` payload to audit Findings.
@@ -646,7 +674,7 @@ def run_ai_style_check() -> list[Finding]:
 
     Shells out to the guard CLI (the contract) rather than importing it, matching
     the other hooks. Degrades gracefully: on any failure the audit gets a single
-    INFO note and never raises, so the exit code stays advisory.
+    DEGRADED finding and never raises, so the exit code stays advisory.
     """
     if not AI_STYLE_RUN_PY.exists():
         return [degraded("ai-style", "ai-style-guard CLI not found",
@@ -682,24 +710,39 @@ def run_ai_style_check() -> list[Finding]:
 # already-closed-out work on the branch. Like the other content hooks it is
 # additive and advisory here - it never changes the audit's exit code, and a
 # missing or broken guard degrades to a DEGRADED finding. The teeth are at
-# close-out, which hard-fails on any doc-sync-labelled finding (Option B).
+# close-out, which hard-fails on any doc-sync WARN (Option B) while treating a
+# DEGRADED finding for the same label as non-blocking.
 
 def doc_sync_findings(payload: dict) -> list[Finding]:
     """Map a doc-sync-guard ``--check --json`` payload to audit Findings.
 
-    Keeps only the actionable severity (WARN); the guard's message already names
-    the directory and the reason. Pure (dict in, tuples out) for unit testing.
+    Two severities are actionable and they mean different things:
+
+      * WARN is drift. The guard's message already names the directory and the
+        reason, and close-out hard-fails on it.
+      * DEGRADED is a component of the guard that could not run - today only its
+        output-inventory probe, which needs PyYAML while the drift scan itself
+        does not. It is re-wrapped through :func:`degraded` so it arrives with
+        the same repair hint as every other unavailable-runtime report, and so
+        close-out routes it down the non-blocking DEGRADED path. Mapping it to
+        WARN instead would fail the build for a missing package while claiming
+        documentation had drifted.
+
+    Anything else is dropped. Pure (dict in, tuples out) for unit testing.
     """
     findings: list[Finding] = []
     for f in payload.get("findings", []):
-        if f.get("severity") != "WARN":
-            continue
-        findings.append(("WARN", "doc-sync", f.get("message", "")))
+        severity = f.get("severity")
+        message = f.get("message", "")
+        if severity == "WARN":
+            findings.append(("WARN", "doc-sync", message))
+        elif severity == DEGRADED:
+            findings.append(degraded("doc-sync", message, what="inventory probe"))
     return findings
 
 
 def run_doc_sync_check() -> list[Finding]:
-    """Run the doc-sync guard over the working tree and return its WARN findings.
+    """Run the doc-sync guard over the working tree and return its findings.
 
     Shells out to the guard CLI (the contract) rather than importing it, matching
     the other hooks, and uses the guard's default HEAD scope (no --base). Degrades
@@ -732,11 +775,13 @@ def run_doc_sync_check() -> list[Finding]:
 # Skill-hardening-guard hook
 # ---------------------------------------------------------------------------
 # The full audit also runs the skill-hardening guard, so a SKILL.md that is
-# missing its Hardening section or a required field surfaces in the same close-out
-# report. Like the other content hooks it is additive and advisory here - only the
-# WARN findings are merged, it never changes the audit's exit code, and a missing
-# or broken guard degrades to a DEGRADED finding. The teeth are at close-out, which
-# hard-fails on any skill-hardening-labelled WARN (mirroring doc-sync).
+# missing its Hardening section, one of that section's five required fields, or
+# its Verification section surfaces in the same close-out report. Like the other
+# content hooks it is additive and advisory here - WARN gaps and DEGRADED
+# unreadable-file findings are both merged, it never changes the audit's exit
+# code, and a missing or broken guard degrades to a DEGRADED finding. The teeth
+# are at close-out, which hard-fails on a skill-hardening WARN while treating a
+# DEGRADED finding for the same label as non-blocking (mirroring doc-sync).
 
 def skill_hardening_findings(payload: dict) -> list[Finding]:
     """Map a skill-hardening-guard ``--check --json`` payload to audit Findings.
@@ -756,7 +801,7 @@ def skill_hardening_findings(payload: dict) -> list[Finding]:
 
 
 def run_skill_hardening_check() -> list[Finding]:
-    """Run the skill-hardening guard and return its WARN findings.
+    """Run the skill-hardening guard and return its WARN and DEGRADED findings.
 
     Shells out to the guard CLI (the contract) rather than importing it, matching
     the other hooks. Degrades gracefully: on any failure the audit gets a DEGRADED
@@ -1051,11 +1096,13 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
     findings.extend(run_ai_style_check())
 
     # CONTEXT.md / LOG.md drift check (full mode only; advisory here, working-tree
-    # scope; close-out turns doc-sync findings into a hard fail via the label)
+    # scope; close-out hard-fails on a doc-sync WARN, while a doc-sync DEGRADED
+    # is non-blocking and routes down its DEGRADED path)
     findings.extend(run_doc_sync_check())
 
     # SKILL.md Hardening-section check (full mode only; advisory here; close-out
-    # turns skill-hardening findings into a hard fail via the label)
+    # hard-fails on a skill-hardening WARN, while a skill-hardening DEGRADED is
+    # non-blocking and routes down its DEGRADED path)
     findings.extend(run_skill_hardening_check())
 
     return findings, len(dirs)
@@ -1195,7 +1242,8 @@ def main() -> None:
 
     if args.save:
         report_path = WORKFLOW_DIR / "last-report.md"
-        report_path.write_text(report, encoding="utf-8")
+        with report_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(report)
         print(f"Report saved to workflows/audit/last-report.md")
 
     fails = sum(1 for f in findings if f[0] == "FAIL")

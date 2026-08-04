@@ -25,6 +25,35 @@ def load_run():
 run = load_run()
 
 
+class BlockingLabelsAreDocumentedTests(unittest.TestCase):
+    """The workflow's own CONTEXT.md must describe the real blocking contract.
+
+    ``BLOCKING_LABELS`` is the single source of truth for what hard-fails
+    close-out, and adding an entry is deliberately a one-line change in run.py.
+    That is exactly how the documentation fell behind: ``skill-hardening`` was
+    added as a second blocking label in July, and a month later CONTEXT.md still
+    called ``doc-sync`` "the one exception" and never named severity at all. A
+    reader landing on that file would have concluded the label alone blocks.
+    These two assertions make the prose follow the map.
+    """
+
+    def context_md(self):
+        path = Path(__file__).resolve().parents[1] / "CONTEXT.md"
+        return path.read_text(encoding="utf-8")
+
+    def test_every_blocking_label_is_named_in_context_md(self):
+        content = self.context_md()
+        missing = [label for label in run.BLOCKING_LABELS
+                   if label not in content]
+        self.assertEqual(missing, [])
+
+    def test_context_md_states_that_only_a_warn_blocks(self):
+        # The severity half of the contract, and the half that kept going
+        # stale. Deliberately an exact-claim assertion: rewording the sentence
+        # is fine, dropping the claim is not.
+        self.assertIn("only a warn", self.context_md().lower())
+
+
 class DiscoverAndScopeTests(unittest.TestCase):
     def test_discovers_known_suites(self):
         owners = [owner for owner, _ in run.discover_suites()]
@@ -126,7 +155,7 @@ class ReexecTests(unittest.TestCase):
 class TestRunnerTests(unittest.TestCase):
     def _write(self, folder, name, body):
         path = Path(folder) / name
-        path.write_text(body, encoding="utf-8")
+        path.write_bytes(body.encode("utf-8"))
         return path
 
     def test_passing_test_file(self):
@@ -246,12 +275,14 @@ class RepairTests(unittest.TestCase):
 
 
 class DocSyncTeethTests(unittest.TestCase):
-    """Close-out hard-fails on doc-sync findings while the audit stays advisory.
+    """Close-out hard-fails on a doc-sync WARN while the audit stays advisory.
 
-    Plan R2-3, Option B: doc-sync findings are advisory WARN inside the audit
-    (audit exit code unchanged), but the close-out verifier turns any
-    doc-sync-labelled finding into a hard fail by inspecting the label on the
-    single in-process audit call it already makes.
+    Plan R2-3, Option B: doc-sync drift is an advisory WARN inside the audit
+    (audit exit code unchanged), but the close-out verifier turns it into a hard
+    fail by inspecting label *and severity* on the single in-process audit call
+    it already makes. Severity is load-bearing: a doc-sync DEGRADED means the
+    guard could not run, which is non-blocking and surfaces via the DEGRADED
+    path instead (see ``test_degraded_doc_sync_is_not_drift``).
     """
 
     def _fake_audit(self, findings, dir_count=5):
@@ -279,7 +310,9 @@ class DocSyncTeethTests(unittest.TestCase):
 
     def test_non_doc_sync_warn_stays_advisory(self):
         # ai-style and personal-data WARNs are advisory in the audit and must not
-        # flip the close-out gate; only the doc-sync label is a hard fail.
+        # flip the close-out gate. Only a WARN under one of the BLOCKING_LABELS
+        # (doc-sync, skill-hardening) is a hard fail; ai-style and personal-data
+        # are not blocking labels at any severity.
         findings = [("WARN", "ai-style", "x.md:3: em dash present"),
                     ("WARN", "personal-data", "y.md: denylisted term")]
         with self._fake_audit(findings):

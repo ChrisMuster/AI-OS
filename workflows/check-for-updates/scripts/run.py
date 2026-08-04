@@ -37,7 +37,7 @@ def _timestamp():
 
 def _append_log(action, note):
     line = f"[{_timestamp()}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with open(_LOG_PATH, "a", encoding="utf-8") as handle:
+    with open(_LOG_PATH, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(line)
 
 
@@ -115,7 +115,7 @@ def main():
     if args.dry_run:
         print("\n[DRY RUN] Run not recorded (no last-run timestamp written, no log entry).")
     else:
-        with open(_LAST_RUN_PATH, "w", encoding="utf-8") as handle:
+        with open(_LAST_RUN_PATH, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(timestamp + "\n")
         _append_log("completed",
                     f"Update check complete. {report_mod.count_updates(results)} update(s) available.")

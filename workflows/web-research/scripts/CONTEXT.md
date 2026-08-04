@@ -1,6 +1,6 @@
 # Web Research Workflow — scripts/
 
-**Last modified:** 2026-06-12
+**Last modified:** 2026-08-04
 
 ## Purpose
 CLI entry point for the web-research workflow. `run.py` is the only script here — it parses command-line flags, calls the shared skill, saves the research package, and prints the report brief for Biblio.
@@ -32,3 +32,4 @@ N/A. This is a scripts container, not a workflow itself.
 - 2026-06-11 — run.py now enters the canonical project runtime automatically before loading research dependencies.
 - 2026-06-11 — Replaced the retired `ran` log action with required started/completed/failed workflow logging.
 - 2026-06-12 — Made `--check` inspect the canonical project runtime when available while retaining host-Python diagnostics before initial setup.
+- 2026-08-04 - Line endings pinned on both text writes in `run.py` (the research package JSON and the LOG.md append), which now pass `newline="\n"` explicitly. The 52 CRLF files in `outputs/` were all written through the first of these. Part of the project-wide pass closing this defect class at all 48 write sites.

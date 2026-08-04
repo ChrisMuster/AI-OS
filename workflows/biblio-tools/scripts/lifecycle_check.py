@@ -102,7 +102,8 @@ def check_reader_stale_pid_safety() -> tuple[bool, str]:
         "token": "not-a-real-reader",
     }
     try:
-        pid_file.write_text(json.dumps(payload), encoding="utf-8")
+        with pid_file.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(payload))
         result = _run([
             sys.executable,
             "workflows/reddit-collector/scripts/build_reader.py",
@@ -115,7 +116,8 @@ def check_reader_stale_pid_safety() -> tuple[bool, str]:
         return True, "Reader stale-PID safety check passed."
     finally:
         if original is not None:
-            pid_file.write_text(original, encoding="utf-8")
+            with pid_file.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(original)
         elif pid_file.exists():
             pid_file.unlink()
 

@@ -1,6 +1,6 @@
 # Biblio Tools Scripts
 
-**Last modified:** 2026-07-05
+**Last modified:** 2026-08-04
 
 ## Purpose
 Contains the canonical project-runtime setup and hand-off helpers, MCP server, setup verification, launcher, and protocol smoke-test scripts.
@@ -44,3 +44,5 @@ Earlier history archived to LOG.md on 2026-07-05.
 - 2026-06-24 - verify.py now honours Codex MCP `cwd` resolution from `.codex/config.toml`, so setup verification matches Codex's actual project-config launch semantics.
 - 2026-06-25 - verify.py now checks Codex's enabled plugin-backed `biblio_tools` MCP registry entry instead of treating the disabled raw `biblio-tools` entry as the live Codex route.
 - 2026-07-05 - Documented the `# runtime-guard: launched via <mechanism>` markers on the project-only imports in `server.py` (launched via `launch.py`) and `mcp_smoke.py` (launched via `verify.py`/`lifecycle_check.py`). Both are entry-point scripts that import a project-only package but are always launched under the `.venv`, so the markers are how they satisfy the close-out runtime-bootstrap guard [[workflows/close-out/tests/CONTEXT]] - load-bearing documentation, not stray comments. Codex review-fix pass on the runtime-bootstrap work.
+- 2026-08-04 - Docstring correction in `server.py`, no behaviour change: the `run_audit` tool still told every MCP client that a graph that cannot be validated "degrades to a single INFO note", which stopped being true on 2026-07-04 when the audit's hooks began returning first-class DEGRADED findings. This docstring is the tool description AIs read at discovery time, so a stale claim here is read as the contract. Found by sweeping the whole repository for the changed severity term rather than only the workflow the change lived in.
+- 2026-08-04 - Line endings pinned in `server.py` and `lifecycle_check.py`: the `append_log` tool's LOG.md write and the PID-file writes now go through an explicit `open(..., newline="\n")` instead of `Path.write_text`. This is the write path every AI uses to log through MCP, so it was one of the larger contributors to the project's CRLF drift. Part of the project-wide pass closing this defect class at all 48 write sites. Note for anyone verifying mid-session: the running MCP server holds the old code until it is restarted.

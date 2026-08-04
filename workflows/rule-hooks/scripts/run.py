@@ -71,7 +71,7 @@ def fire_log(record):
     """Append one JSON record to the fire-log. Never raises."""
     try:
         entry = {"ts": _now(), **record}
-        with open(FIRE_LOG, "a", encoding="utf-8") as handle:
+        with open(FIRE_LOG, "a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
@@ -276,6 +276,13 @@ def _precommit_doc_sync(root):
     Prints the drift advisory but always allows the commit - the deterministic
     gate is close-out. Any guard failure is swallowed so a guard bug never
     disrupts commits.
+
+    The findings are filtered to WARN, which means drift and only drift is
+    announced here. The guard's DEGRADED severity says a component of it could
+    not run, which is not something a commit message can act on, so it prints
+    nothing at all at commit time. That boundary is documented in this
+    directory's CONTEXT.md and in the git-hooks CONTEXT.md, and it has to change
+    when the guard starts acting on its output inventory.
     """
     guard_path = root / "workflows" / "doc-sync-guard" / "scripts" / "run.py"
     try:

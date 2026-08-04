@@ -69,7 +69,7 @@ def rel(path: Path) -> str:
 
 def append_log(path: Path, ts: str, action: str, note: str) -> None:
     entry = f"[{ts}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with path.open("a", encoding="utf-8") as f:
+    with path.open("a", encoding="utf-8", newline="\n") as f:
         f.write(entry)
 
 
@@ -200,7 +200,8 @@ def add_links_to_file(context_path: Path, dry_run: bool) -> list[str]:
         all_changes.extend(changes)
 
     if all_changes and not dry_run:
-        context_path.write_text("".join(new_lines), encoding="utf-8")
+        with context_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write("".join(new_lines))
 
     return all_changes
 
@@ -313,7 +314,8 @@ def apply_link_fix(context_path: Path, old_target: str, new_target: str, dry_run
     content = context_path.read_text(encoding="utf-8")
     updated = content.replace(f"[[{old_target}]]", f"[[{new_target}]]")
     if updated != content and not dry_run:
-        context_path.write_text(updated, encoding="utf-8")
+        with context_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(updated)
 
 
 def run_audit_mode(fix: bool, dry_run: bool) -> tuple[str, int, int]:
@@ -421,7 +423,8 @@ def main() -> None:
 
     if args.save:
         report_path = WORKFLOW_DIR / "last-report.md"
-        report_path.write_text(report, encoding="utf-8")
+        with report_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(report)
         print(f"Report saved to workflows/link-check/last-report.md")
 
     append_log(WORKFLOW_LOG, ts, "completed", note)

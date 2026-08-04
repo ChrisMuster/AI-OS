@@ -222,7 +222,8 @@ class {class_name}(TranscriptAdapter):
             }}
 '''
 
-    adapter_file.write_text(content, encoding='utf-8')
+    with adapter_file.open('w', encoding='utf-8', newline='\n') as fh:
+        fh.write(content)
     return adapter_file
 
 

@@ -1,6 +1,6 @@
 # Handoff
 
-**Last modified:** 2026-07-10
+**Last modified:** 2026-08-04
 
 ## Purpose
 Clean session-to-session transitions for Book Dragon. When the user ends a working
@@ -69,6 +69,19 @@ child #4.
 - `HANDOVER.md` is a single rolling file: it holds only the most recent handoff.
   History is deliberately not kept (the weekly-review store and LOG.md already
   carry the durable record).
+- **The packet's doc-sync section surfaces drift only.** `doc_sync_drift` keeps
+  the guard's WARN findings, so a DEGRADED finding (a component of the guard that
+  could not run, today its output-inventory probe on an interpreter without
+  PyYAML) never reaches the packet. That is the intended boundary while nothing
+  consumes the inventory answers: the section exists to name directories whose
+  documentation is behind, and a missing package is not one. It stops being safe
+  once the guard acts on the inventory, because the packet would then report a
+  clean drift section on a machine that had silently skipped every gitignored
+  directory, so the guard-coverage scope extension carries a locked decision
+  requiring this reader to be made degrade-aware at that point, presenting the
+  degrade on its own line rather than folding it into the drift list. The
+  producer half of the boundary is recorded in
+  `workflows/doc-sync-guard/scripts/CONTEXT.md` [[workflows/doc-sync-guard/scripts/CONTEXT]].
 
 ## Revision History
 - 2026-07-03 - Initial creation. Gather script (run/gather/state/config), seen
@@ -84,3 +97,16 @@ child #4.
 - 2026-07-10 - Task 3 hygiene sweep: archived the completed HANDOFF-PLAN.md build
   plan into a new `archived/` subdirectory, per the archive-plans-on-completion
   rule. No behaviour change.
+- 2026-08-03 - Known Issues records the packet doc-sync section's severity
+  boundary: `doc_sync_drift` keeps WARN only, so the guard's DEGRADED findings
+  (its output-inventory probe on an interpreter without PyYAML) never reach the
+  packet. Deliberate today, and required to change when the guard starts acting
+  on the inventory. The constraint was recorded only on the producer side; this
+  documents the consumer half where a reader of this workflow will find it. No
+  behaviour change.
+- 2026-08-04 - The same boundary recorded in `scripts/CONTEXT.md`, where the code
+  that applies the filter lives (its Contents and Dependencies had described
+  `doc_sync_drift` only as a drift surfacer that degrades to empty), and pinned by
+  `TestDocSyncDriftSeverity` in the tests directory (24 -> 27 tests), so the
+  documented boundary rests on a test rather than on a code read. No behaviour
+  change.

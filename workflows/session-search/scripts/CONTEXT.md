@@ -1,6 +1,6 @@
 # Session Search — Scripts
 
-**Last modified:** 2026-06-30
+**Last modified:** 2026-08-04
 
 ## Purpose
 Python scripts that implement the session-search workflow: archiving conversation transcripts, building the SQLite FTS5 search index, querying it, scaffolding adapters for new AI sources, and running the background archive scheduler.
@@ -57,3 +57,4 @@ N/A. Scripts are invoked individually; see each script's module docstring for us
 - 2026-06-24 - Added AI identity alias canonicalisation in archive.py so the VS Code Codex extension label normalises to the supported `Codex CLI` identity.
 - 2026-06-24 - Updated scheduler.py to run index.py hourly instead of archive.py only, keeping non-Claude session archives searchable without a separate manual index run.
 - 2026-06-30 - Removed the Continue.dev adapter and its registry entry (discover.py KNOWN_SOURCES and the adapters Contents count); adapters now cover 8 AI sources. Continue.dev support dropped (project sunsetting).
+- 2026-08-04 - Line endings pinned on all five text writes across `archive.py`, `index.py`, `discover.py` and `scheduler.py` (the two state files, the archived-session JSONL, a generated adapter, and the PID file), which now use an explicit `open(..., newline="\n")` rather than `Path.write_text`. Part of the project-wide pass closing this defect class at all 48 write sites.

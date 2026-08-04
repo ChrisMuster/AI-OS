@@ -35,7 +35,7 @@ categories:
       - run the verifier
 
   - name: audit
-    summary: Run the full-project structural audit (compliance, encoding, personal-data, ai-style, doc-sync, knowledge-graph hooks).
+    summary: Run the full-project structural audit (compliance, encoding, personal-data, ai-style, doc-sync, skill-hardening, knowledge-graph hooks).
     runs: python workflows/audit/scripts/run.py
     phrases:
       - run the audit

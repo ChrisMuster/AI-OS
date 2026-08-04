@@ -822,9 +822,10 @@ def build_series_indexes(series_map, collections_dir, series_dir=None):
             )
 
         index_lines.append("")
-        (target_dir / "_index.md").write_text(
-            "\n".join(index_lines), encoding="utf-8", newline="\n"
-        )
+        with (target_dir / "_index.md").open(
+            "w", encoding="utf-8", newline="\n"
+        ) as fh:
+            fh.write("\n".join(index_lines))
 
 
 def _infer_status(last_posted_iso):
@@ -950,7 +951,7 @@ def write_groups(groups, series_dir):
         "groups": groups,
         "series_to_group": series_to_group,
     }
-    (series_dir / "_groups.json").write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False),
-        encoding="utf-8", newline="\n",
-    )
+    with (series_dir / "_groups.json").open(
+        "w", encoding="utf-8", newline="\n"
+    ) as fh:
+        fh.write(json.dumps(payload, indent=2, ensure_ascii=False))

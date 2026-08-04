@@ -141,10 +141,8 @@ def extract(source: Path, destination: Path, digest: str) -> dict:
     }
 
     TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with destination.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
     return payload
 
 

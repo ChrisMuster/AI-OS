@@ -108,7 +108,8 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding='utf-8')
+    with STATE_FILE.open('w', encoding='utf-8', newline='\n') as fh:
+        fh.write(json.dumps(state, indent=2))
 
 
 # ---------------------------------------------------------------------------

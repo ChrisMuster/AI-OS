@@ -116,7 +116,7 @@ Routine maintenance belongs to the work itself and must not be deferred until Gi
    d. Present the remaining Active items as a short numbered list so the user can see what's available next.
 5. Do not run the full link, audit, lint, test, or close-out suite merely because an individual file edit or task step has finished.
 
-The `doc-sync-guard` workflow [[workflows/doc-sync-guard/CONTEXT]] makes items 1-2 a checked obligation rather than discipline alone: it flags a changed directory whose `CONTEXT.md` / `LOG.md` did not move in the same change, at the three definitive stopping points where they are meant to be current: **commit** (a warn-not-block advisory in the git pre-commit hook), **handoff to another AI for review** (surfaced in the handoff gather packet), and **close-out** (a hard fail in the close-out verifier). Run it directly with `python workflows/doc-sync-guard/scripts/run.py --check`. **Immediate-fix rule:** if a doc-sync warning appears at a commit, or the AI otherwise sees one in tool output, update the flagged `CONTEXT.md` / `LOG.md` files before any other action, then commit them (a small follow-up commit is fine); this binds the AI the same way the permission gate does.
+The `doc-sync-guard` workflow [[workflows/doc-sync-guard/CONTEXT]] makes items 1-2 a checked obligation rather than discipline alone: it flags a changed directory whose `CONTEXT.md` / `LOG.md` did not move in the same change, at the three definitive stopping points where they are meant to be current: **commit** (a warn-not-block advisory in the git pre-commit hook), **handoff to another AI for review** (surfaced in the handoff gather packet), and **close-out** (a hard fail at WARN severity only; a DEGRADED finding, meaning the check could not run, is surfaced but does not block). Run it directly with `python workflows/doc-sync-guard/scripts/run.py --check`. **Immediate-fix rule:** if a doc-sync warning appears at a commit, or the AI otherwise sees one in tool output, update the flagged `CONTEXT.md` / `LOG.md` files before any other action, then commit them (a small follow-up commit is fine); this binds the AI the same way the permission gate does.
 
 A body of work may remain in progress across several edits, tasks, or sessions without being prepared for Git. Full close-out begins only when one of these triggers occurs:
 
@@ -205,7 +205,7 @@ This tracks how the workflow has evolved over time without needing to dig throug
 - [YYYY-MM-DD] - Initial creation.
 ```
 
-The `CONTEXT.md` file is a living document. Whenever Biblio makes changes to a workflow or directory, the relevant sections of its `CONTEXT.md` must be updated and a new line added to the Revision History.
+The `CONTEXT.md` file is a living document. Whenever Biblio makes changes to a workflow or directory, the relevant sections of its `CONTEXT.md` must be updated and a new line added to the Revision History. The newest-at-the-bottom rule is checked mechanically by the audit (`python workflows/audit/scripts/run.py`), which warns when a dated entry is older than the entry above it; two same-day entries are allowed.
 
 #### Verification checklist for all CONTEXT.md sections
 
@@ -429,9 +429,10 @@ When creating skills, vibe-coded apps, or writing any code within this project, 
 All text in this project is UTF-8 with LF line endings. Encoding glitches (mojibake, stray Windows-1252 bytes, accidental BOMs) are a recurring failure mode on Windows, so encoding is enforced in code, not left to chance:
 
 - Every file read or write must pass `encoding="utf-8"` explicitly (`open(...)`, `read_text`, `write_text`). Never rely on the platform default.
+- Every text-mode write must also pass `newline="\n"` explicitly. On Windows, text mode translates every `\n` to `\r\n` on the way out, so a write that only pins the encoding still produces a CRLF file. Note that `Path.write_text` accepts a `newline` argument only on Python 3.10 and later, so use `open(..., encoding="utf-8", newline="\n")` (or `write_bytes`) to stay inside the project's 3.9 floor.
 - Every `subprocess` call that captures text (`text=True`) must also pass `encoding="utf-8"`. On Windows the default is cp1252, which silently corrupts or fails on non-ASCII output.
 - Any script that prints a report to stdout must reconfigure it first: `sys.stdout.reconfigure(encoding="utf-8")`.
-- The `encoding-guard` workflow [[workflows/encoding-guard/CONTEXT]] enforces all of the above. Run `python workflows/encoding-guard/scripts/run.py --check` to scan and `--fix` to repair; the full audit runs the check automatically.
+- The `encoding-guard` workflow [[workflows/encoding-guard/CONTEXT]] enforces all of the above, line endings included, on both sides: it checks the *files* (a CR ending is a WARN, and `--fix` normalises it without touching anything else in the file) and the *writers* (a text-mode write with no explicit `newline=` is a WARN, checked independently of the `encoding=` rule so pinning one never hides the other). Run `python workflows/encoding-guard/scripts/run.py --check` to scan and `--fix` to repair; the full audit runs the check automatically. The file check and the writer check are separate clauses: a claim that one passes is not a claim about the other.
 - Scraped or imported third-party data (under `raw/` or `collections/`) is exempt and preserved verbatim.
 
 ### Writing style and locale

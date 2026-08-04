@@ -118,12 +118,14 @@ def load_env():
 
 def load_locations():
     if not LOCATIONS_FILE.exists():
-        LOCATIONS_FILE.write_text("{}\n", encoding="utf-8")
+        with LOCATIONS_FILE.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write("{}\n")
     return json.loads(LOCATIONS_FILE.read_text(encoding="utf-8"))
 
 
 def save_locations(locs):
-    LOCATIONS_FILE.write_text(json.dumps(locs, indent=2) + "\n", encoding="utf-8")
+    with LOCATIONS_FILE.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(locs, indent=2) + "\n")
 
 
 # ─── API calls ───────────────────────────────────────────────────────────────

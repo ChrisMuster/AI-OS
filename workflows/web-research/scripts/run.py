@@ -176,7 +176,7 @@ Examples:
         )
 
         outputs_dir.mkdir(exist_ok=True)
-        with open(package_path, 'w', encoding='utf-8') as f:
+        with open(package_path, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(package, f, indent=2, ensure_ascii=False)
     except Exception as exc:
         _append_log('failed', f'Research for "{args.topic}" failed: {exc}')
@@ -410,7 +410,7 @@ def _append_log(action, note):
     log_path = _WORKFLOW_DIR / 'LOG.md'
     timestamp = datetime.now().astimezone().isoformat(timespec='seconds')
     entry = f'\n[{timestamp}] | Actor: Biblio | Action: {action} | Note: {note}'
-    with open(log_path, 'a', encoding='utf-8') as f:
+    with open(log_path, 'a', encoding='utf-8', newline='\n') as f:
         f.write(entry)
 
 

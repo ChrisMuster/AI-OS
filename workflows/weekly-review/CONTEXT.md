@@ -1,6 +1,6 @@
 # Weekly Review
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-08-04
 
 ## Purpose
 The cron + memory flywheel for Book Dragon: a weekly retrospective that reads the
@@ -74,9 +74,15 @@ AGENTS-reading AI, with no per-AI scheduling adapter.
   real events and are included.
 
 ## Revision History
-- 2026-07-03 - Run day is never counted in its own review's journal (the day is
-  not finished): excluded from coverage and from the empty-day warning, and always
-  deferred to a later review. Tests 28 -> 31.
 - 2026-07-02 - Initial creation. Gather script (run/gather/state/config), 28-test
   suite, synthesis skill, and the `reviews/` store. Best-practices umbrella
   Bucket-1 child #3 (cron + memory flywheel / weekly review).
+- 2026-07-03 - Run day is never counted in its own review's journal (the day is
+  not finished): excluded from coverage and from the empty-day warning, and always
+  deferred to a later review. Tests 28 -> 31.
+- 2026-08-04 - Maintenance, no behaviour change: the two entries above were
+  reordered into the newest-at-bottom order the schema requires, after the audit
+  gained a mechanical Revision History ordering check that flagged them. Recorded
+  as its own entry because at the own-directory level any real change to a file
+  earns one, reordering included; leaving a corrected file with no record of the
+  correction is the drift the check exists to catch.

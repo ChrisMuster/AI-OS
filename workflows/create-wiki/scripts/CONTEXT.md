@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-07-25
+**Last modified:** 2026-08-04
 
 ## Purpose
 Contains deterministic wiki scaffolding and PDF extraction scripts.
@@ -68,3 +68,4 @@ Both outputs are keyed to the PDF's content digest and cached, so re-running is 
 - 2026-07-08 - Replaced em dashes with hyphens in run.py's durable generated content and log-writing strings (wiki/raw CONTEXT and LOG headings, Revision History seed lines, the wikis/CONTEXT.md insertion entry, and the rerun and root-LOG notes), so scaffolded files and log entries no longer seed ai-style-guard em-dash warnings. Non-durable strings (docstrings, comments, stdout, argparse help) left unchanged.
 - 2026-07-24 - Added a `--text` flag to extract_pdf.py that writes a page-delimited plain-text rendering beside the extraction JSON. Removes the need to hand-write a throwaway flatten script in the session scratchpad on every PDF ingest, which had been the practice because the extractor stopped at JSON. Additive and backward compatible: without the flag the behaviour and output are unchanged.
 - 2026-07-25 - Converted the two em dashes in the Contents entries to hyphens; ai-style-guard flagged the extract_pdf.py line (edited on 2026-07-24), and the run.py line was converted too for consistency. Style-only, no behavioural change.
+- 2026-08-04 - Line endings pinned on every text write in `run.py` and `extract_pdf.py` (the LOG.md append, each scaffolded wiki file, the `wikis/CONTEXT.md` rewrite, and the extracted-PDF cache), which now pass `newline="\n"` explicitly. This directory scaffolds new files, so a translated newline here seeded CRLF into every wiki it created. Part of the project-wide pass closing this defect class at all 48 write sites.

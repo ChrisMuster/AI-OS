@@ -1,6 +1,6 @@
 # Weather - Scripts
 
-**Last modified:** 2026-06-03
+**Last modified:** 2026-08-04
 
 ## Purpose
 Python scripts for the weather workflow. Handles geocoding via Nominatim, weather data retrieval via Open-Meteo, hourly condition grouping, and saved location management.
@@ -32,3 +32,4 @@ N/A - see parent CONTEXT.md [[weather/CONTEXT]] for workflow steps.
 
 ## Revision History
 - 2026-06-03 — Initial creation.
+- 2026-08-04 - Line endings pinned on both `locations.json` writes in `run.py`, which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.

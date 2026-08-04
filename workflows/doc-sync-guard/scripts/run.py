@@ -36,9 +36,18 @@ See DOC-SYNC-GUARD-PLAN.md section 4.2 for the full argument and the documented
 residual (a deliberate mid-task git op that rewrites a file's mtime can raise a
 loud false positive, never a silent miss).
 
-Reports (all findings are WARN under a `doc-sync` label): the audit merges them
-advisory, and the close-out verifier turns them into a hard fail by inspecting
-the label. Exit 0 by default; with --strict, exit 1 when any WARN exists.
+Reports drift as WARN under a `doc-sync` label: the audit merges those advisory,
+and the close-out verifier turns a WARN under that label into a hard fail (a
+DEGRADED finding under the same label is non-blocking).
+Exit 0 by default; with --strict, exit 1 when any WARN exists.
+
+A third severity, DEGRADED, is reserved for "a part of this check could not run"
+- currently only the output-inventory probe, which needs PyYAML while the drift
+scan itself is standard-library only. It is deliberately NOT a WARN: a `doc-sync`
+WARN means drift to every consumer, so reporting a missing package that way makes
+close-out hard-fail and the pre-commit advisory announce drift that does not
+exist. DEGRADED carries its own repair hint through the audit instead, matching
+how every other guard reports an unavailable runtime, and never trips --strict.
 """
 
 import argparse
@@ -65,6 +74,10 @@ Finding = tuple  # (severity, label, message)
 LABEL = "doc-sync"
 WARN = "WARN"
 INFO = "INFO"
+# "A part of this check could not run." Never drift, so consumers that gate on
+# drift must not gate on this. See the module docstring.
+DEGRADED = "DEGRADED"
+SEVERITIES = (WARN, INFO, DEGRADED)
 
 CONTEXT_NAME = "CONTEXT.md"
 LOG_NAME = "LOG.md"
@@ -217,15 +230,76 @@ def owner_dir(path, ctx_dirs):
 # ---------------------------------------------------------------------------
 # Core check
 # ---------------------------------------------------------------------------
+def _missing_package(exc):
+    """Return the top-level package an ImportError names, or "" if it names none.
+
+    `import inventory` fails with the missing module recorded on the exception:
+    an interpreter with no PyYAML reports `yaml`, while a broken import inside
+    the loader reports whatever that import asked for. The top level is what
+    matters, so a failure to find `yaml.cyaml` still reads as PyYAML.
+    """
+    name = getattr(exc, "name", None) or ""
+    return name.split(".")[0]
+
+
+def _inventory_findings():
+    """Probe the classified output inventory; report when it cannot be read.
+
+    The guard does not consume doc-sync exceptions yet - that is the scope
+    extension, and until then every changed directory is checked the same way.
+    What the probe buys now is fail-closed behaviour at the point the answer
+    starts mattering: an inventory that cannot be parsed is reported and exempts
+    nothing, rather than being read as an empty exception set that silently
+    excuses whatever it was meant to classify.
+
+    It is reported as DEGRADED, not WARN. The distinction is the whole point: a
+    `doc-sync` WARN means "a directory changed and its documentation did not",
+    which close-out hard-fails on and the pre-commit hook announces as drift.
+    "PyYAML is not installed on this interpreter" is a different claim, and the
+    project already has a severity for it. The drift scan below is unaffected and
+    still runs in full, which is why this cannot be reported as a check that did
+    not run either.
+
+    The import is deliberately lazy. `run.py` must stay importable and runnable
+    on an interpreter with no PyYAML, because the guard itself has no
+    third-party dependency and several consumers launch it directly.
+
+    Only the two expected failures degrade: PyYAML missing, and a config that is
+    absent or does not satisfy the schema. Anything else propagates, since a
+    guard that swallows an unexpected error is the failure one frame up from the
+    one this probe exists to prevent. That is why the import branch below tests
+    which module was missing rather than catching `ImportError` broadly: a
+    broken import inside `inventory.py` is a defect in this repository, and
+    reporting it as "output inventory unavailable" would file a code bug under
+    the same heading as an unconfigured runtime.
+    """
+    try:
+        import inventory
+    except ImportError as exc:
+        if _missing_package(exc) != "yaml":
+            raise
+        return [(DEGRADED, LABEL,
+                 f"output inventory unavailable - no doc-sync exceptions "
+                 f"applied ({exc})")]
+    try:
+        inventory.default_inventory()
+    except inventory.InventoryError as exc:
+        return [(DEGRADED, LABEL,
+                 f"output inventory unavailable - no doc-sync exceptions "
+                 f"applied ({exc})")]
+    return []
+
+
 def run_check(root, base="HEAD", staged=False):
     """Return doc-sync findings for the current change set. Read-only."""
     root = Path(root)
+    findings = _inventory_findings()
     try:
         tracked = changed_name_status(root, base, staged)
         untracked = [] if staged else untracked_files(root)
         all_committable = committable_paths(root)
     except GitError as exc:
-        return [(WARN, LABEL, f"scan skipped - {exc}")]
+        return findings + [(WARN, LABEL, f"scan skipped - {exc}")]
 
     # Build the change list: (status, path, is_untracked).
     changes = [(s, p, False) for s, p in tracked]
@@ -255,7 +329,6 @@ def run_check(root, base="HEAD", staged=False):
             continue  # the owner's own CONTEXT.md is not "real content"
         real_changes.setdefault(owner, []).append((status, path, is_unt))
 
-    findings = []
     for owner in sorted(real_changes):
         findings.extend(
             _check_directory(root, owner, real_changes[owner],
@@ -398,22 +471,38 @@ def _dedupe(findings):
 # Output
 # ---------------------------------------------------------------------------
 def print_report(findings):
-    counts = {WARN: 0, INFO: 0}
+    counts = {sev: 0 for sev in SEVERITIES}
     for sev, _, _ in findings:
         counts[sev] = counts.get(sev, 0) + 1
     print("# Doc-Sync Guard Report\n")
-    print(f"**Warnings:** {counts[WARN]}  **Info:** {counts[INFO]}\n")
-    if not findings:
-        print("No CONTEXT.md / LOG.md drift found in changed directories.")
-        return
-    for sev in (WARN, INFO):
+    print(f"**Warnings:** {counts[WARN]}  **Info:** {counts[INFO]}  "
+          f"**Degraded (did not run):** {counts[DEGRADED]}\n")
+    # The clean line is about drift, so a degraded probe does not suppress it:
+    # the scan really did find no drift, and the degrade is reported separately
+    # below rather than leaving the reader to infer it from a missing sentence.
+    if not any(f[0] in (WARN, INFO) for f in findings):
+        print("No CONTEXT.md / LOG.md drift found in changed directories.\n")
+    for sev in SEVERITIES:
         group = [f for f in findings if f[0] == sev]
         if not group:
             continue
-        print(f"## {sev}")
+        heading = "DEGRADED (did not run)" if sev == DEGRADED else sev
+        print(f"## {heading}")
         for _, _, msg in sorted(group, key=lambda f: f[2]):
             print(f"- {msg}")
         print()
+
+
+def strict_failed(findings):
+    """True when --strict should exit 1.
+
+    Only drift counts. A DEGRADED finding is deliberately excluded: it says a
+    component could not run, which is a runtime to repair rather than a
+    documentation change to make, and gating on it turns a missing package into
+    a failed close-out. Extracted from main() so the rule is testable without
+    depending on whatever the real working tree happens to contain.
+    """
+    return any(sev == WARN for sev, _, _ in findings)
 
 
 def findings_json(findings):
@@ -444,7 +533,9 @@ def main():
                         help="Scan staged changes (git diff --cached) - the "
                              "pre-commit view")
     parser.add_argument("--strict", action="store_true",
-                        help="Exit 1 if any WARN finding exists (for CI/pre-commit)")
+                        help="Exit 1 if any WARN finding exists (for CI/pre-commit). "
+                             "A DEGRADED finding does not trip it: the runtime, "
+                             "not the documentation, is what needs fixing")
     args = parser.parse_args()
 
     if args.since is not None:
@@ -459,7 +550,7 @@ def main():
         print(findings_json(findings))
     else:
         print_report(findings)
-    if args.strict and any(s == WARN for s, _, _ in findings):
+    if args.strict and strict_failed(findings):
         sys.exit(1)
 
 

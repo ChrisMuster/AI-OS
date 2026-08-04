@@ -1,6 +1,6 @@
 # Weekly Review - Scripts
 
-**Last modified:** 2026-07-02
+**Last modified:** 2026-08-04
 
 ## Purpose
 The deterministic (~90%) half of the weekly-review flywheel: gather the week's
@@ -67,3 +67,4 @@ the review from.
 ## Revision History
 - 2026-07-02 - Initial creation. run.py, gather.py, state.py, config.py for the
   weekly-review flywheel (best-practices umbrella Bucket-1 child #3).
+- 2026-08-04 - Line endings pinned on all three text writes (the LOG.md append and `.last-run` stamp in `run.py`, and the `state.json` save in `state.py`), which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.

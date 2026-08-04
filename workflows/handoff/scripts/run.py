@@ -62,7 +62,7 @@ def _timestamp():
 
 def _append_log(action, note):
     line = f"[{_timestamp()}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with open(_LOG_PATH, "a", encoding="utf-8") as handle:
+    with open(_LOG_PATH, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(line)
 
 

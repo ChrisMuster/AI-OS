@@ -60,7 +60,7 @@ def title(wiki_name: str) -> str:
 
 def append_log(path: Path, ts: str, action: str, note: str) -> None:
     entry = f"[{ts}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with path.open("a", encoding="utf-8") as f:
+    with path.open("a", encoding="utf-8", newline="\n") as f:
         f.write(entry)
 
 
@@ -241,7 +241,8 @@ def make_file(path: Path, content: str, label: str, dry_run: bool) -> None:
     elif dry_run:
         print(f"  [DRY RUN] would create {label}")
     else:
-        path.write_text(content, encoding="utf-8")
+        with path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
         print(f"  [+] {label}")
 
 
@@ -294,7 +295,8 @@ def update_wikis_context(wiki_name: str, wiki_topic: str, d: str, dry_run: bool)
     result.append(rev_entry)
     result.append("")
 
-    WIKIS_CONTEXT.write_text("\n".join(result), encoding="utf-8")
+    with WIKIS_CONTEXT.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(result))
     print(f"  [~] wikis/CONTEXT.md updated")
 
 

@@ -40,7 +40,7 @@ def load_state(path) -> dict:
 
 
 def save_state(path, state: dict) -> None:
-    with open(path, "w", encoding="utf-8") as handle:
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(state, handle, indent=2)
         handle.write("\n")
 

@@ -9,14 +9,25 @@ Two modes:
 --check (default) is read-only. It walks the project tree and reports:
     FAIL  a text file that is not valid UTF-8 (breaks strict readers)
     WARN  mojibake (double-encoded Windows-1252 punctuation) or an unexpected BOM
+    WARN  CR line endings, where the project (and .gitattributes) require LF
     WARN  a text-mode subprocess call with no explicit encoding= (a Windows
           cp1252 decode trap, the exact bug class this workflow exists to stop)
+    WARN  a text-mode write with no explicit newline= (the write-side half of
+          the same trap: Windows text mode turns every LF into CRLF on the way
+          out, so an unpinned write recreates the CR findings above)
     INFO  an open()/read_text()/write_text() call with no explicit encoding=
+
+The encoding and newline clauses are checked independently. Pinning one must
+never suppress the other: until 2026-08-04 the code check returned early on
+encoding=, which left the newline rule unenforced everywhere it mattered most.
 
 --fix repairs the flagged files in place: it restores valid UTF-8, folds
 Windows-1252 punctuation and mojibake to plain ASCII (per the em-dash-avoidance
-rule), strips an unexpected BOM, and normalises line endings to LF. It is
-idempotent and honours --dry-run.
+rule), strips an unexpected BOM, and normalises line endings to LF. A file whose
+only fault is CR endings gets the newline normalisation alone, so a clean file is
+never punctuation-folded just because it was written on Windows. It is
+idempotent and honours --dry-run; --preserve-mtime keeps modification times, so
+a bulk newline pass cannot fool a guard that reads mtime as evidence.
 
 Scraped/imported third-party data is deliberately exempt: 'raw/' import folders
 and 'collections/' data are pruned from the walk so verbatim source data is
@@ -125,13 +136,33 @@ CP1252_BYTES = {
 # Pure helpers (unit-tested without the filesystem)
 # ---------------------------------------------------------------------------
 def scan_text(text):
-    """Return a list of issue codes found in an already-decoded string."""
+    """Return a list of issue codes found in an already-decoded string.
+
+    The caller must pass text decoded WITHOUT newline translation (read the
+    bytes and decode them, never open() in text mode), or the 'crlf' code can
+    never fire: text mode silently rewrites \\r\\n to \\n on the way in, which
+    is the same translation that produces the defect on the way out.
+    """
     codes = []
     if text.startswith(BOM):
         codes.append("bom")
     if any(k in text for k in DOUBLE_ENCODED):
         codes.append("mojibake")
+    if "\r" in text:
+        codes.append("crlf")
     return codes
+
+
+def repair_newlines(data):
+    """Normalise raw bytes to LF endings and change nothing else.
+
+    Separate from repair_bytes because the two answer different questions. A
+    file whose only fault is its line endings is not corrupted, so it must not
+    be put through the full repair, which also folds legitimate smart
+    punctuation to ASCII: that would rewrite the content of every CRLF file in
+    the project to fix their newlines.
+    """
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def repair_text(text):
@@ -228,6 +259,81 @@ def _call_end(src, open_paren_idx):
     return len(src)
 
 
+_KWARG_RE = re.compile(r"^[A-Za-z_]\w*\s*=(?!=)")
+_STR_LITERAL_RE = re.compile(r"^[rbufRBUF]{0,2}('''|\"\"\"|'|\")(.*?)\1$", re.S)
+
+
+def _split_args(call):
+    """Split a ``(...)`` call body into its top-level argument strings.
+
+    Quote- and bracket-aware, so a comma inside a string or a nested call never
+    splits an argument. Used to find an ``open()`` mode where a plain substring
+    test cannot tell a mode from any other short literal in the call."""
+    body = call[1:-1] if call.startswith("(") and call.endswith(")") else call
+    args, depth, quote, start, i = [], 0, None, 0, 0
+    while i < len(body):
+        ch = body[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if body.startswith(quote, i):
+                i += len(quote)
+                quote = None
+                continue
+        elif ch in "\"'":
+            quote = ch * 3 if body.startswith(ch * 3, i) else ch
+            i += len(quote)
+            continue
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(body[start:i])
+            start = i + 1
+        i += 1
+    args.append(body[start:])
+    return [a.strip() for a in args if a.strip()]
+
+
+def _literal_value(arg):
+    """The text inside a simple string literal, or None if it is not one."""
+    m = _STR_LITERAL_RE.match(arg.strip())
+    return m.group(2) if m else None
+
+
+def _open_mode(call):
+    """The literal mode string of an ``open(...)`` call.
+
+    Returns ``""`` when no mode is given (Python defaults to text read), and
+    ``None`` when a mode is present but is not a literal we can read - a
+    computed mode is left alone rather than guessed at, so an unreadable call
+    never produces a false positive."""
+    args = _split_args(call)
+    for a in args:
+        if a.startswith("mode="):
+            return _literal_value(a[len("mode="):])
+    positional = [a for a in args if not _KWARG_RE.match(a)]
+    if len(positional) >= 2:
+        return _literal_value(positional[1])
+    return ""
+
+
+def _is_text_mode_write(name, call):
+    """True for a call that writes text, where Windows translates LF to CRLF on
+    the way out unless ``newline=`` is passed. Reads and binary writes are
+    excluded: the newline rule governs what gets written, not what is read."""
+    if name == ".write_text":
+        return True
+    if name != "open":
+        return False
+    mode = _open_mode(call)
+    if mode is None or "b" in mode:
+        return False
+    return any(c in mode for c in "wax+")
+
+
 def check_python_code(rel, text):
     """Heuristic checks for missing explicit encodings in a .py source string.
 
@@ -241,26 +347,36 @@ def check_python_code(rel, text):
         name = m.group(1)
         end = _call_end(code, m.end() - 1)
         call = text[m.end() - 1:end]
-        if "encoding=" in call:
-            continue
-        if name.startswith("subprocess"):
-            if "text=True" in call or "universal_newlines=True" in call:
-                findings.append((
-                    "WARN", "encoding",
-                    f"{rel}: text-mode {name}(...) with no explicit encoding= "
-                    f"(decodes as cp1252 on Windows)",
-                ))
-        elif name == "open":
-            modes = ("'b'", '"b"', "rb", "wb", "ab", "xb", "+b", "b'", 'b"')
-            if not any(mode in call for mode in modes):
+        if "encoding=" not in call:
+            if name.startswith("subprocess"):
+                if "text=True" in call or "universal_newlines=True" in call:
+                    findings.append((
+                        "WARN", "encoding",
+                        f"{rel}: text-mode {name}(...) with no explicit encoding= "
+                        f"(decodes as cp1252 on Windows)",
+                    ))
+            elif name == "open":
+                modes = ("'b'", '"b"', "rb", "wb", "ab", "xb", "+b", "b'", 'b"')
+                if not any(mode in call for mode in modes):
+                    findings.append((
+                        "INFO", "encoding",
+                        f"{rel}: open(...) with no explicit encoding=",
+                    ))
+            else:  # .read_text / .write_text
                 findings.append((
                     "INFO", "encoding",
-                    f"{rel}: open(...) with no explicit encoding=",
+                    f"{rel}:{name}(...) with no explicit encoding=",
                 ))
-        else:  # .read_text / .write_text
+        # The newline rule is a second, independent clause of the same project
+        # rule, so it is checked separately. Folding it into the encoding branch
+        # above is the defect this structure exists to prevent: a call that
+        # pins encoding= but not newline= would return early and be read as
+        # clean, which is exactly what happened before 2026-08-04.
+        if _is_text_mode_write(name, call) and "newline=" not in call:
             findings.append((
-                "INFO", "encoding",
-                f"{rel}:{name}(...) with no explicit encoding=",
+                "WARN", "encoding",
+                f"{rel}: text-mode {name}(...) with no explicit newline= "
+                f"(Windows text mode writes CRLF)",
             ))
     return findings
 
@@ -310,6 +426,11 @@ def classify_file(root, path):
                 "WARN", "encoding",
                 f"{rel}: mojibake (double-encoded Windows-1252 punctuation)",
             ))
+        elif code == "crlf":
+            findings.append((
+                "WARN", "encoding",
+                f"{rel}: CR line endings (project policy is LF; fix with --fix)",
+            ))
     if path.suffix.lower() == ".py":
         findings.extend(check_python_code(rel, text))
     return findings
@@ -325,30 +446,55 @@ def run_check(root):
 # ---------------------------------------------------------------------------
 # Fix
 # ---------------------------------------------------------------------------
-def _has_encoding_problem(data):
-    """True only if the bytes are invalid UTF-8 or carry mojibake/an unexpected
-    BOM. A clean file whose only 'fancy' content is legitimate Unicode (e.g. a
-    real em dash) is NOT a problem, so --fix never mass-folds the whole project
-    to ASCII; it only repairs genuinely corrupted files."""
+def problem_codes(data):
+    """Issue codes for raw file bytes: ``["invalid-utf8"]`` when the bytes do
+    not decode, otherwise whatever scan_text finds.
+
+    Returns the codes rather than a bool because --fix has to know *which*
+    problem a file has: a CRLF-only file gets its newlines normalised and
+    nothing else, while a corrupted one goes through the full repair."""
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return True
-    return bool(scan_text(text))
+        return ["invalid-utf8"]
+    return scan_text(text)
 
 
-def run_fix(root, dry_run):
-    """Repair only the files with a real encoding problem (invalid UTF-8,
-    mojibake, or an unexpected BOM). Code-pattern findings are advisory and are
-    never auto-edited. A flagged file is fully normalised, which includes folding
-    its legitimate smart punctuation to ASCII. Returns (changed, skipped)."""
+def _has_encoding_problem(data):
+    """True only if the bytes are invalid UTF-8 or carry mojibake, an
+    unexpected BOM, or CR line endings. A clean file whose only 'fancy' content
+    is legitimate Unicode (e.g. a real em dash) is NOT a problem, so --fix never
+    mass-folds the whole project to ASCII; it only repairs genuinely damaged
+    files."""
+    return bool(problem_codes(data))
+
+
+def run_fix(root, dry_run, preserve_mtime=False):
+    """Repair only the files with a real problem (invalid UTF-8, mojibake, an
+    unexpected BOM, or CR line endings). Code-pattern findings are advisory and
+    are never auto-edited.
+
+    A file whose ONLY fault is its line endings gets newline normalisation and
+    nothing else. A genuinely corrupted file is fully normalised, which includes
+    folding its legitimate smart punctuation to ASCII - correct for a damaged
+    file, and quite wrong to apply to a clean one that merely has CRLF.
+
+    ``preserve_mtime`` restores each repaired file's original modification time.
+    Line endings are not content, and doc-sync-guard reads LOG.md mtime as its
+    evidence that a directory recorded its change: a normalisation pass that
+    touched every LOG.md would make every directory look freshly logged and
+    mask real drift. Returns (changed, skipped)."""
     changed, skipped = [], []
     for path in iter_text_files(root):
         rel = path.relative_to(root).as_posix()
         original = path.read_bytes()
-        if not _has_encoding_problem(original):
+        codes = problem_codes(original)
+        if not codes:
             continue
-        repaired, note = repair_bytes(original)
+        if codes == ["crlf"]:
+            repaired, note = repair_newlines(original), "newlines"
+        else:
+            repaired, note = repair_bytes(original)
         if repaired is None:
             skipped.append((rel, note))
             continue
@@ -357,8 +503,11 @@ def run_fix(root, dry_run):
         if dry_run:
             print(f"[DRY RUN] would repair {rel} ({note})")
         else:
+            stat = path.stat() if preserve_mtime else None
             with open(path, "wb") as fh:
                 fh.write(repaired)
+            if stat is not None:
+                os.utime(path, (stat.st_atime, stat.st_mtime))
             print(f"repaired {rel} ({note})")
         changed.append(rel)
     return changed, skipped
@@ -402,7 +551,7 @@ def _now():
 def _log(path, action, note):
     entry = f"[{_now()}] | Actor: Biblio | Action: {action} | Note: {note}"
     sep = "" if (not path.exists() or path.read_text(encoding="utf-8").endswith("\n")) else "\n"
-    with open(path, "a", encoding="utf-8") as fh:
+    with open(path, "a", encoding="utf-8", newline="\n") as fh:
         fh.write(sep + entry + "\n")
 
 
@@ -419,6 +568,10 @@ def main():
                         help="With --fix, print repairs without writing")
     parser.add_argument("--json", action="store_true",
                         help="Emit findings as JSON on stdout (check mode)")
+    parser.add_argument("--preserve-mtime", action="store_true",
+                        help="With --fix, keep each repaired file's modification "
+                             "time (for bulk newline passes, so mtime-based "
+                             "guards are not fooled)")
     args = parser.parse_args()
 
     if args.fix:
@@ -426,7 +579,8 @@ def main():
         if not args.dry_run:
             _log(WORKFLOW_LOG, "started", "Encoding fix run started.")
         try:
-            changed, skipped = run_fix(PROJECT_ROOT, args.dry_run)
+            changed, skipped = run_fix(PROJECT_ROOT, args.dry_run,
+                                       args.preserve_mtime)
         except Exception as exc:
             if not args.dry_run:
                 _log(WORKFLOW_LOG, "failed", f"Encoding fix failed: {exc}")

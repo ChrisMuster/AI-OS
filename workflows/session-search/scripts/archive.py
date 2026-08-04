@@ -60,7 +60,8 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding='utf-8')
+    with STATE_FILE.open('w', encoding='utf-8', newline='\n') as fh:
+        fh.write(json.dumps(state, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,7 @@ def write_archive(session_id: str, records: list, title: str = '',
         return len(records)
 
     archive_file.parent.mkdir(parents=True, exist_ok=True)
-    with archive_file.open('w', encoding='utf-8') as fh:
+    with archive_file.open('w', encoding='utf-8', newline='\n') as fh:
         for record in records:
             fh.write(json.dumps(record, ensure_ascii=False) + '\n')
 

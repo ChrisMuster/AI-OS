@@ -56,8 +56,8 @@ class Tracker:
         key = subreddit.lower()
         ids = self._id_sets.get(key, set())
         ids_file = self.ids_dir / f"{key}.txt"
-        ids_file.write_text("\n".join(sorted(ids)) + "\n", encoding="utf-8",
-                            newline="\n")
+        with ids_file.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(sorted(ids)) + "\n")
 
     def is_downloaded(self, subreddit, post_id):
         ids = self._load_ids(subreddit)
@@ -134,9 +134,7 @@ class Tracker:
         }
 
     def save(self):
-        self.tracker_path.write_text(
-            json.dumps(self._data, indent=2) + "\n", encoding="utf-8",
-            newline="\n",
-        )
+        with self.tracker_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(self._data, indent=2) + "\n")
         for sub_key in self._id_sets:
             self._save_ids(sub_key)

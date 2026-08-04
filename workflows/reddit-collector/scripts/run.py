@@ -75,7 +75,7 @@ def get_timestamp():
 def append_log(action, note):
     ts = get_timestamp()
     entry = f"[{ts}] | Actor: Biblio | Action: {action} | Note: {note}\n"
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
+    with open(LOG_FILE, "a", encoding="utf-8", newline="\n") as f:
         f.write(entry)
 
 
@@ -171,7 +171,8 @@ def make_save_post_fn(subreddit, dry_run=False):
             print(f"  [DRY RUN] Would save: {post['title'][:80]}")
             return True
         content = format_post(post)
-        filepath.write_text(content, encoding="utf-8", newline="\n")
+        with filepath.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
         return True
 
     return save

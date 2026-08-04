@@ -1,6 +1,6 @@
 # Reviews
 
-**Last modified:** 2026-07-02
+**Last modified:** 2026-08-04
 
 ## Purpose
 Store for the weekly-review flywheel. Holds the dated review files that the
@@ -46,3 +46,10 @@ writes it lives in `workflows/weekly-review/` [[workflows/weekly-review/CONTEXT]
 ## Revision History
 - 2026-07-02 - Initial creation. Dedicated store for the weekly-review flywheel
   (best-practices umbrella Bucket-1 child #3).
+- 2026-08-04 - Recorded the 2026-W32 review landing in the store. Contents is
+  unchanged, because it describes the naming convention rather than listing the
+  personal review files, but a file was added and the own-directory rule carries
+  no meaningfulness threshold. The four earlier reviews did not record their
+  arrival here; that gap is a symptom of the guard-coverage problem rather than a
+  precedent, since this directory is gitignored and no git-scoped guard can see
+  a missing entry.
