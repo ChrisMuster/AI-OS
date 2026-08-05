@@ -72,8 +72,8 @@ None
 
 def _make_dir_with_children(root: Path) -> tuple[Path, Path]:
     """Create root/CONTEXT.md + LOG.md and two child dirs (listed, unlisted)."""
-    (root / "CONTEXT.md").write_text(_CLEAN_CONTEXT, encoding="utf-8")
-    (root / "LOG.md").write_text("", encoding="utf-8")
+    (root / "CONTEXT.md").write_bytes(_CLEAN_CONTEXT.encode("utf-8"))
+    (root / "LOG.md").write_bytes("".encode("utf-8"))
     listed = root / "listed"
     unlisted = root / "unlisted"
     listed.mkdir()

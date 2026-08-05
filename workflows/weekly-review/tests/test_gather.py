@@ -30,7 +30,7 @@ class TestJournal(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         (root / "entries").mkdir()
-        (root / "entries" / "2026-07.md").write_text(JOURNAL, encoding="utf-8")
+        (root / "entries" / "2026-07.md").write_bytes(JOURNAL.encode("utf-8"))
         self.journal_root = root
 
     def tearDown(self):
@@ -69,12 +69,11 @@ class TestLogAndMemory(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_log_entries_date_filter(self):
-        (self.root / "LOG.md").write_text(
-            "[2026-06-25T10:00:00+01:00] | before window\n"
-            "[2026-06-28T10:00:00+01:00] | in window\n"
-            "[2026-07-05T10:00:00+01:00] | after window\n"
-            "not a log line\n",
-            encoding="utf-8")
+        (self.root / "LOG.md").write_bytes(
+            ("[2026-06-25T10:00:00+01:00] | before window\n"
+             "[2026-06-28T10:00:00+01:00] | in window\n"
+             "[2026-07-05T10:00:00+01:00] | after window\n"
+             "not a log line\n").encode("utf-8"))
         results = gather.log_entries(self.root, date(2026, 6, 26), date(2026, 7, 2))
         self.assertEqual(len(results), 1)
         _rel, hits = results[0]
@@ -84,18 +83,16 @@ class TestLogAndMemory(unittest.TestCase):
     def test_log_entries_skips_configured_dirs(self):
         data_dir = self.root / "workflows" / "x" / "data"
         data_dir.mkdir(parents=True)
-        (data_dir / "LOG.md").write_text(
-            "[2026-06-28T10:00:00+01:00] | should be skipped\n", encoding="utf-8")
+        (data_dir / "LOG.md").write_bytes("[2026-06-28T10:00:00+01:00] | should be skipped\n".encode("utf-8"))
         results = gather.log_entries(self.root, date(2026, 6, 26), date(2026, 7, 2))
         self.assertEqual(results, [])
 
     def test_memory_changes_filter(self):
         mem = self.root / "memory"
         mem.mkdir()
-        (mem / "LOG.md").write_text(
-            "[2026-06-20T10:00:00+01:00] | old\n"
-            "[2026-06-29T10:00:00+01:00] | recent change\n",
-            encoding="utf-8")
+        (mem / "LOG.md").write_bytes(
+            ("[2026-06-20T10:00:00+01:00] | old\n"
+             "[2026-06-29T10:00:00+01:00] | recent change\n").encode("utf-8"))
         hits = gather.memory_changes(self.root, date(2026, 6, 26), date(2026, 7, 2))
         self.assertEqual(len(hits), 1)
         self.assertIn("recent change", hits[0])
@@ -115,11 +112,11 @@ class TestSessionsAndReviews(unittest.TestCase):
     def test_prior_reviews_excludes_context_log_and_current(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "CONTEXT.md").write_text("# Reviews", encoding="utf-8")
-            (root / "LOG.md").write_text("log line", encoding="utf-8")
-            (root / "2026-W25.md").write_text("week 25 review", encoding="utf-8")
-            (root / "2026-W26.md").write_text("week 26 review", encoding="utf-8")
-            (root / "2026-W27.md").write_text("current draft", encoding="utf-8")
+            (root / "CONTEXT.md").write_bytes("# Reviews".encode("utf-8"))
+            (root / "LOG.md").write_bytes("log line".encode("utf-8"))
+            (root / "2026-W25.md").write_bytes("week 25 review".encode("utf-8"))
+            (root / "2026-W26.md").write_bytes("week 26 review".encode("utf-8"))
+            (root / "2026-W27.md").write_bytes("current draft".encode("utf-8"))
             picked = gather.prior_reviews(root, "2026-W27", 2)
             labels = [label for label, _ in picked]
             self.assertEqual(labels, ["2026-W25", "2026-W26"])  # no CONTEXT/LOG/current
@@ -128,7 +125,7 @@ class TestSessionsAndReviews(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for wk in (24, 25, 26):
-                (root / f"2026-W{wk}.md").write_text(f"week {wk}", encoding="utf-8")
+                (root / f"2026-W{wk}.md").write_bytes(f"week {wk}".encode("utf-8"))
             picked = gather.prior_reviews(root, "2026-W27", 1)
             self.assertEqual([l for l, _ in picked], ["2026-W26"])  # most recent only
 

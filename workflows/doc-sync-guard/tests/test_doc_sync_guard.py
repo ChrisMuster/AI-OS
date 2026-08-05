@@ -361,13 +361,13 @@ class RepoFixture:
     def write(self, rel, text):
         p = self.dir / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text, encoding="utf-8")
+        p.write_bytes(text.encode("utf-8"))
 
     def append_log(self, rel, epoch):
         p = self.dir / rel
         line = (f"[{_iso(epoch)}] | Actor: Biblio | Action: modified | "
                 f"Note: change.\n")
-        with p.open("a", encoding="utf-8") as fh:
+        with p.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(line)
 
     def set_mtime(self, rel, epoch):

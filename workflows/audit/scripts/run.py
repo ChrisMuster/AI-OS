@@ -536,23 +536,37 @@ def run_graph_validation() -> list[Finding]:
 # ---------------------------------------------------------------------------
 # The full audit also runs the encoding-guard check and merges its actionable
 # findings, so an encoding regression (a file that stops being valid UTF-8, new
-# mojibake, a text-mode subprocess call with no explicit encoding, or a
-# text-mode write with no explicit newline) surfaces in the same close-out
-# report. Like the graph hook it is additive and advisory - it never changes the
-# audit's exit code, and a missing or broken encoding-guard reports a DEGRADED
-# finding.
+# mojibake, CR line endings where the project requires LF, a text-mode
+# subprocess call with no explicit encoding, a text-mode write with no explicit
+# newline, or either of those arguments carrying a value the rule does not
+# allow) surfaces in the same close-out report. Like the graph hook it is
+# additive and advisory here - it never changes the audit's exit code, and both
+# a missing or broken encoding-guard and an individual `.py` the guard could not
+# parse report a DEGRADED finding. Downstream is where it differs: `encoding` is
+# one of close-out's BLOCKING_LABELS, so a WARN merged here hard-fails that gate
+# while a DEGRADED stays non-blocking.
 
 def encoding_findings(payload: dict) -> list[Finding]:
     """Map an encoding-guard ``--check --json`` payload to audit Findings.
 
-    Keeps only the actionable severities (WARN and FAIL); the encoding-guard
-    message already carries the file path. Pure (dict in, tuples out) so it can
-    be unit-tested without a subprocess.
+    Keeps the actionable severities (WARN and FAIL) and DEGRADED. The encoding-
+    guard message already carries the file path. Pure (dict in, tuples out) so it
+    can be unit-tested without a subprocess.
+
+    DEGRADED here is a *file* the guard could not check - a `.py` that does not
+    parse - rather than the guard failing to run, which is what
+    :func:`run_encoding_check` reports through :func:`degraded`. It is passed
+    through as-is (mirroring the skill-hardening hook, whose DEGRADED is an
+    unreadable SKILL.md) so close-out routes it down the non-blocking DEGRADED
+    path. Dropping it would be the wrong trade: an unchecked file would then look
+    exactly like a clean one, which is the confusion this whole label exists to
+    prevent. Mapping it to WARN would be worse still, since it would hard-fail
+    close-out over a file nobody claims is broken.
     """
     findings: list[Finding] = []
     for f in payload.get("findings", []):
         severity = f.get("severity")
-        if severity not in ("WARN", "FAIL"):
+        if severity not in ("WARN", "FAIL", DEGRADED):
             continue
         findings.append((severity, "encoding", f.get("message", "")))
     return findings

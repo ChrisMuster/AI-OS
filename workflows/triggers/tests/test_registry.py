@@ -31,7 +31,7 @@ class TestLoad(unittest.TestCase):
     def test_loads_sample(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "triggers.yaml"
-            path.write_text(SAMPLE, encoding="utf-8")
+            path.write_bytes(SAMPLE.encode("utf-8"))
             cats = run_mod.load_registry(path)
             self.assertEqual([c["name"] for c in cats], ["handoff", "audit"])
 
@@ -42,15 +42,13 @@ class TestLoad(unittest.TestCase):
     def test_malformed_is_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "triggers.yaml"
-            path.write_text("categories: [ : : ]\n: bad", encoding="utf-8")
+            path.write_bytes("categories: [ : : ]\n: bad".encode("utf-8"))
             self.assertEqual(run_mod.load_registry(path), [])
 
     def test_entries_without_name_dropped(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "triggers.yaml"
-            path.write_text(
-                "categories:\n  - summary: no name here\n  - name: ok\n",
-                encoding="utf-8")
+            path.write_bytes("categories:\n  - summary: no name here\n  - name: ok\n".encode("utf-8"))
             cats = run_mod.load_registry(path)
             self.assertEqual([c["name"] for c in cats], ["ok"])
 

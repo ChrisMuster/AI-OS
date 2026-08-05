@@ -6,7 +6,7 @@
 Command-line implementation for the backlog-guard workflow.
 
 ## Contents
-- run.py - `workflows/backlog-guard/scripts/run.py` - Takes exact-copy snapshots of `memory/backlog.md`, checks required backlog sections and counts against the latest snapshot, enforces backlog-item size limits, and restores named snapshots on explicit command.
+- run.py - `workflows/backlog-guard/scripts/run.py` [[workflows/backlog-guard/scripts/CONTEXT]] - Takes exact-copy snapshots of `memory/backlog.md`, checks required backlog sections and counts against the latest snapshot, enforces backlog-item size limits, and restores named snapshots on explicit command.
 
 ## Inputs
 - `memory/backlog.md` [[memory/CONTEXT]] by default, or `BACKLOG_GUARD_BACKLOG` in tests.

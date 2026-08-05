@@ -45,7 +45,7 @@ class RunTestCase(unittest.TestCase):
 
     def write_log(self, entries):
         text = "# Memory - Log\n\n" + "".join(e + "\n" for e in entries)
-        self.mem_log.write_text(text, encoding="utf-8")
+        self.mem_log.write_bytes(text.encode("utf-8"))
 
     def run_cli(self, *args):
         env = dict(os.environ)
@@ -55,8 +55,7 @@ class RunTestCase(unittest.TestCase):
             capture_output=True, text=True, encoding="utf-8", env=env)
 
     def set_watermark(self, line):
-        self.state.write_text(
-            json.dumps({"seen_line": line}), encoding="utf-8")
+        self.state.write_bytes(json.dumps({"seen_line": line}).encode("utf-8"))
 
 
 class TestStatus(RunTestCase):
@@ -152,7 +151,7 @@ class TestAck(RunTestCase):
 class TestAnomalies(RunTestCase):
     def test_corrupt_state_status_and_refuse_ack(self):
         self.write_log([entry(1, "created"), entry(2, "modified")])
-        self.state.write_text("{not json", encoding="utf-8")
+        self.state.write_bytes("{not json".encode("utf-8"))
         status = self.run_cli("--status")
         self.assertEqual(status.returncode, 2)
         self.assertIn("could not compute a reliable delta", status.stdout)
@@ -162,7 +161,7 @@ class TestAnomalies(RunTestCase):
 
     def test_corrupt_state_force_baseline_resets(self):
         self.write_log([entry(1, "created"), entry(2, "modified")])
-        self.state.write_text("{not json", encoding="utf-8")
+        self.state.write_bytes("{not json".encode("utf-8"))
         proc = self.run_cli("--ack", "--force-baseline")
         self.assertEqual(proc.returncode, 0)
         self.assertIn("force-baselined", proc.stdout)
@@ -194,7 +193,7 @@ class TestAnomalies(RunTestCase):
         # re-baseline: --status warns and exits 2, --ack refuses and exits 2, and
         # the malformed state file is left untouched.
         self.write_log([entry(1, "created"), entry(2, "modified")])
-        self.state.write_text("{}", encoding="utf-8")
+        self.state.write_bytes("{}".encode("utf-8"))
         status = self.run_cli("--status")
         self.assertEqual(status.returncode, 2)
         self.assertIn("the saved state is malformed", status.stdout)
@@ -207,7 +206,7 @@ class TestAnomalies(RunTestCase):
     def test_empty_object_state_json_flags_anomaly(self):
         # The JSON status path the AGENTS.md startup step reads must also flag it.
         self.write_log([entry(1, "created"), entry(2, "modified")])
-        self.state.write_text("{}", encoding="utf-8")
+        self.state.write_bytes("{}".encode("utf-8"))
         proc = self.run_cli("--status", "--json")
         self.assertEqual(proc.returncode, 2)
         payload = json.loads(proc.stdout)
@@ -219,7 +218,7 @@ class TestAnomalies(RunTestCase):
         # An explicit reset past the malformed-state anomaly baselines to latest,
         # matching the corrupt-state reset behaviour.
         self.write_log([entry(1, "created"), entry(2, "modified")])
-        self.state.write_text("{}", encoding="utf-8")
+        self.state.write_bytes("{}".encode("utf-8"))
         proc = self.run_cli("--ack", "--force-baseline")
         self.assertEqual(proc.returncode, 0)
         self.assertIn("force-baselined", proc.stdout)

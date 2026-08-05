@@ -1,6 +1,6 @@
 # Triggers - Tests
 
-**Last modified:** 2026-07-07
+**Last modified:** 2026-08-04
 
 ## Purpose
 Hermetic unit tests for the trigger-registry loader and renderer, plus a
@@ -42,3 +42,12 @@ None.
   plain-`python` test command can import PyYAML-backed registry code.
 - 2026-07-07 - The shipped-registry integrity test now also asserts the `doc-sync`
   category is present (doc-sync-guard build part 5).
+- 2026-08-04 - The three fixture writes in `test_registry.py` converted from
+  `Path.write_text(..., encoding="utf-8")` to `write_bytes`, so they stop
+  writing CRLF fixtures on Windows and stop breaking the newline half of the
+  AGENTS.md text-I/O rule. These fixtures are YAML documents, where line
+  structure is the syntax. `write_bytes` rather than
+  `Path.write_text(newline=...)`, which is a 3.10 API against the stated 3.9
+  floor. Part of the pass clearing the last 50 sites project-wide; `encoding`
+  became a close-out blocking label in the same change. Suite unchanged at 10;
+  no assertion touched.

@@ -162,7 +162,7 @@ class TestConfigLoader(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "ai-tells.yaml"
-            p.write_text(text, encoding="utf-8")
+            p.write_bytes(text.encode("utf-8"))
             cfg, info = run.load_config(p)
         self.assertEqual(info, [])
         self.assertEqual(cfg["typographic"][0], ("em dash", EM_DASH))

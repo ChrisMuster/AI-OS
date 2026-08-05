@@ -33,7 +33,7 @@ class TestLoadSave(unittest.TestCase):
         # A corrupt state file is an anomaly, not a first run: it must be surfaced.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text("{not json", encoding="utf-8")
+            path.write_bytes("{not json".encode("utf-8"))
             with self.assertRaises(state_mod.StateError) as ctx:
                 state_mod.load_state(path)
             self.assertEqual(ctx.exception.reason, "corrupt")
@@ -41,7 +41,7 @@ class TestLoadSave(unittest.TestCase):
     def test_non_object_json_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text("[1, 2, 3]", encoding="utf-8")
+            path.write_bytes("[1, 2, 3]".encode("utf-8"))
             with self.assertRaises(state_mod.StateError) as ctx:
                 state_mod.load_state(path)
             self.assertEqual(ctx.exception.reason, "malformed")
@@ -51,7 +51,7 @@ class TestLoadSave(unittest.TestCase):
         # never treated as a first run, or it would silently re-baseline.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text("{}", encoding="utf-8")
+            path.write_bytes("{}".encode("utf-8"))
             with self.assertRaises(state_mod.StateError) as ctx:
                 state_mod.load_state(path)
             self.assertEqual(ctx.exception.reason, "malformed")
@@ -59,7 +59,7 @@ class TestLoadSave(unittest.TestCase):
     def test_empty_seen_line_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text('{"seen_line": ""}', encoding="utf-8")
+            path.write_bytes('{"seen_line": ""}'.encode("utf-8"))
             with self.assertRaises(state_mod.StateError) as ctx:
                 state_mod.load_state(path)
             self.assertEqual(ctx.exception.reason, "malformed")
@@ -67,7 +67,7 @@ class TestLoadSave(unittest.TestCase):
     def test_whitespace_seen_line_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text('{"seen_line": "   "}', encoding="utf-8")
+            path.write_bytes('{"seen_line": "   "}'.encode("utf-8"))
             with self.assertRaises(state_mod.StateError) as ctx:
                 state_mod.load_state(path)
             self.assertEqual(ctx.exception.reason, "malformed")
@@ -75,7 +75,7 @@ class TestLoadSave(unittest.TestCase):
     def test_non_string_seen_line_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text('{"seen_line": 123}', encoding="utf-8")
+            path.write_bytes('{"seen_line": 123}'.encode("utf-8"))
             with self.assertRaises(state_mod.StateError) as ctx:
                 state_mod.load_state(path)
             self.assertEqual(ctx.exception.reason, "malformed")
@@ -84,8 +84,7 @@ class TestLoadSave(unittest.TestCase):
         # A valid watermark plus unknown keys still loads: only seen_line matters.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text(json.dumps({"seen_line": E2, "note": "hand-added"}),
-                            encoding="utf-8")
+            path.write_bytes(json.dumps({"seen_line": E2, "note": "hand-added"}).encode("utf-8"))
             loaded = state_mod.load_state(path)
             self.assertEqual(loaded["seen_line"], E2)
 

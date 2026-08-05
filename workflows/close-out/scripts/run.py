@@ -229,12 +229,15 @@ def select_suites(scope):
 # ---------------------------------------------------------------------------
 # Labels that are advisory WARN inside the audit (they never change the audit's
 # own exit code) but hard-fail close-out - the deterministic "done means done"
-# gate (plan R2-3, Option B). Each maps to the noun used in the detail line. Only
-# a WARN blocks: a DEGRADED finding for one of these labels means the guard could
-# not run, which is non-blocking and surfaces via the DEGRADED path instead. Add
-# a third blocking label by adding one entry here - the gate, detail line, and
-# report all derive from this map, so there is nothing else to wire.
-BLOCKING_LABELS = {"doc-sync": "drift", "skill-hardening": "gap"}
+# gate (plan R2-3, Option B). Each maps to the noun used in the detail line.
+# Only a WARN blocks: a DEGRADED finding for one of these labels means the check
+# did not complete for that scope, either because the guard could not run or
+# because one file was skipped as unreadable. It is non-blocking and surfaces via
+# the DEGRADED path instead. Add another blocking label by adding one entry here
+# - the gate, detail line, and report all derive from this map, so there is
+# nothing else to wire.
+BLOCKING_LABELS = {"doc-sync": "drift", "skill-hardening": "gap",
+                   "encoding": "violation"}
 
 
 def gate_audit():
@@ -330,7 +333,11 @@ def gate_tests(selected):
 # Repair
 # ---------------------------------------------------------------------------
 def collect_degraded(gates):
-    """Every DEGRADED message across all gates (checks that could not run)."""
+    """Every DEGRADED message across all gates.
+
+    A DEGRADED message means some check scope was not examined. That can be a
+    whole guard that could not run, or a single file the guard skipped because it
+    could not read it."""
     return [d for g in gates for d in g.get("degraded", [])]
 
 
@@ -338,7 +345,7 @@ def overall_status(overall_pass: bool, degraded: list) -> str:
     """Machine-readable verdict that never lets a degraded run read as a clean pass.
 
     - ``"fail"``     a gate failed.
-    - ``"degraded"`` every gate passed, but at least one check could not run;
+    - ``"degraded"`` every gate passed, but at least one check scope was skipped;
       non-blocking (exit 0), yet distinct from a clean pass so automation or a
       tired human reading only the verdict cannot mistake it for one.
     - ``"pass"``     every check ran and passed.
@@ -353,9 +360,10 @@ def overall_status(overall_pass: bool, degraded: list) -> str:
 def run_repair():
     """Repair the project runtime by running setup.py. Returns (ok, note).
 
-    A DEGRADED check almost always means the .venv is broken or incomplete, and
-    setup.py is the canonical fix. It is only invoked on --repair (opt-in), never
-    silently, so there is no surprise network install.
+    Runtime DEGRADED findings usually mean the .venv is broken or incomplete,
+    and setup.py is the canonical fix for those. File-level DEGRADED findings
+    are not repaired by this helper. It is only invoked on --repair (opt-in),
+    never silently, so there is no surprise network install.
     """
     if not SETUP_PY.exists():
         return False, "repair skipped - setup.py not found"
@@ -391,7 +399,7 @@ def build_report(scope_label, gates, repair_note=None):
     degraded = collect_degraded(gates)
     if degraded:
         lines.append("-" * 60)
-        lines.append(f"DEGRADED - {len(degraded)} check(s) did not run:")
+        lines.append(f"DEGRADED - {len(degraded)} skipped check scope(s):")
         for d in degraded:
             lines.append(f"  - {d}")
     if repair_note:
@@ -426,8 +434,8 @@ def main():
     parser.add_argument("--json", action="store_true", help="Emit the result as JSON.")
     parser.add_argument(
         "--repair", action="store_true",
-        help="If a check DEGRADED (could not run), run setup.py to repair the "
-             "project runtime, then re-run the gates once.",
+        help="If a runtime check DEGRADED, run setup.py to repair the project "
+             "runtime, then re-run the gates once.",
     )
     args = parser.parse_args()
 
@@ -439,8 +447,9 @@ def main():
     gates = [gate_audit(), gate_link(), gate_tests(selected)]
     degraded = collect_degraded(gates)
 
-    # A DEGRADED check did not run. --repair fixes the runtime (setup.py) and
-    # re-runs once; without --repair, point at the fix so it can be run by hand.
+    # A DEGRADED finding means some check scope was skipped. --repair can fix
+    # the runtime failure class by running setup.py and re-running once; a
+    # file-level skip still needs the file-specific message to be handled.
     repair_note = None
     if degraded and args.repair:
         _ok, note = run_repair()
@@ -452,9 +461,10 @@ def main():
         else:
             repair_note = f"--repair: {note}; all checks now run."
     elif degraded:
-        repair_note = ("Some checks DEGRADED (did not run). Re-run with --repair "
-                       "to auto-fix the runtime (runs setup.py), or run the fix "
-                       "shown above and re-run.")
+        repair_note = ("Some checks DEGRADED. If the report says a runtime check "
+                       "did not run, re-run with --repair to auto-fix the runtime "
+                       "(runs setup.py); otherwise handle the file-specific "
+                       "message and re-run.")
 
     overall_pass = all(g["passed"] for g in gates)
     status = overall_status(overall_pass, degraded)
@@ -486,11 +496,11 @@ def main():
 
     verdict = status.upper()
     failed = [g["name"] for g in gates if not g["passed"]]
-    degrade_suffix = f" {len(degraded)} check(s) DEGRADED." if degraded else ""
+    degrade_suffix = f" {len(degraded)} skipped scope(s) DEGRADED." if degraded else ""
     if not overall_pass:
         body = f"Failed: {', '.join(failed)}."
     elif degraded:
-        body = "All gates passed, but some checks did not run."
+        body = "All gates passed, but some check scopes were skipped."
     else:
         body = "All gates green."
     note = f"Close-out verifier {verdict} (scope: {scope_label}). {body}{degrade_suffix}"

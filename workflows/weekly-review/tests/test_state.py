@@ -142,7 +142,7 @@ class TestLoadSave(unittest.TestCase):
     def test_corrupt_file_returns_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text("{not json", encoding="utf-8")
+            path.write_bytes("{not json".encode("utf-8"))
             self.assertEqual(state_mod.load_state(path), {})
 
 

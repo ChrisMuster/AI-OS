@@ -22,7 +22,7 @@ from graph import Graph, Node, Edge  # noqa: E402
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))
 
 
 def _make_tree(root: Path) -> None:

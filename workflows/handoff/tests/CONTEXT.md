@@ -55,3 +55,10 @@ Test results to stdout; exit code 0 on success, non-zero on failure.
   here than it sees in the real tree. `write_bytes` rather than
   `Path.write_text(newline=...)`, which is a 3.10 API against the stated 3.9
   floor. Test count unchanged at 27; no assertion touched.
+- 2026-08-04 - The three fixture writes in `test_state.py` converted to
+  `write_bytes` on the same reasoning (the earlier pass covered `test_gather.py`
+  only). One of them is a `HANDOVER.md` body whose `**Created:**` line the
+  parser reads, so a CRLF ending was feeding it a different input here than it
+  sees in the real tree. Part of the pass clearing the last 50 sites
+  project-wide; `encoding` became a close-out blocking label in the same change.
+  Test count unchanged at 27; no assertion touched.

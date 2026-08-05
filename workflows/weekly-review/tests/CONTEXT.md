@@ -50,3 +50,14 @@ None. Pass/fail via exit code.
   into the newest-at-bottom order the schema requires, after the audit's new
   Revision History ordering check flagged them. Recorded rather than left silent,
   for the reason given in the parent workflow's matching entry.
+- 2026-08-04 - The eleven fixture writes across `test_gather.py` (10) and
+  `test_state.py` converted from `Path.write_text(..., encoding="utf-8")` to
+  `write_bytes`, so they stop writing CRLF fixtures on Windows and stop breaking
+  the newline half of the AGENTS.md text-I/O rule. `test_gather.py` held the
+  single largest concentration in the project, and the fixtures are journal
+  sections and `LOG.md` bodies that the gather readers parse line by line, so
+  CRLF endings were feeding them a different input here than they see in the
+  real tree. `write_bytes` rather than `Path.write_text(newline=...)`, which is
+  a 3.10 API against the stated 3.9 floor. Part of the pass clearing the last 50
+  sites project-wide; `encoding` became a close-out blocking label in the same
+  change. Suite unchanged at 31; no assertion touched.

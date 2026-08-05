@@ -25,7 +25,7 @@ class TestLoadSave(unittest.TestCase):
     def test_corrupt_file_returns_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
-            path.write_text("{not json", encoding="utf-8")
+            path.write_bytes("{not json".encode("utf-8"))
             self.assertEqual(state_mod.load_state(path), {})
 
 
@@ -33,10 +33,9 @@ class TestReadHandoffTimestamp(unittest.TestCase):
     def test_reads_created_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "HANDOVER.md"
-            path.write_text(
-                "# Handover\n\n**Created:** 2026-07-03T10:00:00+01:00  \n"
-                "**Branch:** feature/x\n",
-                encoding="utf-8")
+            path.write_bytes(
+                ("# Handover\n\n**Created:** 2026-07-03T10:00:00+01:00  \n"
+                 "**Branch:** feature/x\n").encode("utf-8"))
             self.assertEqual(
                 state_mod.read_handoff_timestamp(path), "2026-07-03T10:00:00+01:00")
 
@@ -48,7 +47,7 @@ class TestReadHandoffTimestamp(unittest.TestCase):
     def test_falls_back_to_mtime_without_created_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "HANDOVER.md"
-            path.write_text("# Handover\n\nNo created line here.\n", encoding="utf-8")
+            path.write_bytes("# Handover\n\nNo created line here.\n".encode("utf-8"))
             ts = state_mod.read_handoff_timestamp(path)
             self.assertTrue(ts)                 # non-empty
             self.assertIn("T", ts)              # ISO-ish timestamp

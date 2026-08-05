@@ -4,6 +4,13 @@
 Covers the pure ``encoding_findings`` merge helper (severity filtering, label,
 message passthrough) and the graceful-degradation behaviour of
 ``run_encoding_check`` without spawning the real checker.
+
+The two DEGRADED paths are distinct and both are asserted here. The *helper*
+passes through a DEGRADED the guard itself reported, meaning one `.py` it could
+not parse while the rest of the check ran. The *wrapper* builds a DEGRADED
+through ``degraded()`` when the guard could not run at all. Only the second
+carries a repair hint, because only the second describes something a reinstall
+would fix.
 """
 
 import sys
@@ -46,18 +53,44 @@ class TestEncodingFindings(unittest.TestCase):
         self.assertEqual(run.encoding_findings({"findings": []}), [])
         self.assertEqual(run.encoding_findings({}), [])
 
+    def test_degraded_is_passed_through(self):
+        """A `.py` the guard could not parse arrives as DEGRADED.
+
+        Dropping it would make an unchecked file indistinguishable from a clean
+        one, and mapping it to WARN would hard-fail close-out over a file nobody
+        claims is broken. Passing it through is the third option and the only
+        honest one; the skill-hardening hook does the same with an unreadable
+        SKILL.md.
+        """
+        payload = {"findings": [
+            {"severity": "DEGRADED", "label": "encoding",
+             "message": "x.py: code checks skipped - does not parse as Python"},
+        ]}
+        self.assertEqual(
+            run.encoding_findings(payload),
+            [("DEGRADED", "encoding",
+              "x.py: code checks skipped - does not parse as Python")],
+        )
+
+    def test_degraded_is_not_rewrapped_with_a_repair_hint(self):
+        """It is a file-level skip, not a runtime the setup script can install,
+        so the guard's own message stands rather than going through
+        ``degraded()``. The wrapper's did-not-run path still uses that helper."""
+        payload = {"findings": [
+            {"severity": "DEGRADED", "label": "encoding", "message": "x.py: skipped"},
+        ]}
+        self.assertEqual(run.encoding_findings(payload)[0][2], "x.py: skipped")
+
     def test_output_findings_are_valid_audit_tuples(self):
         payload = {"findings": [
             {"severity": "WARN", "label": "encoding", "message": "m"},
+            {"severity": "DEGRADED", "label": "encoding", "message": "d"},
         ]}
+        # INFO is the one the helper still filters out: it is advisory noise the
+        # audit does not carry. WARN, FAIL and DEGRADED are the merged set.
         for finding in run.encoding_findings(payload):
             self.assertEqual(len(finding), 3)
-            # DEGRADED is deliberately absent: this merge helper filters the
-            # payload to WARN/FAIL, so it cannot emit one. DEGRADED belongs to
-            # the run_encoding_check wrapper (the check-did-not-run path),
-            # which is asserted in TestRunEncodingCheckGracefulSkip below.
-            # Widening this tuple would stop it pinning the helper's contract.
-            self.assertIn(finding[0], ("FAIL", "WARN", "INFO"))
+            self.assertIn(finding[0], ("FAIL", "WARN", "DEGRADED"))
 
 
 class TestRunEncodingCheckGracefulSkip(unittest.TestCase):

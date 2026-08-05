@@ -1,6 +1,6 @@
 # Skill-Hardening Guard - Tests
 
-**Last modified:** 2026-07-10
+**Last modified:** 2026-08-04
 
 ## Purpose
 Hermetic tests for the skill-hardening guard: unit tests for the pure parser and checker (both required SKILL.md sections - Hardening and Verification), and integration tests for skill discovery over a throwaway temporary tree. No git, no network, and no dependence on the real project's SKILL.md files, so the suite is deterministic and safe to run anywhere.
@@ -34,3 +34,4 @@ Hermetic tests for the skill-hardening guard: unit tests for the pure parser and
 - 2026-07-09 - Grew to 23 tests for the code-review fixes: multi-line field value, colon-outside label form, fenced-example ignored, angle-bracket stub vs embedded-token, `_`-dir prune, and unreadable-file DEGRADED; plus new `TemplateDriftTests` (REQUIRED_FIELDS matches the template) and `SmokeTests` (real guard subprocess emits valid JSON, exit 0). Added `subprocess`/`json`/`re` imports and a template-file dependency.
 - 2026-07-10 - Grew to 28 tests for the `## Verification` section enforcement (child #7): added a `VerificationSectionTests` class (complete/missing/empty/placeholder, and the Hardening `Verification / escape hatch` field not satisfying the section check), and updated several Hardening-focused fixtures to include a `## Verification` section so each stays single-concern.
 - 2026-07-10 - Codex review follow-up (child #7): tightened `test_run_check_over_tree` to assert the exact two missing-section findings for the bad fixture (was a loose "some finding points at the bad file"), and added `test_template_has_verification_section` to the drift guard so a template that lost its `## Verification` section fails a test. Suite 28 -> 29.
+- 2026-08-04 - The one fixture write in `test_run.py` converted from `Path.write_text(..., encoding="utf-8")` to `write_bytes`, so it stops writing a CRLF fixture on Windows and stops breaking the newline half of the AGENTS.md text-I/O rule. These fixtures are SKILL.md bodies parsed section by section, so CRLF endings were feeding the parser a different input here than it sees in the real tree. `write_bytes` rather than `Path.write_text(newline=...)`, which is a 3.10 API against the stated 3.9 floor. Part of the pass clearing the last 50 sites project-wide; `encoding` became a close-out blocking label in the same change. Suite unchanged at 29; no assertion touched.

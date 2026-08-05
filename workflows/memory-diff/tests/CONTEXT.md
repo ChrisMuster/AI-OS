@@ -1,6 +1,6 @@
 # Memory Diff - Tests
 
-**Last modified:** 2026-07-06
+**Last modified:** 2026-08-04
 
 ## Purpose
 Hermetic unit tests for the memory-diff workflow: the content-watermark delta
@@ -59,3 +59,14 @@ only and touch no real project state, so they are safe to run in close-out.
   `seen_line`, extra keys tolerated) and 3 run.py integration tests (a `{}` state
   warns and refuses ack, the JSON path flags the anomaly, `--force-baseline`
   resets). Suite now 48 tests.
+- 2026-08-04 - The fifteen fixture writes across `test_run.py` (7), `test_state.py`
+  (7) and `test_diff.py` converted from `Path.write_text(..., encoding="utf-8")`
+  to `write_bytes`, so they stop writing CRLF fixtures on Windows and stop
+  breaking the newline half of the AGENTS.md text-I/O rule. The largest
+  concentration in the project, and the most load-bearing: these fixtures are
+  `memory/LOG.md` bodies and `state.json` files whose lines the watermark logic
+  compares, so a CRLF ending changed the very bytes under test. `write_bytes`
+  rather than `Path.write_text(newline=...)`, which is a 3.10 API against the
+  stated 3.9 floor. Part of the pass clearing the last 50 sites project-wide;
+  `encoding` became a close-out blocking label in the same change. Test count
+  unchanged at 48; no assertion touched.

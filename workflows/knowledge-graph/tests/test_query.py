@@ -157,17 +157,9 @@ class TestQueryIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "workflows" / "foo" / "scripts").mkdir(parents=True)
-            (root / "workflows" / "CONTEXT.md").write_text(
-                "# W\n\n## Purpose\nc.\n\n## Contents\n- `workflows/foo/`\n",
-                encoding="utf-8",
-            )
-            (root / "workflows" / "foo" / "CONTEXT.md").write_text(
-                "# Foo\n\n## Purpose\nf.\n\n## Contents\n- `workflows/foo/scripts/`\n",
-                encoding="utf-8",
-            )
-            (root / "workflows" / "foo" / "scripts" / "CONTEXT.md").write_text(
-                "# S\n\n## Purpose\ns.\n", encoding="utf-8"
-            )
+            (root / "workflows" / "CONTEXT.md").write_bytes("# W\n\n## Purpose\nc.\n\n## Contents\n- `workflows/foo/`\n".encode("utf-8"))
+            (root / "workflows" / "foo" / "CONTEXT.md").write_bytes("# Foo\n\n## Purpose\nf.\n\n## Contents\n- `workflows/foo/scripts/`\n".encode("utf-8"))
+            (root / "workflows" / "foo" / "scripts" / "CONTEXT.md").write_bytes("# S\n\n## Purpose\ns.\n".encode("utf-8"))
             g = builder.build_graph(root)
             self.assertEqual(
                 g.subtree("workflows"), ["workflows/foo", "workflows/foo/scripts"]

@@ -1,6 +1,6 @@
 # Tests
 
-**Last modified:** 2026-07-05
+**Last modified:** 2026-08-04
 
 ## Purpose
 Unit tests for the AI-style guard. They exercise the fiddly diff hunk parser with fixture diffs, the tier-1 and tier-2 detectors, the config loader, and the self-exemption guarantee. Trigger characters are built from code points rather than written literally, so this tracked source never carries the markers it tests for.
@@ -32,3 +32,4 @@ Unit tests for the AI-style guard. They exercise the fiddly diff hunk parser wit
 - 2026-06-25 - Initial creation. 19 tests covering the hunk parser, detectors, eligibility, and config loader.
 - 2026-07-04 - Added BootstrapTests: the guard must bootstrap into the `.venv` (contains `ensure_project_runtime()`) and must not carry a PyYAML degrade marker, since a guard that silently skips reports a false clean. 19 -> 20 tests.
 - 2026-07-05 - `run_tests.py` now bootstraps into the project `.venv` via `ensure_project_runtime()` before discovery, so the documented `python workflows/ai-style-guard/tests/run_tests.py` command passes under a plain interpreter that lacks PyYAML (the config-loader tests import the guard and call `load_config`, which reads the config through PyYAML). No test-count change. Codex review-fix pass on the runtime-bootstrap work.
+- 2026-08-04 - The one fixture write in `test_ai_style_guard.py` converted from `Path.write_text(..., encoding="utf-8")` to `write_bytes`, so it stops writing a CRLF fixture on Windows and stops breaking the newline half of the AGENTS.md text-I/O rule. `write_bytes` rather than `Path.write_text(newline=...)`, which is a 3.10 API against the stated 3.9 floor. Part of the pass clearing the last 50 sites project-wide; `encoding` became a close-out blocking label in the same change, so the next one fails a gate instead of being reported and ignored. Test count unchanged at 20; no assertion touched.

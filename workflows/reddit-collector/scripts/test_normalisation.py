@@ -319,7 +319,7 @@ def run_tests():
                        "exclude": ["junk"]}]}
     with tempfile.TemporaryDirectory() as _d:
         _p = Path(_d) / "_overrides.json"
-        _p.write_text(_json.dumps(_ov), encoding="utf-8")
+        _p.write_bytes(_json.dumps(_ov).encode("utf-8"))
         _res = _apply_overrides(_smap, _all, _p)
     _checks = {
         "override series built": "x" in _res,

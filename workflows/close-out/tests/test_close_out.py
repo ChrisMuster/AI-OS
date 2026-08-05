@@ -218,7 +218,7 @@ class CouplingTests(unittest.TestCase):
 
 
 class DegradedSurfacingTests(unittest.TestCase):
-    """A DEGRADED check is shown loudly and never counted as a pass."""
+    """A DEGRADED skipped scope is shown loudly and never counted as a pass."""
 
     def _gates(self, degraded):
         return [
@@ -235,22 +235,22 @@ class DegradedSurfacingTests(unittest.TestCase):
 
     def test_overall_status_distinguishes_degraded_from_clean_pass(self):
         self.assertEqual(run.overall_status(True, []), "pass")
-        self.assertEqual(run.overall_status(True, ["x did not run"]), "degraded")
+        self.assertEqual(run.overall_status(True, ["x skipped"]), "degraded")
         self.assertEqual(run.overall_status(False, []), "fail")
-        self.assertEqual(run.overall_status(False, ["x did not run"]), "fail")
+        self.assertEqual(run.overall_status(False, ["x skipped"]), "fail")
 
     def test_report_surfaces_degraded_and_is_not_a_clean_pass(self):
         gates = self._gates(["encoding check did not run - boom. Fix: run setup.py"])
         report = run.build_report("all", gates)
-        self.assertIn("DEGRADED - 1 check(s) did not run", report)
+        self.assertIn("DEGRADED - 1 skipped check scope(s)", report)
         self.assertIn("encoding check did not run", report)
         # The verdict must read as DEGRADED, distinct from a clean pass, so a
-        # reader of only the RESULT line cannot mistake an unrun check for a pass.
+        # reader of only the RESULT line cannot mistake a skipped scope for a pass.
         self.assertIn("RESULT: DEGRADED", report)
         self.assertNotIn("RESULT: PASS", report)
 
     def test_report_includes_repair_note_when_given(self):
-        gates = self._gates(["x did not run"])
+        gates = self._gates(["x skipped"])
         report = run.build_report("all", gates,
                                   repair_note="--repair: repair ran setup.py (exit 0); all checks now run.")
         self.assertIn("--repair: repair ran setup.py", report)
@@ -280,8 +280,8 @@ class DocSyncTeethTests(unittest.TestCase):
     Plan R2-3, Option B: doc-sync drift is an advisory WARN inside the audit
     (audit exit code unchanged), but the close-out verifier turns it into a hard
     fail by inspecting label *and severity* on the single in-process audit call
-    it already makes. Severity is load-bearing: a doc-sync DEGRADED means the
-    guard could not run, which is non-blocking and surfaces via the DEGRADED
+    it already makes. Severity is load-bearing: a doc-sync DEGRADED means that
+    scope did not complete, which is non-blocking and surfaces via the DEGRADED
     path instead (see ``test_degraded_doc_sync_is_not_drift``).
     """
 
@@ -321,11 +321,11 @@ class DocSyncTeethTests(unittest.TestCase):
         self.assertEqual(gate["blocking"]["doc-sync"], [])
 
     def test_degraded_doc_sync_is_not_drift(self):
-        # A DEGRADED doc-sync finding means the guard could not run. It is
-        # non-blocking: it must not count as drift or hard-fail the structural
+        # A DEGRADED doc-sync finding means the drift scope did not complete. It
+        # is non-blocking: it must not count as drift or hard-fail the structural
         # gate; it surfaces via the DEGRADED path instead. (Regression: the gate
         # once collected every doc-sync finding regardless of severity, so a
-        # degraded guard wrongly failed close-out as drift.)
+        # degraded scope wrongly failed close-out as drift.)
         findings = [("DEGRADED", "doc-sync", "doc-sync check did not run - boom")]
         with self._fake_audit(findings):
             gate = run.gate_audit()
@@ -401,8 +401,9 @@ class SkillHardeningTeethTests(unittest.TestCase):
         self.assertEqual(gate["blocking"]["skill-hardening"], [])
 
     def test_degraded_skill_hardening_is_not_gap(self):
-        # A DEGRADED skill-hardening finding means the guard could not run. It is
-        # non-blocking and surfaces via the DEGRADED path, not as a hard fail.
+        # A DEGRADED skill-hardening finding means a scope went unchecked, such
+        # as a SKILL.md the guard could not read. It is non-blocking and surfaces
+        # via the DEGRADED path, not as a hard fail.
         findings = [("DEGRADED", "skill-hardening",
                      "skill-hardening check did not run - boom")]
         with self._fake_audit(findings):
@@ -431,6 +432,98 @@ class SkillHardeningTeethTests(unittest.TestCase):
         self.assertIn("RESULT: FAIL", report)
         self.assertIn("[skill-hardening]", report)
         self.assertIn("missing `## Hardening` section", report)
+
+
+class EncodingTeethTests(unittest.TestCase):
+    """Close-out hard-fails on encoding findings while the audit stays advisory.
+
+    The third blocking label, added after 50 real violations of the AGENTS.md
+    text-I/O rule sat in a PASSing close-out for a day: the encoding guard
+    reported every one of them, and nothing gated on the report. Detection was
+    never the gap. Same treatment as the other two labels - only a WARN blocks,
+    and a DEGRADED finding means a scope went unchecked, surfacing via the
+    DEGRADED path instead of hard-failing the gate.
+
+    The positive controls are the guard's own two message shapes for the halves
+    of the rule AGENTS.md states: an explicit newline= on every text-mode write,
+    and LF line endings in the files themselves.
+    """
+
+    def _fake_audit(self, findings, dir_count=5):
+        fake_mod = mock.Mock()
+        fake_mod.run_audit.return_value = (findings, dir_count)
+        return mock.patch.object(run, "load_module", return_value=fake_mod)
+
+    def test_missing_newline_write_hard_fails_gate(self):
+        findings = [("WARN", "encoding",
+                     "workflows/x/tests/test_x.py: text-mode .write_text(...) "
+                     "with no explicit newline= (Windows text mode writes CRLF)")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertFalse(gate["passed"])
+        self.assertEqual(len(gate["blocking"]["encoding"]), 1)
+        self.assertIn("encoding violation", gate["detail"])
+
+    def test_cr_line_endings_also_hard_fail(self):
+        findings = [("WARN", "encoding",
+                     "docs/x.md: CR line endings (project policy is LF; "
+                     "fix with --fix)")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertFalse(gate["passed"])
+
+    def test_non_blocking_warn_stays_advisory(self):
+        # The other advisory guards must not be swept up by the new label.
+        findings = [("WARN", "ai-style", "x.md:3: em dash present"),
+                    ("WARN", "personal-data", "y.md: denylisted term")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["blocking"]["encoding"], [])
+
+    def test_info_encoding_finding_does_not_block(self):
+        # The guard reports a missing encoding= on open() at INFO. Only WARN
+        # blocks, so an INFO must leave the gate passing.
+        findings = [("INFO", "encoding",
+                     "workflows/x/scripts/run.py: open(...) with no explicit "
+                     "encoding=")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["blocking"]["encoding"], [])
+
+    def test_degraded_encoding_is_not_a_violation(self):
+        # A DEGRADED encoding finding can also mean one file was skipped as
+        # unreadable. It is non-blocking and surfaces via the DEGRADED path, not
+        # as a hard fail.
+        findings = [("DEGRADED", "encoding",
+                     "x.py: code checks skipped - does not parse as Python")]
+        with self._fake_audit(findings):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["blocking"]["encoding"], [])
+        self.assertIn("code checks skipped", " ".join(gate["degraded"]))
+
+    def test_clean_audit_passes(self):
+        with self._fake_audit([]):
+            gate = run.gate_audit()
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["blocking"]["encoding"], [])
+
+    def test_report_surfaces_encoding_violation_and_fails(self):
+        gates = [
+            {"name": "structural audit", "passed": False,
+             "detail": "5 dirs checked, 0 FAIL, 0 WARN, 1 encoding violation",
+             "blocking": {"encoding": ["workflows/x/tests/test_x.py: text-mode "
+                                       ".write_text(...) with no explicit "
+                                       "newline="]}},
+            {"name": "link audit", "passed": True, "detail": "0 dead link(s)"},
+            {"name": "tests", "passed": True, "detail": "0 files", "files": []},
+        ]
+        report = run.build_report("all", gates)
+        self.assertIn("RESULT: FAIL", report)
+        self.assertIn("[encoding]", report)
+        self.assertIn("no explicit newline=", report)
 
 
 if __name__ == "__main__":

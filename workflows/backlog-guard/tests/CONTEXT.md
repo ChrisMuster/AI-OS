@@ -6,8 +6,8 @@
 Hermetic tests for the backlog-guard workflow.
 
 ## Contents
-- run_tests.py - `workflows/backlog-guard/tests/run_tests.py` - Discovers and runs the test suite.
-- test_backlog_guard.py - `workflows/backlog-guard/tests/test_backlog_guard.py` - Unit and integration tests for parsing, snapshot rotation, count checks, oversized item detection, and restore behaviour.
+- run_tests.py - `workflows/backlog-guard/tests/run_tests.py` [[workflows/backlog-guard/tests/CONTEXT]] - Discovers and runs the test suite.
+- test_backlog_guard.py - `workflows/backlog-guard/tests/test_backlog_guard.py` [[workflows/backlog-guard/tests/CONTEXT]] - Unit and integration tests for parsing, snapshot rotation, count checks, oversized item detection, and restore behaviour.
 
 ## Inputs
 - Temporary directories and test backlog fixtures only.

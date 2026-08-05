@@ -18,7 +18,7 @@ COMPLETED = "[2026-07-04T12:00:00+01:00] | Actor: Biblio | Action: completed | N
 class TestReadLogEntries(unittest.TestCase):
     def _write(self, tmp, text):
         path = Path(tmp) / "LOG.md"
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode("utf-8"))
         return path
 
     def test_parses_entries_and_skips_header_and_blanks(self):

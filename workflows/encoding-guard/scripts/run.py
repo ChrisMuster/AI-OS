@@ -15,7 +15,36 @@ Two modes:
     WARN  a text-mode write with no explicit newline= (the write-side half of
           the same trap: Windows text mode turns every LF into CRLF on the way
           out, so an unpinned write recreates the CR findings above)
-    INFO  an open()/read_text()/write_text() call with no explicit encoding=
+    WARN  an encoding= or newline= that is present but is not a value the rule
+          allows (encoding=None, encoding="cp1252", newline=None, or a newline
+          spelled as a carriage return and a line feed)
+    INFO  an open()/.open()/read_text()/write_text() call with no explicit
+          encoding=
+    DEGRADED  a .py file the code checks could not be read (it does not parse
+          as Python, or does not tokenise). Non-blocking: it says the check did
+          not run on that file, not that the file is wrong.
+
+Calls are found on the parse tree, not by matching call-shaped text. That is
+what keeps a *definition* out of the results: `def open(self, mode="w")` reads
+as a call to any regex and is not a call at all, and since an `encoding` WARN
+now hard-fails close-out, a harmless definition of that name would have blocked
+the gate. A file that cannot be parsed is reported DEGRADED and its code checks
+are skipped, rather than scanned as raw text - the old fallback left strings and
+comments unblanked, so an unparseable file produced findings out of prose.
+
+Both arguments are checked for their value, not merely their presence, because
+AGENTS.md states both clauses as values. They differ in how wide the allowed set
+is: encoding accepts only the spellings of UTF-8, while newline accepts an
+escaped line feed and also the empty string, which is what csv needs to stop the
+writer translating at all. A value is read for what it evaluates to rather than
+for how it was typed, so an escaped spelling of the right value passes and a raw
+literal is judged by the characters it really carries. What the scanner cannot
+read - a variable, an expression, an f-string, or a non-string literal - is left
+silent rather than guessed at.
+
+Both the builtin open() and the Path.open() form are covered on both clauses.
+They differ in where the mode sits (see _OPEN_CALLS): missing the dotted form is
+how a CRLF-writing test fixture survived the 2026-08-04 clearance pass.
 
 The encoding and newline clauses are checked independently. Pinning one must
 never suppress the other: until 2026-08-04 the code check returned early on
@@ -41,6 +70,7 @@ caller or CI can gate on it). --json always prints the payload regardless.
 """
 
 import argparse
+import ast
 import io
 import json
 import os
@@ -212,28 +242,154 @@ def repair_bytes(data):
 # ---------------------------------------------------------------------------
 # Code-pattern checks (Windows cp1252 decode traps in Python source)
 # ---------------------------------------------------------------------------
-_CALL_RE = re.compile(
-    r"(subprocess\.(?:run|Popen|check_output|check_call)|\.read_text|\.write_text|(?<![\w.])open)\s*\("
-)
+# The subprocess entry points that decode output, so a missing encoding= is a
+# cp1252 decode trap rather than a style note.
+_SUBPROCESS_ATTRS = {"run", "Popen", "check_output", "check_call"}
+
+# Call names that take an open()-style mode, mapped to the mode's position in the
+# argument list. Builtin open(path, mode) takes it second; Path.open(mode) takes
+# it first, because the path is the receiver rather than an argument. Reading the
+# wrong position reads the path as the mode, which reports nothing at all.
+_OPEN_CALLS = {"open": 1, ".open": 0}
+
+# `.open` is not owned by pathlib, and the sibling functions sharing the name do
+# not take a mode first: io/gzip/codecs take (file, mode) like the builtin, and
+# os/webbrowser/tarfile take something else entirely. Reading argument 0 as a
+# mode there is a misread, not a finding. Matched on the *leftmost plain name* of
+# the receiver expression, which covers both `tarfile.open(...)` and
+# `zipfile.ZipFile(...).open(...)`; a receiver with no plain name at its root
+# (`(base / name).open("w")`) is left checked, because that shape is a real
+# Path.open and dropping it would delete the coverage this check exists for.
+_NON_PATH_OPEN_ROOTS = {
+    "os", "io", "bz2", "dbm", "gzip", "lzma", "wave", "codecs", "shelve",
+    "shutil", "socket", "sqlite3", "tarfile", "zipfile", "webbrowser",
+}
 
 
-_BLANK_TOKENS = {tokenize.STRING, tokenize.COMMENT}
+def _receiver_root(node):
+    """The leftmost plain name of a receiver expression, or None.
+
+    Walks down through attribute access and calls, so `zipfile.ZipFile("x")`
+    resolves to `zipfile` and `Path(p)` resolves to `Path`. Anything else at the
+    root (a subscript, a binary operator, a literal) has no name to judge and
+    returns None."""
+    while True:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            return None
+
+
+def _call_name(func):
+    """The guard's name for a call, from its callee node, or None to ignore it.
+
+    Names match the ones used in findings: bare `open`, the dotted `.open` /
+    `.read_text` / `.write_text` forms, and `subprocess.<entry point>`. Returning
+    None is how a call leaves the check entirely, which is the right answer for
+    a `.open` on a receiver that is not a path."""
+    if isinstance(func, ast.Name):
+        return "open" if func.id == "open" else None
+    if not isinstance(func, ast.Attribute):
+        return None
+    attr = func.attr
+    if (attr in _SUBPROCESS_ATTRS and isinstance(func.value, ast.Name)
+            and func.value.id == "subprocess"):
+        return "subprocess." + attr
+    if attr in ("read_text", "write_text"):
+        return "." + attr
+    if attr == "open":
+        if _receiver_root(func.value) in _NON_PATH_OPEN_ROOTS:
+            return None
+        return ".open"
+    return None
+
+
+def _node_end_index(node, line_starts, lines):
+    """The character index just past ``node`` in the source, or None.
+
+    ``col_offset`` is a UTF-8 *byte* offset, not a character one, so a line
+    holding any non-ASCII text before the call would be off by the difference.
+    The prefix is re-decoded rather than sliced directly for that reason."""
+    lineno = getattr(node, "end_lineno", None)
+    col = getattr(node, "end_col_offset", None)
+    if lineno is None or col is None or not 1 <= lineno <= len(lines):
+        return None
+    prefix = lines[lineno - 1].encode("utf-8")[:col].decode("utf-8", "ignore")
+    return line_starts[lineno - 1] + len(prefix)
+
+
+def _call_sites(text, code, tree):
+    """``(name, index of the call's opening parenthesis)`` for every checked call.
+
+    Discovery is the half of this check that used to be a regex over call-shaped
+    text, and every shape that matched but was not a call became a finding:
+    `def open(path)`, `def open(self, mode="w")`, `class open(Base)`. A parse
+    tree has no such ambiguity - a definition is not an `ast.Call` - and it also
+    hands over the receiver, which is what lets a non-path `.open` be dropped by
+    name rather than by guessing from its first argument.
+
+    The opening parenthesis is found by scanning forward from the end of the
+    callee through ``code`` (strings and comments blanked, offsets preserved), so
+    a parenthesis inside a trailing comment cannot be mistaken for the call's.
+    The candidate is then confirmed against the tree: the parenthesis it matches
+    must close exactly where the tree says the call ends. Without that check a
+    call the tree can see but the blanked view cannot - a call embedded in an
+    f-string, which Python only tokenises separately from 3.12 - would silently
+    take the offsets of some unrelated later call. A site that fails the check is
+    dropped, so a shape the two views disagree about is left unchecked rather
+    than checked against the wrong text."""
+    lines = text.splitlines(keepends=True)
+    line_starts, pos = [], 0
+    for line in lines:
+        line_starts.append(pos)
+        pos += len(line)
+    sites = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node.func)
+        if name is None:
+            continue
+        end = _node_end_index(node.func, line_starts, lines)
+        call_end = _node_end_index(node, line_starts, lines)
+        if end is None or call_end is None:
+            continue
+        paren = code.find("(", end)
+        if paren == -1 or _call_end(code, paren) != call_end:
+            continue
+        sites.append((name, paren))
+    return sites
+
+
+_COMMENT_TOKENS = {tokenize.COMMENT}
+_BLANK_TOKENS = {tokenize.STRING} | _COMMENT_TOKENS
 for _name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"):
     if hasattr(tokenize, _name):
         _BLANK_TOKENS.add(getattr(tokenize, _name))
 
 
-def _code_only(text):
-    """Return ``text`` with string and comment tokens blanked to spaces, offsets
-    preserved, so the call-pattern regex never matches a call name that only
-    appears in prose, a docstring, or an f-string literal."""
+def _blank_tokens(text, token_types):
+    """``text`` with the given token types blanked to spaces, or None.
+
+    Offsets and total length are preserved, which is what lets two differently
+    blanked views of the same source be sliced by one set of indices.
+
+    None means the source could not be tokenised. It used to mean "return the
+    text unblanked", which is the worst of the three options: the caller could
+    not tell, and every string and comment in the file was then read as code, so
+    an unparseable file produced findings out of its own prose. The caller now
+    degrades instead."""
     try:
         toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except (tokenize.TokenError, IndentationError, SyntaxError):
-        return text
+        return None
     rows = [list(line) for line in text.splitlines(keepends=True)]
     for tok in toks:
-        if tok.type not in _BLANK_TOKENS:
+        if tok.type not in token_types:
             continue
         (sr, sc), (er, ec) = tok.start, tok.end
         for r in range(sr, er + 1):
@@ -244,6 +400,22 @@ def _code_only(text):
                 if row[c] != "\n":
                     row[c] = " "
     return "".join("".join(r) for r in rows)
+
+
+def _code_only(text):
+    """``text`` with string and comment tokens blanked to spaces, so no argument
+    *name* can be read out of a string body or a comment, and so a parenthesis
+    inside a comment is never mistaken for a call's. None if it cannot be
+    tokenised."""
+    return _blank_tokens(text, _BLANK_TOKENS)
+
+
+def _no_comments(text):
+    """``text`` with only comments blanked, so an argument's *value* stays
+    readable (a mode literal has to survive) while a comment sitting inside a
+    call can never be mistaken for one of its arguments. None if it cannot be
+    tokenised."""
+    return _blank_tokens(text, _COMMENT_TOKENS)
 
 
 def _call_end(src, open_paren_idx):
@@ -259,18 +431,23 @@ def _call_end(src, open_paren_idx):
     return len(src)
 
 
-_KWARG_RE = re.compile(r"^[A-Za-z_]\w*\s*=(?!=)")
+_KWARG_RE = re.compile(r"^([A-Za-z_]\w*)\s*=(?!=)")
 _STR_LITERAL_RE = re.compile(r"^[rbufRBUF]{0,2}('''|\"\"\"|'|\")(.*?)\1$", re.S)
 
 
-def _split_args(call):
-    """Split a ``(...)`` call body into its top-level argument strings.
+def _call_body(call):
+    """The inside of a ``(...)`` call, parentheses removed."""
+    return call[1:-1] if call.startswith("(") and call.endswith(")") else call
+
+
+def _arg_spans(body):
+    """The ``(start, end)`` span of every top-level argument in a call body.
 
     Quote- and bracket-aware, so a comma inside a string or a nested call never
-    splits an argument. Used to find an ``open()`` mode where a plain substring
-    test cannot tell a mode from any other short literal in the call."""
-    body = call[1:-1] if call.startswith("(") and call.endswith(")") else call
-    args, depth, quote, start, i = [], 0, None, 0, 0
+    splits an argument. Spans rather than substrings, because the same offsets
+    are used to read an argument's name from one view of the source and its
+    value from another."""
+    spans, depth, quote, start, i = [], 0, None, 0, 0
     while i < len(body):
         ch = body[i]
         if quote:
@@ -290,11 +467,62 @@ def _split_args(call):
         elif ch in ")]}":
             depth -= 1
         elif ch == "," and depth == 0:
-            args.append(body[start:i])
+            spans.append((start, i))
             start = i + 1
         i += 1
-    args.append(body[start:])
-    return [a.strip() for a in args if a.strip()]
+    spans.append((start, len(body)))
+    return spans
+
+
+class _Call:
+    """One parsed call: its keyword arguments by name, its positional argument
+    values, and whether a splat leaves either set unprovable."""
+
+    __slots__ = ("kwargs", "positional", "star", "double_star")
+
+    def __init__(self, kwargs, positional, star, double_star):
+        self.kwargs = kwargs
+        self.positional = positional
+        self.star = star
+        self.double_star = double_star
+
+
+def _parse_call(code_call, value_call):
+    """Parse one call's arguments from two aligned views of the same source.
+
+    Argument *names* are read from ``code_call`` (strings and comments blanked),
+    so nothing inside a string literal or a comment can be read as a keyword.
+    Argument *values* are read from ``value_call`` (comments blanked only), so a
+    mode literal is still readable. Both views preserve the original offsets,
+    which is what lets one set of spans serve both.
+
+    This replaces the substring tests that used to stand in for argument
+    presence. ``"newline=" in call`` was satisfied by a string value, by a
+    comment, and by a longer keyword such as ``file_encoding=``, and was
+    defeated by the spaces in ``newline = "\\n"`` - wrong in both directions,
+    inside the write shapes the guard claims to cover."""
+    body_code = _call_body(code_call)
+    body_value = _call_body(value_call)
+    kwargs, positional = {}, []
+    star = double_star = False
+    for start, end in _arg_spans(body_code):
+        frag_code = body_code[start:end]
+        frag_value = body_value[start:end]
+        lead = len(frag_code) - len(frag_code.lstrip())
+        head = frag_code[lead:]
+        if not head.strip() and not frag_value.strip():
+            continue  # empty span, e.g. a trailing comma
+        if head.startswith("**"):
+            double_star = True
+        elif head.startswith("*"):
+            star = True
+        else:
+            m = _KWARG_RE.match(head)
+            if m:
+                kwargs[m.group(1)] = frag_value[lead + m.end():].strip()
+            else:
+                positional.append(frag_value.strip())
+    return _Call(kwargs, positional, star, double_star)
 
 
 def _literal_value(arg):
@@ -303,81 +531,234 @@ def _literal_value(arg):
     return m.group(2) if m else None
 
 
-def _open_mode(call):
-    """The literal mode string of an ``open(...)`` call.
+def _literal_or_none(arg):
+    """Read an argument written as a plain literal, or as ``None``.
 
-    Returns ``""`` when no mode is given (Python defaults to text read), and
-    ``None`` when a mode is present but is not a literal we can read - a
-    computed mode is left alone rather than guessed at, so an unreadable call
-    never produces a false positive."""
-    args = _split_args(call)
-    for a in args:
-        if a.startswith("mode="):
-            return _literal_value(a[len("mode="):])
-    positional = [a for a in args if not _KWARG_RE.match(a)]
-    if len(positional) >= 2:
-        return _literal_value(positional[1])
+    Returns ``("str", <value>)``, ``("none", None)``, or ``(None, None)`` when
+    the argument is anything else: a variable, an expression, an f-string, or a
+    literal that is not a string. Unreadable stays silent, the same trade
+    ``_open_mode`` makes for a computed mode.
+
+    The value is the *evaluated* string rather than the source spelling, which
+    matters in both directions. ``"\\x0a"`` is a line feed written unusually and
+    must pass; ``r"\\n"`` is a backslash and an 'n', which is not a line feed at
+    all and must fail rather than be excused as unreadable. Comparing source text
+    would get both backwards.
+
+    Kept separate from ``_literal_value`` deliberately. That one serves the mode
+    reader, which wants the characters as typed and for which ``None`` is not a
+    mode; folding the two would change how a mode is read in order to answer a
+    different question."""
+    raw = arg.strip()
+    if raw == "None":
+        return "none", None
+    try:
+        value = ast.literal_eval(raw)
+    except Exception:
+        # literal_eval raises a documented ValueError/SyntaxError for a
+        # non-literal, but also propagates whatever the parse hits on a
+        # fragment this scanner sliced out of a larger call. Anything it
+        # cannot turn into a value is simply unreadable.
+        return None, None
+    return ("str", value) if isinstance(value, str) else (None, None)
+
+
+# Every spelling Python's codec lookup resolves to UTF-8. Lookup normalises case
+# and treats "-" and "_" as the same character, so these are one codec typed
+# several ways rather than several codecs.
+_UTF8_ALIASES = {"utf_8", "utf8", "utf", "u8"}
+
+
+def _encoding_verdict(arg):
+    """Whether an ``encoding=`` argument satisfies the rule, as ``ok``, ``bad``,
+    or None when the value cannot be read.
+
+    AGENTS.md states this clause as a *value*: every read and write passes
+    ``encoding="utf-8"``. Presence alone is not the rule, and unlike the newline
+    clause there is no legitimate competing value to protect, so the value is
+    pinned. ``encoding=None`` is a violation rather than an omission: it names
+    the platform default explicitly, which is cp1252 on Windows."""
+    kind, value = _literal_or_none(arg)
+    if kind == "none":
+        return "bad"
+    if kind is None:
+        return None
+    return "ok" if value.lower().replace("-", "_") in _UTF8_ALIASES else "bad"
+
+
+# The two newline values the project allows, as evaluated strings: a line feed,
+# and the empty string that ``csv`` requires (it asks the writer not to
+# translate, leaving the module's own line endings intact).
+_ALLOWED_NEWLINES = {"\n", ""}
+
+
+def _newline_verdict(arg):
+    """Whether a ``newline=`` argument satisfies the rule, as ``ok``, ``bad``,
+    or None when the value cannot be read.
+
+    Pinned to the allowed set rather than to one value, because ``newline=""``
+    is legitimate for ``csv``. ``newline=None`` is the default this clause exists
+    to stop: it translates every LF to ``os.linesep`` on the way out, which is
+    the CRLF the file check reports."""
+    kind, value = _literal_or_none(arg)
+    if kind == "none":
+        return "bad"
+    if kind is None:
+        return None
+    return "ok" if value in _ALLOWED_NEWLINES else "bad"
+
+
+# A mode string is short and drawn from this set. Checking the shape (rather than
+# accepting any literal) matters for the ``.open`` form, whose first positional
+# argument is the mode for ``Path.open`` but is something else entirely for the
+# unrelated standard-library calls sharing the name: ``webbrowser.open(url)``,
+# ``os.open(path, flags)``, ``tarfile.open(name)``. Read as a mode, the URL
+# "http://x" is a write, on the 'x' in it.
+_MODE_CHARS = set("rwxab+t")
+
+
+def _as_mode(arg):
+    """``arg`` read as an open()-style mode string, or None if it is not one."""
+    value = _literal_value(arg)
+    if value is None or not value or len(value) > 3 or set(value) - _MODE_CHARS:
+        return None
+    return value
+
+
+def _open_mode(parsed, mode_index=1):
+    """The literal mode string of an ``open(...)``-style call.
+
+    ``mode_index`` is the mode's position among the positional arguments; see
+    ``_OPEN_CALLS``. Returns ``""`` when no mode is given (Python defaults to
+    text read), and ``None`` when a mode is present but is not a literal we can
+    read as a mode - a computed mode is left alone rather than guessed at, so an
+    unreadable call never produces a false positive. A positional splat gets the
+    same treatment: it makes the mode's *position* unknowable, which is no more
+    readable than an unknowable value."""
+    if "mode" in parsed.kwargs:
+        return _as_mode(parsed.kwargs["mode"])
+    if parsed.star:
+        return None
+    if len(parsed.positional) > mode_index:
+        return _as_mode(parsed.positional[mode_index])
     return ""
 
 
-def _is_text_mode_write(name, call):
+def _is_text_mode_write(name, parsed):
     """True for a call that writes text, where Windows translates LF to CRLF on
     the way out unless ``newline=`` is passed. Reads and binary writes are
     excluded: the newline rule governs what gets written, not what is read."""
     if name == ".write_text":
         return True
-    if name != "open":
+    if name not in _OPEN_CALLS:
         return False
-    mode = _open_mode(call)
+    mode = _open_mode(parsed, _OPEN_CALLS[name])
     if mode is None or "b" in mode:
         return False
     return any(c in mode for c in "wax+")
 
 
 def check_python_code(rel, text):
-    """Heuristic checks for missing explicit encodings in a .py source string.
+    """Checks for missing or wrong explicit encodings in a .py source string.
 
-    Matching is done against a code-only copy (strings/comments blanked) so prose
-    never produces a false positive; call contents are read from the original so
-    mode strings like ``"wb"`` and ``encoding=`` are still visible. Offsets are
-    identical because blanking preserves length."""
-    findings = []
+    Calls are discovered on the parse tree (``_call_sites``), so only a real
+    call is examined and a definition sharing one of the names is not. Each call
+    is then parsed once, its argument names read from a code-only copy
+    (strings/comments blanked) and its argument values from a copy with only the
+    comments blanked, so a mode string like ``"wb"`` stays readable while neither
+    a string body nor a comment can stand in for a real keyword argument. All
+    views share the original offsets, because blanking preserves length.
+
+    A file that will not parse or will not tokenise returns a single DEGRADED
+    finding and no code findings. Saying "this was not checked" is the honest
+    answer and is non-blocking downstream; the previous behaviour was to scan the
+    raw text with nothing blanked, which turned an unparseable file's prose into
+    WARNs."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return [("DEGRADED", "encoding",
+                 f"{rel}: code checks skipped - does not parse as Python "
+                 f"({exc.msg} at line {exc.lineno})")]
+    except ValueError as exc:  # e.g. a null byte in the source
+        return [("DEGRADED", "encoding",
+                 f"{rel}: code checks skipped - does not parse as Python ({exc})")]
     code = _code_only(text)
-    for m in _CALL_RE.finditer(code):
-        name = m.group(1)
-        end = _call_end(code, m.end() - 1)
-        call = text[m.end() - 1:end]
-        if "encoding=" not in call:
+    values = _no_comments(text)
+    if code is None or values is None:
+        return [("DEGRADED", "encoding",
+                 f"{rel}: code checks skipped - source could not be tokenised")]
+    findings = []
+    for name, start in _call_sites(text, code, tree):
+        end = _call_end(code, start)
+        parsed = _parse_call(code[start:end], values[start:end])
+        # A splat makes the argument list unprovable, so the call is not checked.
+        # ``**opts`` can carry either keyword; ``*parts`` can supply either one
+        # positionally, since both ``open`` and ``write_text`` take ``encoding``
+        # by position too. Left silent and recorded as an unsupported shape
+        # rather than reported either way - the same choice the mode reader makes
+        # for a mode it cannot read, and honest about the boundary instead of
+        # claiming a call is clean that was never actually checked.
+        if parsed.star or parsed.double_star:
+            continue
+        if "encoding" not in parsed.kwargs:
             if name.startswith("subprocess"):
-                if "text=True" in call or "universal_newlines=True" in call:
+                if (parsed.kwargs.get("text") == "True"
+                        or parsed.kwargs.get("universal_newlines") == "True"):
                     findings.append((
                         "WARN", "encoding",
                         f"{rel}: text-mode {name}(...) with no explicit encoding= "
                         f"(decodes as cp1252 on Windows)",
                     ))
-            elif name == "open":
-                modes = ("'b'", '"b"', "rb", "wb", "ab", "xb", "+b", "b'", 'b"')
-                if not any(mode in call for mode in modes):
+            elif name in _OPEN_CALLS:
+                mode = _open_mode(parsed, _OPEN_CALLS[name])
+                # A binary handle has no encoding, so it is not a finding. An
+                # unreadable mode on a `.open(...)` whose receiver named no
+                # known non-path module may still not be a file open at all
+                # (see _MODE_CHARS and _NON_PATH_OPEN_ROOTS - the receiver rule
+                # catches the modules, not a local of any other type), so that
+                # stays silent too; builtin open() is unambiguous and is still
+                # reported.
+                binary = mode is not None and "b" in mode
+                ambiguous = mode is None and name != "open"
+                if not binary and not ambiguous:
                     findings.append((
                         "INFO", "encoding",
-                        f"{rel}: open(...) with no explicit encoding=",
+                        f"{rel}: {name}(...) with no explicit encoding=",
                     ))
             else:  # .read_text / .write_text
                 findings.append((
                     "INFO", "encoding",
                     f"{rel}:{name}(...) with no explicit encoding=",
                 ))
+        elif _encoding_verdict(parsed.kwargs["encoding"]) == "bad":
+            # Present but wrong. Until 2026-08-05 the clause above was the whole
+            # check, so encoding=None and encoding="cp1252" were read as
+            # compliant while AGENTS.md states the rule as a value. An
+            # unreadable value stays silent rather than guessed at.
+            findings.append((
+                "WARN", "encoding",
+                f"{rel}: {name}(...) with encoding="
+                f"{parsed.kwargs['encoding']}, not utf-8",
+            ))
         # The newline rule is a second, independent clause of the same project
         # rule, so it is checked separately. Folding it into the encoding branch
         # above is the defect this structure exists to prevent: a call that
         # pins encoding= but not newline= would return early and be read as
         # clean, which is exactly what happened before 2026-08-04.
-        if _is_text_mode_write(name, call) and "newline=" not in call:
-            findings.append((
-                "WARN", "encoding",
-                f"{rel}: text-mode {name}(...) with no explicit newline= "
-                f"(Windows text mode writes CRLF)",
-            ))
+        if _is_text_mode_write(name, parsed):
+            if "newline" not in parsed.kwargs:
+                findings.append((
+                    "WARN", "encoding",
+                    f"{rel}: text-mode {name}(...) with no explicit newline= "
+                    f"(Windows text mode writes CRLF)",
+                ))
+            elif _newline_verdict(parsed.kwargs["newline"]) == "bad":
+                findings.append((
+                    "WARN", "encoding",
+                    f"{rel}: text-mode {name}(...) with newline="
+                    f"{parsed.kwargs['newline']}, not \"\\n\" (or \"\" for csv)",
+                ))
     return findings
 
 
@@ -517,16 +898,18 @@ def run_fix(root, dry_run, preserve_mtime=False):
 # Output + logging
 # ---------------------------------------------------------------------------
 def print_report(findings):
-    counts = {"FAIL": 0, "WARN": 0, "INFO": 0}
+    counts = {"FAIL": 0, "WARN": 0, "DEGRADED": 0, "INFO": 0}
     for sev, _, _ in findings:
         counts[sev] = counts.get(sev, 0) + 1
     print("# Encoding Guard Report\n")
     print(f"**Failures:** {counts['FAIL']}  **Warnings:** {counts['WARN']}  "
-          f"**Info:** {counts['INFO']}\n")
+          f"**Degraded:** {counts['DEGRADED']}  **Info:** {counts['INFO']}\n")
     if not findings:
         print("No encoding problems found.")
         return
-    for sev in ("FAIL", "WARN", "INFO"):
+    # DEGRADED sits above INFO because it means a file was not checked at all,
+    # which a reader needs to see before an advisory note about one that was.
+    for sev in ("FAIL", "WARN", "DEGRADED", "INFO"):
         group = [f for f in findings if f[0] == sev]
         if not group:
             continue

@@ -533,8 +533,7 @@ class CitationResolutionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        (self.root / "target.md").write_text(
-            "one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+        (self.root / "target.md").write_bytes("one\ntwo\nthree\nfour\nfive\n".encode("utf-8"))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -593,7 +592,7 @@ class CitationResolutionTests(unittest.TestCase):
         self.assertEqual(findings[0][0], "WARN")
 
     def test_file_with_no_trailing_newline_counts_its_last_line(self):
-        (self.root / "tail.md").write_text("a\nb", encoding="utf-8")
+        (self.root / "tail.md").write_bytes("a\nb".encode("utf-8"))
         self.assertEqual(self.check("see `tail.md:2`"), [])
 
 
