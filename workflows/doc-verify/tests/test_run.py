@@ -669,6 +669,144 @@ class LineCountTests(unittest.TestCase):
             self.assertIn("runs past the end", findings[0][1])
 
 
+class SequenceSweepTests(unittest.TestCase):
+    """``check_sequence`` is BOTH kinds of checker, and the controls split on that.
+
+    Its candidate half **counts**: a legal sequence statement must be FOUND, so a
+    positive control here is a sentence the sweep must return. Its known-members
+    half **validates**: a config whose declared members are all findable is a
+    well-formed instance and must produce NOTHING, while a config naming a member
+    the vocabulary cannot reach is an ILLEGAL instance and belongs under rejection
+    control, however much "the check fired" reads like success.
+    """
+
+    CONFIG = {
+        "label": "stage sequence",
+        "subject": [r"\bstage\s*\d+[a-z]?\b"],
+        "relation": [r"\bbefore\b", r"\bafter\b", r"\bwhen\b"],
+    }
+
+    def check(self, text, **overrides):
+        config = dict(self.CONFIG)
+        config.update(overrides)
+        return run.check_sequence(lines_of(text), config)
+
+    # -- candidate half: COUNTS, so a legal instance must be FOUND --------------
+
+    def test_positive_control_subject_and_relation_in_one_sentence(self):
+        findings = self.check("Stage 4 must not start before stage 4a lands.")
+        self.assertTrue(any("stage sequence candidate" in m for _, m in findings))
+
+    def test_positive_control_relational_word_without_an_ordering_word(self):
+        # The member the first hand-written vocabulary missed. It states a real
+        # relationship using "when" and no ordering word at all, which is why the
+        # relation list is relational rather than strictly sequential.
+        findings = self.check("This stage edits the same script when stage 9 runs.")
+        self.assertTrue(any("stage sequence candidate" in m for _, m in findings))
+
+    def test_candidate_split_by_a_hard_wrap_is_found(self):
+        # Built on logical_lines for the reason check_distance was: a sweep run
+        # over physical lines undercounts by wherever the text happened to wrap.
+        findings = self.check("stage 4 must not start\nbefore stage 4a lands")
+        self.assertTrue(any("stage sequence candidate" in m for _, m in findings))
+
+    def test_split_candidate_is_reported_at_the_line_it_starts_on(self):
+        findings = self.check("filler\n\nstage 4 must not\nstart before 4a\n")
+        self.assertTrue(any("line 3" in m for _, m in findings))
+
+    def test_all_candidates_are_info_tier(self):
+        findings = self.check("Stage 4 runs after stage 3.")
+        self.assertTrue(findings)
+        self.assertTrue(all(sev == "INFO" for sev, _ in findings))
+
+    # -- candidate half: NEGATIVE controls, not instances at all ----------------
+
+    def test_negative_control_subject_without_a_relation(self):
+        self.assertEqual(self.check("Stage 4 widens the walk onto dot-trees."), [])
+
+    def test_negative_control_relation_without_a_subject(self):
+        self.assertEqual(self.check("Run the audit before the link pass."), [])
+
+    def test_negative_control_relation_in_a_different_sentence(self):
+        # The reason the sweep splits sentences rather than matching over a joined
+        # paragraph: these two clauses are unrelated, and joining them would invent
+        # a relationship neither sentence states.
+        self.assertEqual(
+            self.check("Stage 4 widens the walk. Run the audit afterwards."), [])
+
+    def test_negative_control_join_does_not_cross_a_blank_line(self):
+        self.assertEqual(self.check("stage 4 widens the walk\n\nbefore anything"),
+                         [])
+
+    # -- known-members half: VALIDATES, so a well-formed config says NOTHING ----
+
+    def test_positive_control_findable_known_member_produces_no_fail(self):
+        findings = self.check(
+            "Stage 4 must not start before stage 4a lands.",
+            known_members=[{"phrase": "must not start before"}])
+        self.assertFalse([f for f in findings if f[0] == "FAIL"])
+
+    def test_rejection_control_unfindable_known_member_fails(self):
+        # The whole point of the check. A vocabulary with a hole reports a smaller
+        # number and reads as a completed inventory, so this is a FAIL rather than
+        # an INFO.
+        findings = self.check(
+            "Stage 4 must not start before stage 4a lands.",
+            known_members=[{"phrase": "edits the same script"}])
+        fails = [m for sev, m in findings if sev == "FAIL"]
+        self.assertEqual(len(fails), 1)
+        self.assertIn("vocabulary has a hole", fails[0])
+
+    def test_rejection_control_narrow_vocabulary_is_caught_by_its_own_member(self):
+        # The exact regression this check exists to prevent, reconstructed: a
+        # relation list of ordering words only, against a member that states its
+        # relationship with "when". Without the known-members control the sweep
+        # would report zero candidates and read as a clean document.
+        findings = run.check_sequence(
+            lines_of("This stage edits the same script when stage 9 runs."),
+            {"label": "stage sequence",
+             "subject": [r"\bstage\s*\d+[a-z]?\b"],
+             "relation": [r"\bbefore\b", r"\bafter\b"],
+             "known_members": [{"phrase": "edits the same script"}]})
+        self.assertTrue(any(sev == "FAIL" for sev, _ in findings))
+
+    def test_fail_is_ordered_ahead_of_the_candidate_list(self):
+        findings = self.check(
+            "Stage 4 runs after stage 3.",
+            known_members=[{"phrase": "nothing like this in the text"}])
+        self.assertEqual(findings[0][0], "FAIL")
+
+    # -- config loading: rejection controls -------------------------------------
+
+    def test_rejection_control_config_without_a_subject(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.json"
+            path.write_bytes(json.dumps({"relation": ["x"]}).encode("utf-8"))
+            with self.assertRaises(ValueError):
+                run.load_sequence_config(path)
+
+    def test_rejection_control_config_with_an_empty_relation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.json"
+            path.write_bytes(
+                json.dumps({"subject": ["x"], "relation": []}).encode("utf-8"))
+            with self.assertRaises(ValueError):
+                run.load_sequence_config(path)
+
+    def test_shipped_example_config_loads_and_declares_members(self):
+        config = run.load_sequence_config(
+            run.PROJECT_ROOT / "workflows/doc-verify/config/sequence-example.json")
+        self.assertTrue(config["known_members"])
+
+    # -- the opt-in property: existing callers are unaffected -------------------
+
+    def test_negative_control_no_config_means_no_sequence_findings(self):
+        text = "Stage 4 must not start before stage 4a lands.\n"
+        findings, _stats = run.check_document(text, run.PROJECT_ROOT,
+                                              only=["distance"], data=b"")
+        self.assertFalse(any("sequence" in m for _, m in findings))
+
+
 class SmokeTests(unittest.TestCase):
     """The real script as a subprocess: the CLI contract a caller depends on.
 

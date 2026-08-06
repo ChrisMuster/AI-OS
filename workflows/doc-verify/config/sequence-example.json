@@ -1,0 +1,35 @@
+{
+  "_comment": "Worked example of a doc-verify sequence-sweep config. Copy it and replace the vocabularies for your own statement class. 'subject' and 'relation' are lists of regex alternatives; a sentence is a candidate when it matches at least one of each. 'known_members' is the positive control: each phrase must appear in some candidate, or the sweep FAILs on the grounds that its vocabulary has a hole. The example below is the guard-coverage stage-order class it was built for.",
+  "label": "stage sequence",
+  "subject": [
+    "\\bstage\\s*\\d+[a-z]?\\b",
+    "\\bgate\\b",
+    "certification sweep"
+  ],
+  "relation": [
+    "\\bbefore\\b", "\\bafter\\b", "\\buntil\\b", "\\bpreced\\w*",
+    "\\bfollow\\w*", "\\bnext\\b", "\\bblock\\w*", "\\bre-?run\\b",
+    "\\bland\\w*", "\\bfirst\\b", "\\blast\\b", "\\bthen\\b", "\\border\\b",
+    "\\bahead of\\b", "\\bbehind\\b", "\\bwhen\\b", "\\bwhile\\b",
+    "\\balongside\\b", "\\btouch\\w*", "\\bconcurrent\\w*", "\\bparallel\\b",
+    "same script", "same file"
+  ],
+  "known_members": [
+    {
+      "phrase": "must not start until it has landed",
+      "note": "Stage 4's dependency on stage 4a."
+    },
+    {
+      "phrase": "Do not make",
+      "note": "Stage 3b's non-dependency on stage 13."
+    },
+    {
+      "phrase": "Re-run stage 13 immediately before this stage",
+      "note": "Stage 6's dependency."
+    },
+    {
+      "phrase": "This stage edits the same script",
+      "note": "Stage 9's interaction note. The member the first vocabulary missed: it states its relationship with 'when this stage runs' and uses no ordering word, which is why 'when' is in the relation list."
+    }
+  ]
+}

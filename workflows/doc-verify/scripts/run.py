@@ -557,6 +557,95 @@ def check_distance(lines):
 
 
 # ---------------------------------------------------------------------------
+# Sequence sweep (opt-in, config-driven)
+# ---------------------------------------------------------------------------
+# A sentence ends at . ; : or ! ? followed by whitespace. Splitting matters here in
+# a way it does not for the distance check: subject and relation must co-occur in
+# one *sentence*, or a joined paragraph mentioning a stage in its first clause and
+# "after" in its last would match as a candidate it never was.
+_SENTENCE_END_RE = re.compile(r"(?<=[.;:!?])\s+")
+
+
+def load_sequence_config(path):
+    """Read a sweep config. Returns the parsed dict.
+
+    The vocabulary is supplied rather than hardcoded because this workflow takes
+    the document as an argument and must stay document-agnostic: a stage token
+    belongs to one project's plan, not to a general markdown checker. JSON rather
+    than YAML so the check stays stdlib-only and cannot inherit a missing-PyYAML
+    degrade path.
+    """
+    with open(path, encoding="utf-8") as handle:
+        config = json.load(handle)
+    for field in ("subject", "relation"):
+        if not config.get(field):
+            raise ValueError(f"sequence config {path} has no non-empty '{field}'")
+    return config
+
+
+def sentences_with_origins(lines):
+    """Yield ``(sentence, line_number)`` over de-wrapped prose.
+
+    Built on ``logical_lines`` rather than on a second de-wrapper: the join and its
+    per-character origin tracking are already defined once in this file, and a
+    sweep that re-implemented them would report a different line number for the
+    same sentence.
+    """
+    for text, origins in logical_lines(lines):
+        offset = 0
+        for sentence in _SENTENCE_END_RE.split(text):
+            if sentence.strip():
+                index = min(offset, len(origins) - 1) if origins else 0
+                yield sentence.strip(), (origins[index] if origins else 1)
+            # +1 approximates the separator consumed by the split; the origin is
+            # only ever used to name the line a sentence starts on.
+            offset += len(sentence) + 1
+
+
+def check_sequence(lines, config):
+    """INFO candidates for sentences stating a relationship between named subjects.
+
+    Never a verdict. The sweep bounds the population; each candidate still needs a
+    human verdict (dependency, non-dependency, interaction note, and so on). Its
+    job is to make a completeness claim checkable rather than remembered.
+
+    **The known-members positive control is the point of this check.** A sweep is
+    only as complete as its vocabulary, and a vocabulary assembled by hand is a
+    sample. Config lists the members the caller already knows are in the class; if
+    the sweep cannot find one, the vocabulary has a hole and every count it
+    produces is an undercount by an unknown amount, so that is a FAIL rather than
+    an INFO. This was not hypothetical: the first vocabulary written for the
+    guard-coverage inventory missed a known member phrased "when this stage runs",
+    because it listed ordering words and not relational ones.
+    """
+    subject = re.compile("|".join(config["subject"]), re.I)
+    relation = re.compile("|".join(config["relation"]), re.I)
+    label = config.get("label", "sequence")
+
+    findings = []
+    hits = []
+    for sentence, number in sentences_with_origins(lines):
+        if subject.search(sentence) and relation.search(sentence):
+            hits.append((number, sentence))
+            excerpt = sentence if len(sentence) <= 120 else sentence[:117] + "..."
+            findings.append((
+                "INFO", f"line {number}: {label} candidate: \"{excerpt}\""))
+
+    for member in config.get("known_members", []):
+        phrase = member.get("phrase", "")
+        if not phrase:
+            continue
+        if not any(phrase.lower() in sentence.lower() for _n, sentence in hits):
+            findings.append((
+                "FAIL", f"sequence sweep did not find known member "
+                        f"\"{phrase}\" - the vocabulary has a hole, so every "
+                        f"count from this sweep is an undercount"))
+
+    findings.sort(key=lambda f: (f[0] != "FAIL",))
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Citations
 # ---------------------------------------------------------------------------
 _CITED_EXTS = (
@@ -649,7 +738,7 @@ def check_citations(lines, root):
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-def check_document(text, root, only=None, data=None):
+def check_document(text, root, only=None, data=None, sequence_config=None):
     """Run the selected checks over one document.
 
     ``text`` is the decoded document; ``data`` its raw bytes, required for the
@@ -680,6 +769,11 @@ def check_document(text, root, only=None, data=None):
         findings.extend(check_distance(lines))
     if "citations" in selected:
         findings.extend(check_citations(lines, root))
+    # Opt-in and gated on a config rather than named in CHECK_NAMES, so that every
+    # existing caller's result is unchanged and a run without a config cannot
+    # silently report a sweep it never performed.
+    if sequence_config is not None:
+        findings.extend(check_sequence(lines, sequence_config))
 
     citations, shorthand = find_citations(lines)
     stats = {
@@ -692,7 +786,7 @@ def check_document(text, root, only=None, data=None):
     return findings, stats
 
 
-def check_file(path, root, only=None):
+def check_file(path, root, only=None, sequence_config=None):
     """Read the target in binary and run the selected checks.
 
     Binary, then decode: the hygiene check needs the bytes as they are on disk, and
@@ -716,7 +810,8 @@ def check_file(path, root, only=None):
 
     text = data.decode("utf-8")
     remaining = [check for check in selected if check != "hygiene"]
-    findings, stats = check_document(text, root, only=remaining, data=data)
+    findings, stats = check_document(text, root, only=remaining, data=data,
+                                     sequence_config=sequence_config)
     return hygiene_findings + findings, stats
 
 
@@ -785,13 +880,29 @@ def main(argv=None):
                         help="Emit findings as JSON on stdout")
     parser.add_argument("--strict", action="store_true",
                         help="Exit 1 if any FAIL or WARN exists (INFO never gates)")
+    parser.add_argument("--sequence-config", metavar="PATH",
+                        help="JSON config enabling the opt-in sequence sweep: "
+                             "subject and relation vocabularies, plus the known "
+                             "members the sweep must find (its positive control)")
     args = parser.parse_args(argv)
+
+    sequence_config = None
+    if args.sequence_config:
+        try:
+            sequence_config = load_sequence_config(args.sequence_config)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            # Loud, not silent: a sweep that could not load its vocabulary would
+            # otherwise report zero candidates and read as a clean document.
+            print(f"FAIL: could not load sequence config "
+                  f"{args.sequence_config} ({exc})")
+            sys.exit(1)
 
     results = []
     hard_error = False
     for name in args.files:
         try:
-            findings, stats = check_file(name, PROJECT_ROOT, only=args.only)
+            findings, stats = check_file(name, PROJECT_ROOT, only=args.only,
+                                         sequence_config=sequence_config)
         except (OSError, UnicodeDecodeError) as exc:
             results.append((name, [("FAIL", f"could not read ({exc})")],
                             {"lines": 0, "tables": 0, "table_rows": 0,
