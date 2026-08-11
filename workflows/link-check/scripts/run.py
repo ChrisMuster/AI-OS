@@ -184,6 +184,7 @@ def add_links_to_file(context_path: Path, dry_run: bool) -> list[str]:
     new_lines: list[str] = []
     all_changes: list[str] = []
     in_code_block = False
+    in_revision_history = False
 
     for line in lines:
         if line.strip().startswith("```"):
@@ -192,6 +193,17 @@ def add_links_to_file(context_path: Path, dry_run: bool) -> list[str]:
             continue
 
         if in_code_block:
+            new_lines.append(line)
+            continue
+
+        # Revision History is dated history, not editable content. The section
+        # runs to the next level-two heading, matching the boundary the audit's
+        # own section parser uses, so the two tools agree on what is editable.
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_revision_history = stripped == "## Revision History"
+
+        if in_revision_history:
             new_lines.append(line)
             continue
 
