@@ -277,12 +277,19 @@ def _precommit_doc_sync(root):
     gate is close-out. Any guard failure is swallowed so a guard bug never
     disrupts commits.
 
-    The findings are filtered to WARN, which means drift and only drift is
+    What is PRINTED is filtered to WARN, which means drift and only drift is
     announced here. The guard's DEGRADED severity says a component of it could
     not run, which is not something a commit message can act on, so it prints
     nothing at all at commit time. That boundary is documented in this
     directory's CONTEXT.md and in the git-hooks CONTEXT.md, and it has to change
     when the guard starts acting on its output inventory.
+
+    What is READ is wider than what is printed, and the two are independent. The
+    guard's INFO findings - today the CONTEXT-only LOG clause it ships switched
+    off - are counted into a fire-log record so the clause can be measured
+    against real commits before anyone decides whether to enable it. The filter
+    above was not relaxed: recording mode adds a silent record, never a line of
+    commit-time output about a clause that is switched off.
     """
     guard_path = root / "workflows" / "doc-sync-guard" / "scripts" / "run.py"
     try:
@@ -294,6 +301,17 @@ def _precommit_doc_sync(root):
             f"skipping the CONTEXT/LOG drift advisory.\n"
         )
         return
+    # One record per fire that reaches this point, written before anything can
+    # go wrong downstream. A fire with no findings is recorded too, carrying
+    # zeroes: a numerator with no denominator cannot be turned into a rate, and
+    # recording only the non-zero commits would silently destroy the
+    # measurement. A degraded fire is recorded rather than dropped, so the read
+    # can exclude it and the exclusion still leaves a trace.
+    fire_log({
+        "event": "doc_sync_recording",
+        "info": sum(1 for f in findings if f[0] == "INFO"),
+        "degraded": sum(1 for f in findings if f[0] == "DEGRADED"),
+    })
     warns = [f for f in findings if f[0] == "WARN"]
     if warns:
         sys.stderr.write(format_doc_sync_advisory(warns))

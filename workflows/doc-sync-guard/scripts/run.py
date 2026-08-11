@@ -9,14 +9,24 @@ hollow filler. The guard only reports; the AI (or human) fixes.
     python workflows/doc-sync-guard/scripts/run.py --check [--json]
         [--since REF | --base BRANCH | --staged] [--strict]
 
-What it catches, for every committable directory whose *real* content changed
-(a file added/removed/edited that is not the directory's own CONTEXT.md/LOG.md):
+What it catches, for every committable directory that changed at all - whether
+its *real* content moved (a file added/removed/edited that is not the
+directory's own CONTEXT.md/LOG.md) or its own CONTEXT.md was the only thing to
+change:
   * CONTEXT.md was not updated in the same change.
   * CONTEXT.md was updated but gained no new Revision History entry, or its
     `**Last modified:**` date disagrees with the newest Revision History date.
   * a child directory was added or removed without the parent CONTEXT.md moving
     (the one mechanical parent-propagation case; subjective prose stays manual).
   * LOG.md gained no entry for the change (verified by mtime; see below).
+
+A CONTEXT-only directory used to open no case at all, so its own CONTEXT.md was
+the one file in the project that could change without being checked. The
+Revision History and Last modified clauses are enabled for it at WARN like any
+other drift. The LOG clause reports at INFO for that population only (recording
+mode): it is built and evaluated, but its rate against a real change stream has
+never been measured, and a `doc-sync` WARN is a close-out hard fail. See the
+workflow CONTEXT.md Known Issues for what would switch it on.
 
 Scope - the working tree by default (R3-1). Two collection modes:
   * default / --since / --base : `git diff <base>` (base=HEAD) plus untracked
@@ -329,9 +339,15 @@ def run_check(root, base="HEAD", staged=False):
             continue  # the owner's own CONTEXT.md is not "real content"
         real_changes.setdefault(owner, []).append((status, path, is_unt))
 
-    for owner in sorted(real_changes):
+    # Iterate the UNION of both keysets. An owner whose only changed file is its
+    # own CONTEXT.md appears in context_changed alone, and iterating real_changes
+    # by itself opened no case for it at all - so that file could be edited with
+    # no Revision History entry and a stale Last modified while the guard stayed
+    # silent. Union rather than concatenation: an owner in both must be processed
+    # once, or every ordinary change set double-reports.
+    for owner in sorted(set(real_changes) | set(context_changed)):
         findings.extend(
-            _check_directory(root, owner, real_changes[owner],
+            _check_directory(root, owner, real_changes.get(owner, []),
                              context_changed, base, staged)
         )
     findings.extend(
@@ -385,12 +401,24 @@ def _check_directory(root, owner, changed_here, context_changed, base, staged):
                              f"({newest})"))
 
     # --- LOG.md (mtime) ---
-    findings.extend(_check_log(root, owner, changed_here, label_dir))
+    # Recording mode. An owner with an empty change list is one whose only
+    # changed file was its own CONTEXT.md: the population this stage added. The
+    # LOG clause reports at INFO for it and stays WARN everywhere else, because
+    # the clause has never been measured against a real change stream and a
+    # `doc-sync` WARN is a close-out hard fail. Switching it on later is this one
+    # severity. Clauses A and B above ship enabled at WARN.
+    log_severity = INFO if not changed_here else WARN
+    findings.extend(_check_log(root, owner, changed_here, label_dir,
+                               log_severity))
     return findings
 
 
-def _check_log(root, owner, changed_here, label_dir):
-    """Verify LOG.md has an entry no older than the batch reference time T."""
+def _check_log(root, owner, changed_here, label_dir, severity=WARN):
+    """Verify LOG.md has an entry no older than the batch reference time T.
+
+    `severity` is WARN for a directory whose real content changed, and INFO for
+    a CONTEXT-only owner (recording mode; see the caller).
+    """
     mtimes = []
     for status, path, _is_unt in changed_here:
         if status == "D":
@@ -411,17 +439,17 @@ def _check_log(root, owner, changed_here, label_dir):
 
     log_path = root / (f"{owner}/{LOG_NAME}" if owner else LOG_NAME)
     if not log_path.exists():
-        return [(WARN, LABEL,
+        return [(severity, LABEL,
                  f"{label_dir}: no LOG.md for a directory whose content changed")]
     try:
         newest = logtime.newest_log_datetime(log_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         newest = None
     if newest is None:
-        return [(WARN, LABEL,
+        return [(severity, LABEL,
                  f"{label_dir}: LOG.md has no parseable entry for this change")]
     if logtime.log_is_behind(newest.timestamp(), reference, MTIME_TOLERANCE):
-        return [(WARN, LABEL,
+        return [(severity, LABEL,
                  f"{label_dir}: LOG.md has no entry for this change "
                  f"(newest entry predates the changed files)")]
     return []

@@ -470,6 +470,205 @@ class TestPrecommitDocSyncSeverity(unittest.TestCase):
         self.assertNotIn("output inventory unavailable", text)
 
 
+class TestPrecommitDocSyncRecording(unittest.TestCase):
+    """The collection path for doc-sync recording mode (stage 14).
+
+    The guard's CONTEXT-only LOG clause ships switched off, reporting INFO. The
+    guard holds no state between runs and its scope is the current change set,
+    so a single command run at the end of an observation period would report on
+    whatever happened to be uncommitted at that moment and every earlier finding
+    would be gone. The pre-commit hook is therefore the collector: it already
+    runs the guard over the staged change set on every commit, and already
+    writes per-fire records to the gitignored fire-log.
+
+    What these pin is the shape of the evidence rather than the advisory. The
+    printed output is unchanged - WARN and nothing else - and the counts are
+    read independently of it.
+    """
+
+    INFO_C_CASE = ("INFO", "doc-sync",
+                   "workflows/foo: LOG.md has no entry for this change "
+                   "(newest entry predates the changed files)")
+    DEGRADE = ("DEGRADED", "doc-sync",
+               "output inventory unavailable - no doc-sync exceptions applied")
+    DRIFT = ("WARN", "doc-sync",
+             "workflows/foo: CONTEXT.md not updated for changes in this directory")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.fire_log = Path(self.tmp.name) / "fire-log.jsonl"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _rows(self):
+        if not self.fire_log.exists():
+            return []
+        return [json.loads(line)
+                for line in self.fire_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+
+    def _recording_rows(self):
+        return [r for r in self._rows() if r.get("event") == "doc_sync_recording"]
+
+    def _fire(self, findings):
+        """One hook fire over a stubbed guard returning `findings`."""
+        guard = mock.Mock()
+        guard.run_check.return_value = list(findings)
+        err = io.StringIO()
+        with mock.patch.object(run_mod, "_load_guard", return_value=guard), \
+             mock.patch.object(run_mod, "FIRE_LOG", self.fire_log), \
+             mock.patch.object(run_mod.sys, "stderr", err):
+            run_mod._precommit_doc_sync(PROJECT_ROOT)
+        return err.getvalue()
+
+    def test_a_fire_records_both_counts(self):
+        # The C case alongside a degraded probe: one row, carrying this fire's
+        # INFO count and its DEGRADED count. Both are needed at read time - the
+        # first is the measurement, the second is what excludes the sample.
+        self._fire([self.INFO_C_CASE, self.DEGRADE])
+        rows = self._recording_rows()
+        self.assertEqual(len(rows), 1, f"expected exactly one row, got {rows}")
+        self.assertEqual(rows[0]["info"], 1)
+        self.assertEqual(rows[0]["degraded"], 1)
+
+    def test_a_fire_with_no_findings_records_zeroes(self):
+        # The denominator. Recording only the non-zero commits would leave a
+        # total that cannot be turned into a rate.
+        self._fire([])
+        rows = self._recording_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["info"], 0)
+        self.assertEqual(rows[0]["degraded"], 0)
+
+    def test_a_degraded_fire_is_recorded_not_dropped(self):
+        # Excluded at read time, not at write time, so a thin observation period
+        # is visible as an exclusion rather than as a short log.
+        self._fire([self.DEGRADE])
+        rows = self._recording_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["degraded"], 1)
+        self.assertEqual(rows[0]["info"], 0)
+
+    def test_a_gate_blocked_fire_records_nothing(self):
+        # run_precommit() returns on a non-zero personal-data code before
+        # _precommit_doc_sync is ever called, so a blocked commit writes no row.
+        # This pins an absence produced by code this stage does not touch: it is
+        # what lets the read treat rows as landed commits rather than as every
+        # time the hook was entered.
+        with mock.patch.object(run_mod, "_precommit_personal_data",
+                               return_value=1), \
+             mock.patch.object(run_mod, "FIRE_LOG", self.fire_log), \
+             mock.patch.object(run_mod, "_git_toplevel", return_value=PROJECT_ROOT):
+            code = run_mod.run_precommit()
+        self.assertEqual(code, 1)
+        self.assertEqual(self._recording_rows(), [])
+
+    def test_the_advisory_still_prints_warn_only(self):
+        # Recording mode adds a silent record, not commit-time output about a
+        # clause that is switched off. Drift is present as the positive control
+        # that the stub reaches the real formatter.
+        text = self._fire([self.INFO_C_CASE, self.DEGRADE, self.DRIFT])
+        self.assertIn("workflows/foo: CONTEXT.md not updated", text)
+        self.assertNotIn("LOG.md has no entry", text)
+        self.assertNotIn("output inventory unavailable", text)
+
+    def test_the_guard_writes_no_file_during_a_fire(self):
+        # The guard's read-only contract, asserted rather than assumed, against
+        # the REAL guard over a throwaway repository carrying the C case: a
+        # CONTEXT-only staged edit whose LOG.md is stale.
+        repo = Path(tempfile.mkdtemp(prefix="rulehooks-docsync-"))
+        try:
+            self._build_context_only_repo(repo)
+            before = self._snapshot(repo)
+            real_load = run_mod._load_guard
+            guard_path = (PROJECT_ROOT / "workflows" / "doc-sync-guard"
+                          / "scripts" / "run.py")
+            err = io.StringIO()
+            with mock.patch.object(
+                    run_mod, "_load_guard",
+                    side_effect=lambda _p, name: real_load(guard_path, name)), \
+                 mock.patch.object(run_mod, "FIRE_LOG", self.fire_log), \
+                 mock.patch.object(run_mod.sys, "stderr", err):
+                run_mod._precommit_doc_sync(repo)
+            self.assertEqual(self._snapshot(repo), before,
+                             "the guard modified the tree it was scanning")
+            # And the fire really happened, so an unchanged tree is evidence of
+            # a read-only guard rather than of a run that never took place.
+            self.assertEqual(len(self._recording_rows()), 1)
+        finally:
+            import shutil
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def test_a_failing_fire_log_write_leaves_the_commit_unaffected(self):
+        # fire_log() never raises, and _precommit_doc_sync never blocks. A
+        # broken recording channel must cost a sample, never a commit.
+        unwritable = Path(self.tmp.name) / "no-such-dir" / "fire-log.jsonl"
+        guard = mock.Mock()
+        guard.run_check.return_value = [self.INFO_C_CASE]
+        err = io.StringIO()
+        with mock.patch.object(run_mod, "_load_guard", return_value=guard), \
+             mock.patch.object(run_mod, "FIRE_LOG", unwritable), \
+             mock.patch.object(run_mod.sys, "stderr", err):
+            self.assertIsNone(run_mod._precommit_doc_sync(PROJECT_ROOT))
+        self.assertFalse(unwritable.exists())
+        with mock.patch.object(run_mod, "_precommit_personal_data",
+                               return_value=0), \
+             mock.patch.object(run_mod, "_load_guard", return_value=guard), \
+             mock.patch.object(run_mod, "FIRE_LOG", unwritable), \
+             mock.patch.object(run_mod, "_git_toplevel", return_value=PROJECT_ROOT), \
+             mock.patch.object(run_mod.sys, "stderr", err):
+            self.assertEqual(run_mod.run_precommit(), 0)
+
+    # --- helpers for the read-only control ---
+    @staticmethod
+    def _build_context_only_repo(repo):
+        def git(*args):
+            subprocess.run(["git", *args], cwd=repo, check=True,
+                           capture_output=True, encoding="utf-8")
+
+        def write(rel, text):
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+
+        context = ("# Foo\n\n**Last modified:** {lm}\n\n## Purpose\n{purpose}\n\n"
+                   "## Revision History\n{entries}\n")
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "Test")
+        write(".gitignore", "**/LOG.md\n")
+        write("workflows/CONTEXT.md",
+              context.format(lm="2026-07-01", purpose="Container.",
+                             entries="- 2026-07-01 - Initial creation."))
+        write("workflows/LOG.md", "# Workflows - Log\n")
+        write("workflows/foo/CONTEXT.md",
+              context.format(lm="2026-07-01", purpose="Foo does a thing.",
+                             entries="- 2026-07-01 - Initial creation."))
+        write("workflows/foo/LOG.md",
+              "[2026-07-01T09:00:00+01:00] | Actor: Biblio | Action: created "
+              "| Note: init.\n")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base", "--no-verify")
+        # The C case: a correct CONTEXT-only edit, staged, with a stale LOG.md.
+        write("workflows/foo/CONTEXT.md",
+              context.format(lm="2026-07-06", purpose="Foo does a thing, v2.",
+                             entries="- 2026-07-01 - Initial creation.\n"
+                                     "- 2026-07-06 - Purpose clarified."))
+        git("add", "workflows/foo/CONTEXT.md")
+
+    @staticmethod
+    def _snapshot(repo):
+        out = {}
+        for path in sorted(repo.rglob("*")):
+            if ".git" in path.parts or not path.is_file():
+                continue
+            stat = path.stat()
+            out[str(path.relative_to(repo))] = (stat.st_size, stat.st_mtime_ns)
+        return out
+
+
 class TestCwdIndependence(unittest.TestCase):
     """The hook launches run.py by absolute path - settings.json anchors it to
     $CLAUDE_PROJECT_DIR - so evaluation must work regardless of the shell's

@@ -529,10 +529,16 @@ class IntegrationTest(unittest.TestCase):
                              purpose="Bar, brand new."))
         r.write("workflows/bar/run.py", "print('bar')\n")
         r.write("workflows/bar/LOG.md", "")
-        # Update the parent Contents + Revision History too.
+        # Update the parent Contents + Revision History too. The parent's own
+        # entry must genuinely be NEW: this fixture used to rewrite the prose
+        # while leaving the entry line byte-identical, which passed only because
+        # the parent - whose sole changed file is its own CONTEXT.md - opened no
+        # case at all before stage 14. That is the defect this suite now covers,
+        # so the fixture has to describe a correct propagation rather than the
+        # one the guard used to be unable to see.
         r.write("workflows/CONTEXT.md",
-                make_context(last_modified="2026-07-06",
-                             entries=("2026-07-06",),
+                make_context(last_modified="2026-07-07",
+                             entries=("2026-07-06", "2026-07-07"),
                              purpose="Workflows container; now includes bar."))
         for f in ("workflows/bar/run.py", "workflows/bar/CONTEXT.md",
                   "workflows/CONTEXT.md"):
@@ -712,6 +718,116 @@ class IntegrationTest(unittest.TestCase):
         r.append_log("workflows/foo/LOG.md", self.now + 5)
         msgs = self._messages(r.check(staged=True))
         self.assertIn("Revision History gained no entry", msgs)
+
+
+class ContextOnlyOwnerTest(unittest.TestCase):
+    """A directory whose only changed file is its own CONTEXT.md (stage 14).
+
+    Before this stage the guard opened no case at all for such a directory, so
+    its CONTEXT.md could be edited with no new Revision History entry and a
+    stale `Last modified` while the guard stayed silent. Widening the population
+    routes these owners into the existing `_check_directory` assertions; it
+    invents none of its own.
+
+    Clauses A and B report at WARN, consistent with every other drift finding.
+    The LOG clause (C) reports at INFO for this population only - recording
+    mode - because it was never measured against a real change stream and a
+    `doc-sync` WARN is a close-out hard fail. The two severity controls below
+    are the ones a suite most easily skips, because what they pin looks like an
+    absence of behaviour.
+    """
+
+    def setUp(self):
+        self.repo = RepoFixture()
+        self.now = time.time()
+
+    def tearDown(self):
+        self.repo.cleanup()
+
+    def _messages(self, findings):
+        return " || ".join(m for _, _, m in findings)
+
+    def _edit_context(self, **kw):
+        """Rewrite foo's CONTEXT.md and nothing else, then stamp its mtime."""
+        self.repo.write("workflows/foo/CONTEXT.md", make_context(**kw))
+        self.repo.set_mtime("workflows/foo/CONTEXT.md", self.now)
+
+    def _log_is_current(self):
+        self.repo.append_log("workflows/foo/LOG.md", self.now + 5)
+
+    # --- one positive control per clause ---
+    def test_clause_a_context_only_edit_without_rh_entry_warns(self):
+        # Clause A: the CONTEXT.md changed but gained no Revision History entry.
+        # Dates stay internally consistent and the LOG is current, so this is
+        # the missing-entry finding on its own.
+        self._edit_context(last_modified="2026-07-01", entries=("2026-07-01",),
+                           purpose="Foo, described differently.")
+        self._log_is_current()
+        findings = self.repo.check()
+        msgs = self._messages(findings)
+        self.assertIn("Revision History gained no entry", msgs)
+        self.assertNotIn("Last modified", msgs)
+
+    def test_clause_b_context_only_last_modified_mismatch_warns(self):
+        # Clause B, tested independently of the missing-entry case: a genuine
+        # new entry IS appended, so clause A is satisfied and only the stale
+        # `Last modified` is left to fire.
+        self._edit_context(last_modified="2026-07-01",
+                           entries=("2026-07-01", "2026-07-06"),
+                           purpose="Foo v2.")
+        self._log_is_current()
+        findings = self.repo.check()
+        msgs = self._messages(findings)
+        self.assertIn("does not match", msgs)
+        self.assertNotIn("gained no entry", msgs)
+
+    def test_clause_c_context_only_edit_with_stale_log_is_reported(self):
+        # Clause C: the CONTEXT.md edit is correct in itself, but the
+        # directory's LOG.md has no entry for it. The clause ships switched off
+        # (INFO, below) - it is still built, and an untested disabled clause
+        # gets enabled later on nothing.
+        self._edit_context(last_modified="2026-07-06",
+                           entries=("2026-07-01", "2026-07-06"),
+                           purpose="Foo v2.")
+        # LOG.md deliberately left at its 2026-07-01 entry.
+        msgs = self._messages(self.repo.check())
+        self.assertIn("LOG.md has no entry for this change", msgs)
+
+    # --- recording mode ---
+    def test_clause_c_reports_info_and_never_warn(self):
+        # Asserted on the severity rather than on the message: recording mode is
+        # the whole point of the clause shipping switched off, and a message
+        # match would pass just as happily at WARN.
+        self._edit_context(last_modified="2026-07-06",
+                           entries=("2026-07-01", "2026-07-06"),
+                           purpose="Foo v2.")
+        findings = self.repo.check()
+        log_findings = [f for f in findings if "LOG.md" in f[2]]
+        self.assertTrue(log_findings, "expected the LOG clause to report")
+        for severity, _, message in log_findings:
+            self.assertEqual(severity, "INFO", f"expected INFO, got {severity}: {message}")
+        self.assertFalse([f for f in findings if f[0] == "WARN"],
+                         f"recording mode must emit no WARN: {self._messages(findings)}")
+
+    def test_strict_passes_over_a_recorded_finding(self):
+        # The property that keeps recording mode out of close-out: `doc-sync` is
+        # a blocking label there, so an INFO that tripped --strict would hard-fail
+        # every close-out for a clause nobody switched on.
+        self._edit_context(last_modified="2026-07-06",
+                           entries=("2026-07-01", "2026-07-06"),
+                           purpose="Foo v2.")
+        findings = self.repo.check()
+        self.assertTrue([f for f in findings if f[0] == "INFO"],
+                        "expected a recorded finding to gate on")
+        self.assertFalse(run.strict_failed(findings))
+
+    # --- negative control ---
+    def test_correct_context_only_edit_is_silent_at_every_severity(self):
+        self._edit_context(last_modified="2026-07-06",
+                           entries=("2026-07-01", "2026-07-06"),
+                           purpose="Foo v2.")
+        self._log_is_current()
+        self.assertEqual(self.repo.check(), [])
 
 
 if __name__ == "__main__":
