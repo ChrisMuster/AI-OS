@@ -419,7 +419,12 @@ class TestPrecommitDocSync(unittest.TestCase):
 
     def test_doc_sync_guard_crash_is_swallowed(self):
         # A guard bug must never disrupt commits: _precommit_doc_sync swallows it.
-        with mock.patch.object(run_mod, "_load_guard",
+        # FIRE_LOG is redirected even though this path returns before writing, so
+        # the rule "every call site redirects it" has no exceptions to reason about.
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(run_mod, "FIRE_LOG",
+                               Path(tmp) / "fire-log.jsonl"), \
+             mock.patch.object(run_mod, "_load_guard",
                                side_effect=OSError("boom")):
             # Must not raise; returns None (advisory skipped).
             self.assertIsNone(run_mod._precommit_doc_sync(PROJECT_ROOT))
@@ -443,12 +448,24 @@ class TestPrecommitDocSyncSeverity(unittest.TestCase):
     DRIFT = ("WARN", "doc-sync",
              "workflows/foo: CONTEXT.md not updated for changes in this directory")
 
+    def setUp(self):
+        # _precommit_doc_sync appends a fire-log record, so the fire-log must be
+        # redirected or this suite writes junk samples into the real store the
+        # recording-mode observation period counts. These tests predate that
+        # write and were silent side-effect-free calls until it was added.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.fire_log = Path(self.tmp.name) / "fire-log.jsonl"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
     def _advisory_for(self, findings):
         """Run the advisory against a stubbed guard; return what it printed."""
         guard = mock.Mock()
         guard.run_check.return_value = list(findings)
         err = io.StringIO()
         with mock.patch.object(run_mod, "_load_guard", return_value=guard), \
+             mock.patch.object(run_mod, "FIRE_LOG", self.fire_log), \
              mock.patch.object(run_mod.sys, "stderr", err):
             run_mod._precommit_doc_sync(PROJECT_ROOT)
         return err.getvalue()
@@ -657,6 +674,45 @@ class TestPrecommitDocSyncRecording(unittest.TestCase):
                              entries="- 2026-07-01 - Initial creation.\n"
                                      "- 2026-07-06 - Purpose clarified."))
         git("add", "workflows/foo/CONTEXT.md")
+
+    def test_no_test_writes_to_the_real_fire_log(self):
+        # The suite must never append to the real fire-log: it is the store the
+        # recording-mode observation period counts, and a junk row with
+        # degraded=0 would be indistinguishable from a genuine sample reporting
+        # no findings. This was live rather than theoretical - adding the write
+        # to _precommit_doc_sync turned three previously side-effect-free tests
+        # in TestPrecommitDocSyncSeverity into producers, and nine junk rows
+        # reached the real store before it was noticed.
+        #
+        # Checked at the source rather than at runtime, because a runtime check
+        # only catches the test that happens to run.
+        source = Path(__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        offenders = []
+        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+            setup_redirects = any(
+                "FIRE_LOG" in ast.dump(fn)
+                for fn in cls.body
+                if isinstance(fn, ast.FunctionDef) and fn.name == "setUp"
+            )
+            for fn in cls.body:
+                if not isinstance(fn, ast.FunctionDef):
+                    continue
+                dumped = ast.dump(fn)
+                if "_precommit_doc_sync" not in dumped and "run_precommit" not in dumped:
+                    continue
+                if "FIRE_LOG" in dumped or setup_redirects:
+                    continue
+                offenders.append(f"{cls.name}.{fn.name}")
+        # Allow only the two that mock _precommit_doc_sync itself, so the real
+        # function - and therefore the write - is never entered.
+        allowed = {
+            "TestPrecommitDocSync.test_personal_data_block_skips_doc_sync",
+            "TestPrecommitDocSync.test_clean_personal_data_runs_doc_sync_and_allows",
+        }
+        self.assertEqual(
+            sorted(set(offenders) - allowed), [],
+            "these tests reach the fire-log write without redirecting FIRE_LOG")
 
     @staticmethod
     def _snapshot(repo):
