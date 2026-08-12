@@ -6,9 +6,15 @@ Hard (blocking) rules come before trial (warn-only) rules so a real block is
 never masked by a warn.
 
 Phase 1 scope (see HOOKS-PLAN.md 4E / rollout Task 9):
-  shell : A6 dangerous-bash, A4 LOG-redirect, A7 .env-redirect (block) + A2, A3 (trial, warn)
+  shell : A6 dangerous-bash, A4 LOG-redirect, A7 .env-redirect, A8
+          PowerShell-here-string (block) + A2, A3 (trial, warn)
   write : A7 .env-protect, B3 personal-data (block)
   read  : none (reads are allowed in Phase 1)
+
+A8 was added after Phase 1 and ships blocking without a trial period, because a
+trial records the fault and lets the call through, which is the behaviour it
+exists to correct. A5 is a separate, still-unbuilt rule about reaching for the
+PowerShell tool at all; A8 is about PowerShell *syntax* inside a Bash call.
 
 Phase 2+ adds A1 (relative paths), A5 (Claude PowerShell), and flips A2/A3 to
 blocking once the fire-log shows them clean.
@@ -18,10 +24,11 @@ from .env_protect import check as a7_env
 from .log_redirect import check as a4_log
 from .dangerous_bash import check as a6_bash
 from .personal_data import check as b3_personal
+from .powershell_syntax import check as a8_powershell
 from .shell_style import check_forward_slashes as a2_slashes
 from .shell_style import check_dedicated_tools as a3_tools
 
-_SHELL_RULES = [a6_bash, a4_log, a7_env, a2_slashes, a3_tools]
+_SHELL_RULES = [a6_bash, a4_log, a7_env, a8_powershell, a2_slashes, a3_tools]
 _WRITE_RULES = [a7_env, b3_personal]
 _READ_RULES = []
 

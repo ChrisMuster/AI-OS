@@ -43,6 +43,8 @@ If PowerShell is genuinely required for a task, add the specific `PowerShell(com
 
 **Path format in Bash:** Always use forward slashes in Bash commands, script paths, allowlist entries, and configuration files. Never use backslashes in these contexts. Backslashes belong in PowerShell and Windows file explorer only.
 
+**Multi-line strings in Bash:** Use a POSIX heredoc (`<<'EOF' ... EOF`). Never a PowerShell here-string (`@'...'@`), which is not Bash syntax and fails at the shell parser before the command runs. This applies to commit messages in particular, because the PowerShell tool's own documentation demonstrates the here-string form for exactly that job, so the wrong pattern is the one closest to hand at the moment it matters. This is enforced rather than trusted: rule A8 in the `rule-hooks` workflow [[workflows/rule-hooks/CONTEXT]] blocks the call before it runs. If A8 fires, the fix is the heredoc it names, not a workaround.
+
 **Allowlist enforcement:** The allowlist in `.claude/settings.json` uses `Bash(...)` patterns. A PowerShell call to the same command is a different namespace — it will not match and will trigger a permission prompt. This is intentional: the allowlist is the enforcement mechanism, and using the wrong tool defeats it.
 
 ### File operations

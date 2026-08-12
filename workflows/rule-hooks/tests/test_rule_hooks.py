@@ -380,6 +380,81 @@ class TestSubprocessContracts(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
 
+class TestA8PowerShellHereString(unittest.TestCase):
+    """A8: a PowerShell here-string passed to the Bash tool.
+
+    This rule exists because the prose version of it demonstrably does not work.
+    A memory records the rule, and a handover warned about this exact fault in
+    the exact context it then recurred in, hours later, in the same session. The
+    competing pattern is reinforced at the moment of failure: the PowerShell
+    tool's own instructions demonstrate `git commit -m @'...'@` for multi-line
+    commit messages, so on Windows the wrong template has the strongest and most
+    task-specific cue available at precisely the point the mistake is made.
+
+    Detection keys on the *opening delimiter at end of line*, which is what
+    PowerShell's here-string syntax requires and what ordinary Bash never has.
+    `echo @'hi'` is a legitimate (if odd) Bash argument and must not fire.
+    Heredoc bodies are stripped first, so text quoted INTO a command - including
+    documentation about this very syntax - is not scanned.
+    """
+
+    FAILING_COMMIT = (
+        "git commit -m @'\n"
+        "Commit message here.\n"
+        "Second line.\n"
+        "'@"
+    )
+
+    def test_blocks_the_real_failing_shape(self):
+        block, _ = decision_for(shell_ctx(self.FAILING_COMMIT))
+        self.assertIsNotNone(block, "the PowerShell here-string was not blocked")
+        self.assertEqual(block.rule, "A8")
+
+    def test_blocks_the_double_quoted_form(self):
+        block, _ = decision_for(shell_ctx('cat > f <<X\n@"\ntext\n"@\nX'))
+        # The above is inside a heredoc, so it must NOT fire; the real
+        # double-quoted case is an argument-position opener:
+        self.assertIsNone(block)
+        block, _ = decision_for(shell_ctx('git commit -m @"\nmessage\n"@'))
+        self.assertIsNotNone(block)
+        self.assertEqual(block.rule, "A8")
+
+    def test_block_message_names_the_heredoc_fix(self):
+        block, _ = decision_for(shell_ctx(self.FAILING_COMMIT))
+        text = block.reason.lower()
+        self.assertIn("heredoc", text)
+        self.assertIn("powershell", text)
+
+    # --- false-positive guards ---
+    def test_allows_the_correct_heredoc_form(self):
+        block, _ = decision_for(shell_ctx(
+            "git commit -F - <<'EOF'\nCommit message here.\nEOF"))
+        self.assertIsNone(block, "the correct POSIX form must not be blocked")
+
+    def test_allows_powershell_syntax_inside_a_heredoc_body(self):
+        # Documenting the syntax (as GUARD-COVERAGE-PLAN.md does) is not using it.
+        block, _ = decision_for(shell_ctx(
+            "python - <<'EOF'\n"
+            "text = \"\"\"\n"
+            "@'\n"
+            "import json\n"
+            "'@ | & $py -\n"
+            "\"\"\"\n"
+            "EOF"))
+        self.assertIsNone(block, "a heredoc body must not be scanned")
+
+    def test_allows_an_at_quote_that_is_not_an_opener(self):
+        # `@'hi'` on one line is a plain Bash argument, not a here-string opener.
+        block, _ = decision_for(shell_ctx("echo @'hi'"))
+        self.assertIsNone(block)
+
+    def test_allows_ordinary_commands(self):
+        for cmd in ("git status", "python run.py --check",
+                    "grep -n \"@\" file.txt", "echo done"):
+            block, _ = decision_for(shell_ctx(cmd))
+            self.assertIsNone(block, cmd)
+
+
 class TestPrecommitDocSync(unittest.TestCase):
     """The pre-commit gate: personal data hard-blocks, doc-sync drift is a
     warn-not-block advisory that never stops the commit."""
