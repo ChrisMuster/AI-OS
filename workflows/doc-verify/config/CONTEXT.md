@@ -1,6 +1,6 @@
 # Doc-Verify Config
 
-**Last modified:** 2026-08-06
+**Last modified:** 2026-08-12
 
 ## Purpose
 
@@ -36,3 +36,4 @@ N/A. This is a configuration directory, not a workflow.
 ## Revision History
 
 - 2026-08-06 - Initial creation, alongside doc-verify's opt-in sequence sweep. Holds the worked-example config carrying the subject and relation vocabularies and the known-members positive control.
+- 2026-08-12 - Corrected a mistranscribed known member in `sequence-example.json`. The first entry read "must not start until it has landed" where the document it controls says "must not start until 4a has landed", so the positive control had been failing and every run of the sweep reported FAIL with the message that its vocabulary has a hole. The vocabulary never had one: the sentence was being found as a candidate throughout, and the candidate count is unchanged at 61 either side of the fix. This is the failure mode the Known Issues bullet above describes from the other direction - the control is written by hand, so it can be wrong about the document rather than about the vocabulary, and a control that fails for its own reasons trains a reader to discount the one signal it exists to give.

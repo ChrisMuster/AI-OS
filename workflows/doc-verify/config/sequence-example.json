@@ -16,7 +16,7 @@
   ],
   "known_members": [
     {
-      "phrase": "must not start until it has landed",
+      "phrase": "must not start until 4a has landed",
       "note": "Stage 4's dependency on stage 4a."
     },
     {
