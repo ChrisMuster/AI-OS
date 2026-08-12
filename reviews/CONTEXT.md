@@ -1,6 +1,6 @@
 # Reviews
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-08-12
 
 ## Purpose
 Store for the weekly-review flywheel. Holds the dated review files that the
@@ -53,3 +53,7 @@ writes it lives in `workflows/weekly-review/` [[workflows/weekly-review/CONTEXT]
   arrival here; that gap is a symptom of the guard-coverage problem rather than a
   precedent, since this directory is gitignored and no git-scoped guard can see
   a missing entry.
+- 2026-08-12 - Recorded the 2026-W33 review landing in the store. Contents is
+  unchanged for the same reason as the entry above, since it describes the naming
+  convention rather than listing personal files, but the own-directory rule
+  carries no meaningfulness threshold and a file was added.
