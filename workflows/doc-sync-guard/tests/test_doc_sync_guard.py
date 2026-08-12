@@ -235,6 +235,92 @@ class TestContextParse(unittest.TestCase):
         self.assertFalse(context_parse.gained_rh_entry(old, new))
 
 
+class SameDayReArchiveTest(unittest.TestCase):
+    """Guard-coverage stage 14b: the same-day re-archive false positive.
+
+    `gained_rh_entry` used to ask whether the archive reference line *changed*,
+    which reads an unchanged line as proof that no archiving happened. A
+    directory archived twice on the same date leaves that line already reading
+    that date, so a genuine archive-plus-append was reported as an in-place
+    edit. The question is now whether an archive was *recorded* and did not move
+    backwards, with `_is_archive_plus_append` left to reject an in-place edit.
+
+    The positive control below is the defect. The negatives are what the "must
+    have changed" test used to buy, and each one has to keep holding without it.
+    """
+
+    ARCHIVE_07 = "Earlier history archived to LOG.md on 2026-07-07.\n"
+
+    def test_same_day_re_archive_is_a_gain(self):
+        # The defect, at parser level: the archive line already reads 2026-07-07
+        # from an earlier archive on the same day, so the second archive leaves
+        # it untouched while genuinely trimming the oldest entry and appending a
+        # new one. Fails on the pre-14b code, which sees an unchanged line.
+        old = make_context(entries=("2026-07-01", "2026-07-02", "2026-07-03"),
+                           archive=self.ARCHIVE_07)
+        new = make_context(entries=("2026-07-02", "2026-07-03", "2026-07-07"),
+                           archive=self.ARCHIVE_07)
+        self.assertTrue(context_parse.gained_rh_entry(old, new))
+
+    def test_inplace_edit_under_a_preexisting_archive_line_is_not_a_gain(self):
+        # The regression that matters most: the 2026-07-07 silent miss in the
+        # shape 14b creates, where the archive line is pre-existing and unchanged
+        # rather than newly added. Dropping the "must have changed" test is only
+        # safe because `_is_archive_plus_append` rejects this shape - no old
+        # entry survives, so there is nothing an append could follow.
+        old = make_context(entries=("2026-07-01",), archive=self.ARCHIVE_07)
+        new = make_context(entries=("2026-07-07",), archive=self.ARCHIVE_07,
+                           purpose="Edited in place, not appended.")
+        self.assertFalse(context_parse.gained_rh_entry(old, new))
+
+    def test_inplace_edit_of_newest_entry_under_an_archive_line_is_not_a_gain(self):
+        # The same miss with more than one entry, so the retained-suffix search
+        # has somewhere to look: the newest entry is edited in place and the
+        # retained prefix therefore does not line up. Must still not be a gain.
+        old = make_context(entries=("2026-07-01", "2026-07-02"),
+                           archive=self.ARCHIVE_07)
+        new = make_context(entries=("2026-07-01", "2026-07-07"),
+                           archive=self.ARCHIVE_07)
+        self.assertFalse(context_parse.gained_rh_entry(old, new))
+
+    def test_entries_removed_with_no_archive_line_is_not_a_gain(self):
+        # Entries vanished with nothing recording that they were archived: a
+        # genuine schema violation, and 7 of the 41 historical warnings. Without
+        # the "an archive must be recorded" clause this shape would newly pass.
+        old = make_context(entries=("2026-07-01", "2026-07-02"))
+        new = make_context(entries=("2026-07-02", "2026-07-07"))
+        self.assertFalse(context_parse.gained_rh_entry(old, new))
+
+    def test_archive_date_moved_backwards_is_not_a_gain(self):
+        # An archive line whose date went backwards is not a record of an
+        # archive that just happened. This tightens behaviour: the old code read
+        # any changed line as evidence and passed this shape.
+        old = make_context(entries=("2026-07-01", "2026-07-02"),
+                           archive="Earlier history archived to LOG.md on "
+                                   "2026-07-09.\n")
+        new = make_context(entries=("2026-07-02", "2026-07-07"),
+                           archive=self.ARCHIVE_07)
+        self.assertFalse(context_parse.gained_rh_entry(old, new))
+
+    def test_archive_line_with_no_readable_date_is_not_a_gain(self):
+        # A malformed archive line records nothing that can be compared, so it
+        # biases to a loud warning like every other ambiguous shape here. Also a
+        # tightening: the old code counted the line's mere appearance.
+        old = make_context(entries=("2026-07-01", "2026-07-02"))
+        new = make_context(entries=("2026-07-02", "2026-07-07"),
+                           archive="Earlier history archived to LOG.md.\n")
+        self.assertFalse(context_parse.gained_rh_entry(old, new))
+
+    def test_first_archive_still_reads_as_a_gain(self):
+        # The ordinary first archive, where no line existed before: there is no
+        # older date to compare against, so a missing old date must not be read
+        # as a backwards move.
+        old = make_context(entries=("2026-07-01", "2026-07-02", "2026-07-03"))
+        new = make_context(entries=("2026-07-02", "2026-07-03", "2026-07-07"),
+                           archive=self.ARCHIVE_07)
+        self.assertTrue(context_parse.gained_rh_entry(old, new))
+
+
 # ---------------------------------------------------------------------------
 # Pure: logtime
 # ---------------------------------------------------------------------------
@@ -820,6 +906,27 @@ class ContextOnlyOwnerTest(unittest.TestCase):
         self.assertTrue([f for f in findings if f[0] == "INFO"],
                         "expected a recorded finding to gate on")
         self.assertFalse(run.strict_failed(findings))
+
+    # --- stage 14b, at guard level rather than parser level ---
+    def test_same_day_re_archive_context_only_is_silent(self):
+        # The false positive end to end, on the population that made it
+        # reachable: a CONTEXT-only change that archives for the second time on
+        # a date the reference line already carries. Everything else about the
+        # edit is correct, so a clean guard run is the whole assertion.
+        r = self.repo
+        archive = "Earlier history archived to LOG.md on 2026-07-07.\n"
+        r.write("workflows/foo/CONTEXT.md",
+                make_context(last_modified="2026-07-03",
+                             entries=("2026-07-01", "2026-07-02", "2026-07-03"),
+                             archive=archive))
+        _git(r.dir, "add", "-A")
+        _git(r.dir, "commit", "-q", "-m", "already archived once today",
+             "--no-verify")
+        self._edit_context(last_modified="2026-07-07",
+                           entries=("2026-07-02", "2026-07-03", "2026-07-07"),
+                           archive=archive, purpose="Foo v2.")
+        self._log_is_current()
+        self.assertEqual(r.check(), [])
 
     # --- negative control ---
     def test_correct_context_only_edit_is_silent_at_every_severity(self):

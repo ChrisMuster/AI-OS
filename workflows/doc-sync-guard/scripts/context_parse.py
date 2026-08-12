@@ -113,13 +113,31 @@ def revision_history_entry_lines(text):
 def archive_reference_lines(text):
     """Return the normalised "Earlier history archived..." reference line(s).
 
-    Used to tell whether archiving happened *in this change*: when old entries
-    are trimmed to LOG.md, this line is added (or its date advanced), which is
-    what lets an archive-plus-add be distinguished from an in-place edit that
-    also removes and adds a line without any archiving.
+    Records that archiving has happened at some point: when old entries are
+    trimmed to LOG.md, this line is added or its date advanced. Its *presence*
+    is what `gained_rh_entry` requires before it will consider an archive; its
+    presence is not what proves an entry was appended (`_is_archive_plus_append`
+    does that), because a second archive on a date the line already carries
+    leaves it untouched.
     """
     return [line.strip() for line in _revision_history_lines(text)
             if ARCHIVE_LINE_RE.match(line)]
+
+
+def newest_archive_reference_date(text):
+    """Return the newest date on an archive reference line, or None.
+
+    None means the archive record cannot be read at all: either there is no
+    reference line, or the line carries no ISO date. Callers treat both as "no
+    archive recorded" rather than guessing, so an unreadable line biases to a
+    loud warning.
+    """
+    dates = []
+    for line in archive_reference_lines(text):
+        m = _ISO_DATE_RE.search(line)
+        if m:
+            dates.append(m.group(0))
+    return max(dates) if dates else None
 
 
 def newest_revision_history_date(text):
@@ -144,8 +162,10 @@ def gained_rh_entry(old_text, new_text):
       * a new line appeared and no old line vanished -> gained (the normal add,
         and a same-day second entry, whose count simply grows).
       * a new line appeared *and* old lines vanished -> gained only when the
-        change is a genuine *archive-plus-append*: the archive reference line was
-        added or advanced, a non-empty suffix of the old entries is retained
+        change is a genuine *archive-plus-append*: an archive is recorded by a
+        dated reference line that has not moved backwards (a second archive on a
+        date the line already carries leaves it unchanged, and that is still an
+        archive), a non-empty suffix of the old entries is retained
         unchanged and in order as the prefix of the new entries (the oldest were
         trimmed to LOG.md), and at least one genuinely new entry - dated no
         earlier than the newest retained entry - follows the retained ones. A
@@ -174,8 +194,16 @@ def gained_rh_entry(old_text, new_text):
     # Lines both appeared and vanished. This is a genuine gain only when it is a
     # true archive-plus-append; otherwise an existing entry was edited in place
     # (possibly dressed up with an archive reference line) and nothing was gained.
-    if archive_reference_lines(new_text) == archive_reference_lines(old_text):
-        return False  # no archiving happened - an in-place edit, not a gain
+    # The question is whether an archive is *recorded*, not whether the reference
+    # line changed: a second archive on a date the line already carries leaves it
+    # untouched, and reading that as "no archiving happened" reported a genuine
+    # archive-plus-append as an in-place edit.
+    new_archived_on = newest_archive_reference_date(new_text)
+    if new_archived_on is None:
+        return False  # no readable archive record - an in-place edit, not a gain
+    old_archived_on = newest_archive_reference_date(old_text)
+    if old_archived_on is not None and new_archived_on < old_archived_on:
+        return False  # the archive record moved backwards; it records nothing new
     return _is_archive_plus_append(old, new)
 
 
