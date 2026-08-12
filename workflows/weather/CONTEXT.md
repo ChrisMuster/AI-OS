@@ -1,6 +1,6 @@
 # Weather
 
-**Last modified:** 2026-06-20
+**Last modified:** 2026-08-12
 
 ## Purpose
 Fetches current weather conditions and forecasts for any location worldwide, using Open-Meteo (weather data) and Nominatim/OpenStreetMap (geocoding). No API keys required.
@@ -19,6 +19,7 @@ Fetches current weather conditions and forecasts for any location worldwide, usi
 - For today (`--days 1`): hourly condition breakdown if conditions vary through the day.
 - For multi-day: compact per-day summary, expanding automatically when conditions shift within a day.
 - Temperatures shown in °C with °F in parentheses; wind in mph.
+- `locations.json` - the saved-locations store, written by `--save` and `--delete`. Gitignored and created automatically on first use, so it is both a file this workflow writes and (per Contents and Steps) the store it reads a saved name from.
 
 ## Steps
 1. Resolve the location: check `locations.json` for a matching saved name, then geocode via Nominatim.
@@ -43,3 +44,4 @@ Fetches current weather conditions and forecasts for any location worldwide, usi
 ## Revision History
 - 2026-06-03 — Initial creation.
 - 2026-06-20 — Fixed the Contents entry for the scripts subdirectory to use the project-root-relative path `workflows/weather/scripts/` and the correct `[[workflows/weather/scripts/CONTEXT]]` link (previously a bare `scripts/` token and a malformed `[[weather/scripts/CONTEXT]]` link that the knowledge-graph indexer could not resolve, flagging the directory as uncontained).
+- 2026-08-12 - Guard-coverage stage 3c: `locations.json` added to Outputs. The workflow writes it on `--save` and `--delete` and creates it automatically on first use, but the Outputs section did not say so; it was described in Contents, Steps and Known Issues only. Documentation gap rather than a privacy finding, since the path is gitignored and already carries a tracked inventory row. It matters because stage 3b's unregistered-output detection reads Outputs rather than prose, so a path documented everywhere except Outputs is invisible to it.

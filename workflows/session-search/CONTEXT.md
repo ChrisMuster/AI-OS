@@ -1,6 +1,6 @@
 # Session Search
 
-**Last modified:** 2026-06-30
+**Last modified:** 2026-08-12
 
 ## Purpose
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
@@ -27,6 +27,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - `data/archive/<hostname>/<session-id>.jsonl` — Extracted session content in Book Dragon standard format. Source of truth; never deleted.
 - `data/sessions-<hostname>.db` — SQLite FTS5 search index, one shard per machine. Rebuilt from archive on demand via `index.py --rebuild`.
 - `data/index_state.json` — Per-file mtime tracking for idempotent re-indexing; not personal data.
+- `data/scheduler.pid` - Single-instance lock for the background scheduler (`scripts/scheduler.py`), holding the running process id. Written on start, removed on exit, and removed on a status check that finds the recorded process gone, so its absence is the normal state between runs rather than a fault.
 
 ## Steps
 1. **Initial import (one time):** Run `python workflows/session-search/scripts/index.py` to discover existing Claude Code and Cowork sessions, archive them, and build the initial database.
@@ -58,6 +59,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - **`search.py --json` is a consumed contract** — The knowledge-graph `sessions` command (`workflows/knowledge-graph/` [[workflows/knowledge-graph/CONTEXT]]) parses `search.py --json` stdout as a JSON list to cross-reference a graph node against the transcripts that mention it. Changing the result field set, or emitting non-JSON to stdout in `--json` mode, would break that consumer (which degrades to an empty result). The lookup is one-directional (node → sessions) and returns personal session data at query time only.
 - **Scheduled task creation** - The `session-search-archive` scheduled task is created automatically in two places: by first-run initialisation (CLAUDE.md first-run step 6) on a fresh clone, and by regular Claude session startup on any machine where it is not yet present (e.g. a Google Drive transfer where first-run init does not trigger). The task command must use **forward slashes** in the absolute path so it matches the `settings.json` allowlist pattern `Bash(python *workflows/session-search/scripts/index.py*)` and runs without a permission prompt.
 - **`data/` contents are personal data** — Archive files and database shards are not listed in this CONTEXT.md. The filesystem is the authoritative source; read `data/archive/<hostname>/` directly when needed.
+- **The background scheduler can be stopped while a session is still open, and that is correct behaviour.** `scripts/scheduler.py` is started once at session startup and auto-terminates after four hours of inactivity, removing `data/scheduler.pid` as it goes. A long break mid-session is enough to cross that threshold, so a session that is still open, and being actively used again, can have no scheduler behind it: it was started for the session and shut itself down while the session was idle. Nothing is broken and nothing needs fixing when this happens, and the design is deliberate, since a scheduler that outlived every session would stack up processes. It is recorded because the failure it would produce is silent, hourly indexing quietly not happening, and the natural assumption is the opposite one, that a running session implies a running scheduler. If session-search ever looks stale mid-session, check `python workflows/session-search/scripts/scheduler.py --status` first; the fix is to start it again.
 
 ## Revision History
 Earlier history archived to LOG.md on 2026-06-30.
@@ -66,3 +68,5 @@ Earlier history archived to LOG.md on 2026-06-30.
 - 2026-06-24 — archive.py now canonicalises known AI identity aliases before writing archive records, including the VS Code Codex extension label to `Codex CLI`.
 - 2026-06-24 - Moved startup indexing from Claude-specific maintenance into universal AGENTS.md startup, changed the non-Claude scheduler to run index.py, and changed the Codex Stop hook to index completed Codex sessions immediately.
 - 2026-06-30 - Removed Continue.dev support: deleted its adapter and registry entry and dropped it from Inputs and the scheduler dependency note. Continue.dev is sunsetting (repo read-only). Session-search now covers 8 adapter sources.
+- 2026-08-12 - Guard-coverage stage 3c: `data/scheduler.pid` added to Outputs. This was the one path of the stage's five that appeared nowhere in its workflow's CONTEXT.md, not in Contents, Steps or Known Issues: the scheduler itself was documented but the file it writes to hold its single-instance lock was not. The path was confirmed against `scripts/scheduler.py` rather than taken from the plan, and it is covered by the tracked inventory's `workflows/session-search/data/*` row.
+- 2026-08-12 - Known Issues gained the scheduler's idle-timeout behaviour, at the user's request and prompted by observing it live during the entry above: the four-hour auto-terminate can fire mid-session during a long break, so an open, actively used session can have no scheduler running behind it. Recorded rather than changed, because the behaviour is deliberate and correct; what makes it worth writing down is that the resulting failure is silent and the natural assumption runs the other way.

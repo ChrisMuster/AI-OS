@@ -1,6 +1,6 @@
 # Knowledge Graph
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-08-12
 
 ## Purpose
 Deterministic, script-driven indexer that parses the project's `CONTEXT.md` files and approved root files into a rebuildable node/edge graph, then validates and traverses it. It turns existing project structure and relationships - directory hierarchy, Contents references, Dependencies, and Obsidian `[[links]]` - into queryable indexes for traversal, impact analysis, orphan detection, duplicate detection, and broken-reference validation. The default build covers tracked structural content. Opt-in content layers can be added with repeatable `--layer` flags for memory, wiki, journal, and conversation content. The build and read-only query commands are also exposed to MCP-capable AI clients through the Biblio Tools `build_knowledge_graph` and `query_knowledge_graph` tools; the CLI remains the contract.
@@ -21,6 +21,7 @@ Deterministic, script-driven indexer that parses the project's `CONTEXT.md` file
 - `index/edges.json` - One entry per relationship. Gitignored and rebuildable.
 - `index/meta.json` - Build metadata: timestamp, node/edge counts, layers included, and broken-reference count.
 - Report printed to stdout.
+- `last-report.md` - the saved validation report, written only by `validate --save`. Gitignored, since a content-layer run can carry names and titles drawn from gitignored directories, and absent until a `--save` run creates it.
 - Exit codes relied on by the MCP wrapper: `build` exits 0 on success and 1 on write failure; `validate` exits 1 only if a FAIL finding exists; read-only query commands exit 0 on success, 2 on an unknown node id, and 1 on a `--from-index` load failure.
 
 ## Steps
@@ -58,3 +59,4 @@ Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-23 - Wrote the session-search cross-reference handover.
 - 2026-06-24 - Session-search cross-reference completed; added the read-only `sessions` command and MCP dispatcher support.
 - 2026-06-24 - Rebuild speed optimised: `collect_dirs` walks breadth-first with one batched `git check-ignore` per depth level and skips git outside a worktree; the directory walk dropped from ~9s to ~1s and the KG test suite from ~410s to ~60s with byte-for-byte identical graph output. Planning/handover/roadmap docs are now treated as personal (gitignored), so ROADMAP.md and the archived plans are no longer tracked or listed in Contents.
+- 2026-08-12 - Guard-coverage stage 3c: `last-report.md` added to Outputs. It is written by `validate --save` and was described in Contents and Known Issues but not in the section a reader consults for what the workflow writes. Documentation gap rather than a privacy finding, since the path is gitignored and already carries a tracked inventory row. It matters because stage 3b's unregistered-output detection reads Outputs rather than prose.

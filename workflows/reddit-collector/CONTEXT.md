@@ -1,6 +1,6 @@
 # Reddit Collector
 
-**Last modified:** 2026-06-19
+**Last modified:** 2026-08-12
 
 ## Purpose
 General-purpose Reddit post collector. Downloads posts from configured subreddits, saves them as Markdown files with YAML frontmatter, detects multi-part series, and groups them with navigable indexes. Supports full historical backfill, incremental daily collection, and local browser reading.
@@ -28,6 +28,8 @@ General-purpose Reddit post collector. Downloads posts from configured subreddit
 - `collections/<subreddit>/series/_groups.json` — series groups: related series clustered by author + shared root, plus a reverse series→group map. Consumed by the reader for group pages and breadcrumbs.
 - `collections/<subreddit>/.reader_cache.json` — JSON metadata cache for the reader server. Generated on first reader start; refreshable via `--refresh-cache` or the `/refresh` endpoint.
 - `.reader_server.pid` — gitignored JSON runtime metadata for the reader process, including PID, port, subreddit, start time, and instance token.
+- `state/` - the download tracker (`state/tracker.json`) and per-subreddit seen-post-ID files (`state/ids/<subreddit>.txt`), written after each batch so a run is resumable. Gitignored machine-specific state.
+- `config/feeds.json` - written once, by the collector, when it is created from `feeds.example.json` on first run, and read on every run after that. It is deliberately listed in both Inputs and Outputs: those describe two different moments in its life rather than the same fact twice, and a path the workflow writes has to appear in Outputs or stage 3b's unregistered-output detection, which reads Outputs and not prose, cannot see it. Its Inputs entry stays because reading it is its dominant role.
 
 ## Steps
 1. Load feed configuration from `config/feeds.json`.
@@ -67,3 +69,4 @@ General-purpose Reddit post collector. Downloads posts from configured subreddit
 - 2026-06-19 — Phase 3 series grouping. Detector clusters related series (multi-book, multi-arc, multi-level chapter splits) by author + shared root and writes `series/_groups.json` without merging them. Reader gained group pages (`/group/<slug>`), index group cards, and "Part of: [Group]" breadcrumbs. 117 groups over 341 series. Tests 81→92.
 - 2026-06-19 — Multi-level chapter+part merging (Book of the Chosen → one 40-part series), date-interleaving of unnumbered parts (interludes now sort to their true position), and a manual curation override mechanism. New optional input `collections/<sub>/_overrides.json` lets hand-curated series definitions force canonical membership/order where auto-detection cannot; the reader hides excluded junk posts and renders related-works cross-links. First override: "The Soldier Becomes a Cultivator". Tests 92→105.
 - 2026-06-19 — Reader full-dataset search: new `/api/search` endpoint queries every series, group, and standalone post in memory, so author/title searches reach all ~83k standalones instead of only the 100 on the current index page. Fixes the search gap blocking Phase 4 manual review.
+- 2026-08-12 - Guard-coverage stage 3c: `state/` and `config/feeds.json` added to Outputs. Both were already described elsewhere in this file, `state/` in Contents and Steps and `feeds.json` in Inputs and Steps, so this is a documentation gap rather than a privacy finding; both paths are gitignored and both already carry tracked inventory rows. `feeds.json` is the judgement the stage was required to settle rather than assume: it is created once by the collector from `feeds.example.json` and read on every run thereafter, and it is now listed in both Inputs and Outputs, because those describe two different moments in its life and because stage 3b's unregistered-output detection reads Outputs rather than prose, so a written path absent from Outputs is invisible to it.
