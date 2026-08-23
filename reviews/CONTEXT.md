@@ -1,6 +1,6 @@
 # Reviews
 
-**Last modified:** 2026-08-12
+**Last modified:** 2026-08-23
 
 ## Purpose
 Store for the weekly-review flywheel. Holds the dated review files that the
@@ -57,3 +57,8 @@ writes it lives in `workflows/weekly-review/` [[workflows/weekly-review/CONTEXT]
   unchanged for the same reason as the entry above, since it describes the naming
   convention rather than listing personal files, but the own-directory rule
   carries no meaningfulness threshold and a file was added.
+- 2026-08-23 - Recorded the 2026-W34 review landing in the store. Contents is
+  unchanged, for the same reason as the two entries above. This review covers an
+  eleven-day window rather than the usual seven because the user was away from 14
+  to 21 August, which is a cadence break worth noting here only insofar as the
+  store now holds one file whose window is longer than its name implies.
