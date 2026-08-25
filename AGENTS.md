@@ -1,6 +1,6 @@
 # Book Dragon - Agent Instructions
 
-**Last updated:** 2026-08-05
+**Last updated:** 2026-08-25
 
 This is the AI Operating System project. It is a modular workspace organised into directories that each serve a specific purpose. These instructions define the universal rules that every AI assistant must follow when working in this project.
 
@@ -444,9 +444,11 @@ Avoid AI writing tells in authored content. The clearest are typographic: em and
 
 ### Personal data isolation
 
-All content written into tracked files - CONTEXT.md files, scripts, README.md, SOUL.md, SKILL.md files, templates, and any other file committed to git - must use generic language only. This applies at all times, including during builds, updates, and Revision History entries.
+All content written into tracked files - CONTEXT.md files, scripts, README.md, SOUL.md, SKILL.md files, templates, and any other file that reaches the public repository - must use generic language only. This applies at all times, including during builds, updates, and Revision History entries.
 
-The authoritative list of what is and isn't committed to git is `.gitignore` at the project root. Personal files excluded from git - `USER.md`, `LOG.md` files, `memory/` contents, `journal/entries/`, `.env` - may contain personal content. Everything else is tracked and must follow these rules.
+The authoritative list of what does and does not reach the public repository is `.gitignore` at the project root. Personal files excluded from it - `USER.md`, `LOG.md` files, `memory/` contents, `journal/entries/`, `.env` - may contain personal content. Everything else is published and must follow these rules.
+
+**"Tracked" throughout this section means tracked by the public repository.** The distinction is load-bearing, because this project may hold a second, private repository over the same working tree whose entire purpose is to give the excluded files history and a restore path. Committing a personal file there publishes nothing: every remote it has belongs to the user. **So these rules govern publication, not the act of committing**, and a personal file being versioned privately never breaches them. Where a rule below says "committed" or "tracked", read it as "published".
 
 Six rules, no exceptions:
 
@@ -456,11 +458,13 @@ Six rules, no exceptions:
 
 3. **README.md entries describe function, not personal context.** When adding a workflow or skill to `README.md`, describe what it does generically. Never describe who it was built for or what personal content it operates on. Wrong: "tracks [person]'s household expenses". Right: "tracks household expenses".
 
-4. **Commit messages describe structure, not personal context.** Git history is visible to anyone who clones the repository. Commit messages must describe the structural or technical change made, not the personal work behind it. Wrong: "add wiki for [person]'s Facebook data". Right: "add Facebook archive wiki scaffold".
+4. **Commit messages describe structure, not personal context.** The public repository's history is visible to anyone who clones it, which is what this rule protects; a private repository's commit messages are not published and are not bound by it. Commit messages must describe the structural or technical change made, not the personal work behind it. Wrong: "add wiki for [person]'s Facebook data". Right: "add Facebook archive wiki scaffold".
 
 5. **CONTEXT.md Contents sections never list individual personal files.** In directories that hold personal content - `wikis/`, `conversations/`, `journal/entries/`, or any future personal archive - the Contents section must describe the file naming convention and format only. Never list individual filenames or their descriptions. Wrong: listing `2026-06-03-biblio-ui-planning.md` with a description. Right: "Saved conversation files, named `YYYY-MM-DD-topic-slug.md`. Individual files are not listed here as they are personal content." When Biblio needs to know what files exist in such a directory, it lists the directory's contents directly rather than relying on CONTEXT.md. The filesystem is always the authoritative source; CONTEXT.md describes structure and conventions only.
 
-6. **Design-time documents are personal, never tracked.** Planning, handover, proposal, and roadmap documents (`*-PLAN.md`, `HANDOVER.md`, `PROPOSAL.md`, `ROADMAP.md`) are personal working artifacts: they routinely capture session-, machine-, and user-specific context. They are gitignored and must never be staged or committed, nor listed in a tracked `CONTEXT.md` Contents section. Durable, generic design decisions belong in the tracked `CONTEXT.md` and `README.md` instead. The choice is by category, not by case-by-case judgement: it is safer to keep every design-time doc local than to decide per file whether one is "clean enough" to commit. A genuinely generic forward-looking design doc may be tracked only as a deliberate opt-in - authored with no personal data and explicitly un-ignored.
+6. **Design-time documents are personal, never published.** Planning, handover, proposal, and roadmap documents (`*-PLAN.md`, `HANDOVER.md`, `PROPOSAL.md`, `ROADMAP.md`) are personal working artifacts: they routinely capture session-, machine-, and user-specific context. They are gitignored and **must never be staged or committed to the public repository**, nor listed in a tracked `CONTEXT.md` Contents section. **They may be versioned in the private repository, and that is where they are meant to live**: it is what gives a plan a real diff and a real history without publishing a word of it. Durable, generic design decisions belong in the tracked `CONTEXT.md` and `README.md` instead. The choice is by category, not by case-by-case judgement: it is safer to keep every design-time doc out of the public repository than to decide per file whether one is "clean enough" to publish. A genuinely generic forward-looking design doc may be published only as a deliberate opt-in - authored with no personal data and explicitly un-ignored.
+
+   This rule read "never tracked" and "never committed" until 2026-08-25. That wording was written when a file could only be in the public repository or nowhere, so the two meant the same thing; they no longer do. The rule has always been about publication. The literal wording had already misled once, when a session read it, concluded a private roadmap was a tracked reference document, and proposed publishing a file that had never been tracked in any branch.
 
 The `personal-data-guard` workflow [[workflows/personal-data-guard/CONTEXT]] enforces these rules mechanically. Run `python workflows/personal-data-guard/scripts/run.py --check` to scan committable files for emails, personal home paths, the user's name/username, and a configurable denylist of personal nouns; the full audit runs the check automatically as an additive, advisory hook. It is a backstop, not a substitute for writing generically in the first place.
 

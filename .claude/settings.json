@@ -32,6 +32,7 @@
             "Bash(python *workflows/memory-diff/scripts/run.py*)",
             "Bash(python *workflows/memory-diff/tests/run_tests.py*)",
             "Bash(python *workflows/doc-sync-guard/scripts/run.py*)",
+            "Bash(python *workflows/sync-architecture/scripts/run.py*)",
             "Bash(python *workflows/doc-sync-guard/tests/run_tests.py*)",
             "mcp__biblio-tools__run_audit",
             "mcp__biblio-tools__run_link_check",
