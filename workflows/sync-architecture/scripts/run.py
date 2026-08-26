@@ -4,7 +4,10 @@
 Read-only. Two checks, run together by default:
 
   --allowlist    Extract the executable classification block from the architecture
-                 plan and prove what it actually selects against the real tree.
+                 plan and prove what it actually selects against the real tree,
+                 resolved through allowlist.py in the same git context the Stage A
+                 build uses. The selection rule itself lives there, in one copy,
+                 so this check and the build cannot drift apart.
   --consistency  Check both plans for the defect classes that have recurred:
                  superseded pathspec spellings, a second copy of the classification,
                  references to artefacts that do not exist, and stale review baselines.
@@ -23,9 +26,11 @@ file and because a structural assertion keeps working when the files change.
 import argparse
 import hashlib
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import allowlist  # noqa: E402  (the shared selection rule, alongside this file)
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -35,20 +40,9 @@ BASELINES = [
     (Path("CODEX-SYNC-ARCHITECTURE-PLAN.md"), PLAN),
     (Path("CODEX-SHADOW-REPOSITORY-PLAN.md"), SPEC),
 ]
-BLOCK_MARKER = "```allowlist\n"
 
 
 # --------------------------------------------------------------------------- utils
-
-def _git(args):
-    """Run a read-only git command, returning NUL-separated entries."""
-    out = subprocess.run(
-        ["git"] + args, capture_output=True, text=True, encoding="utf-8"
-    )
-    if out.returncode != 0:
-        return None
-    return [p for p in out.stdout.split("\0") if p]
-
 
 def _read(path):
     if not path.exists():
@@ -57,25 +51,9 @@ def _read(path):
         return fh.read()
 
 
-def extract_block(text):
-    """Pull the pathspecs out of the plan's ```allowlist block.
-
-    The plan is the authority, so this reads it rather than a copy. A copy is what
-    let a settled decision fail to reach the patterns that implement it.
-    """
-    start = text.find(BLOCK_MARKER)
-    if start == -1:
-        return None
-    start += len(BLOCK_MARKER)
-    end = text.find("```", start)
-    if end == -1:
-        return None
-    specs = []
-    for line in text[start:end].splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            specs.append(line)
-    return specs or None
+# The parser lives in the selection module so the check and the build read the
+# plan's block through the same code. Re-exported here for check_consistency.
+extract_block = allowlist.extract_block
 
 
 # ----------------------------------------------------------------------- allowlist
@@ -90,13 +68,17 @@ def check_allowlist(findings):
         findings.append(("FAIL", f"no usable ```allowlist block in {PLAN}"))
         return
 
-    selected = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z",
-                     "--"] + specs)
-    tracked = _git(["ls-files", "-z"])
-    if selected is None or tracked is None:
-        findings.append(("SKIP", "git unavailable; allowlist check not run"))
+    # Resolved through the shared selection module, in SHADOW context: an empty
+    # personal repository looking at this working tree, which is the state the
+    # Stage A build resolves the pathspecs in. Resolving them in public context
+    # instead was the defect this check was rebuilt to remove. There, "untracked"
+    # already excludes every publicly tracked file, so the no-overlap assertion
+    # below could not have failed whatever the tree contained.
+    out = allowlist.select(specs)
+    selected, raw, tracked = out["final"], out["raw"], out["tracked"]
+    if selected is None:
+        findings.append(("SKIP", "git could not answer; allowlist check not run"))
         return
-    selected, tracked = set(selected), set(tracked)
 
     def any_sel(pred):
         return any(pred(p) for p in selected)
@@ -156,14 +138,40 @@ def check_allowlist(findings):
                          f"allowlist: {label}"
                          + ("" if not hits else f" ({len(hits)} hit(s), e.g. {hits[0]})")))
 
-    overlap = selected & tracked
-    findings.append(("PASS" if not overlap else "FAIL",
-                     "allowlist: no publicly tracked file is selected"
-                     + ("" if not overlap else f" ({len(overlap)} overlap(s))")))
+    # The invariant the design actually rests on. While no file is both tracked
+    # and matched by an ignore rule, the two git contexts return the same answer
+    # and the seed commit is safe. It is currently held up by the negation ("!")
+    # lines in .gitignore and by nothing else, so deleting one breaks it without
+    # any other symptom. This is the root-cause check and it names the file.
+    both = allowlist.tracked_and_ignored()
+    if both is None:
+        findings.append(("SKIP", "git could not answer the tracked-and-ignored check"))
+    else:
+        findings.append(("PASS" if not both else "FAIL",
+                         "invariant: no file is both publicly tracked and ignored"
+                         + ("" if not both
+                            else f" ({len(both)} file(s), e.g. {sorted(both)[0]})")))
+
+    # The consequence of that invariant breaking, measured where the build will
+    # meet it. Unlike the old public-context form, this one can fail.
+    findings.append(("PASS" if not out["overlap"] else "FAIL",
+                     "allowlist: shadow-context selection contains no publicly "
+                     "tracked file"
+                     + ("" if not out["overlap"]
+                        else f" ({len(out['overlap'])} overlap(s), "
+                             f"e.g. {sorted(out['overlap'])[0]})")))
+
+    # A regression guard on the subtraction step rather than a property of the
+    # tree: it fails if the correction in allowlist.select is weakened or removed.
+    findings.append(("PASS" if not (selected & tracked) else "FAIL",
+                     "allowlist: the corrected selection excludes tracked files"))
 
     total = sum(Path(p).stat().st_size for p in selected if Path(p).is_file())
     findings.append(("INFO", f"allowlist selects {len(selected)} files, "
                              f"{total / 1048576:.2f} MiB"))
+    if raw is not None and len(raw) != len(selected):
+        findings.append(("INFO", f"shadow context offered {len(raw)}; "
+                                 f"{len(raw) - len(selected)} removed as publicly tracked"))
 
 
 # --------------------------------------------------------------------- consistency
