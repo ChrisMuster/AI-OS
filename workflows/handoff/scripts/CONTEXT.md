@@ -1,6 +1,6 @@
 # Handoff - Scripts
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-08-27
 
 ## Purpose
 The deterministic half of the handoff workflow: gather the session-state packet,
@@ -14,15 +14,19 @@ report whether an unread handoff exists, and mark one as seen.
   --stat`, recent commits, changed-directory LOG tails, active backlog, recent
   session activity, and `doc_sync_drift` - the doc-sync CONTEXT/LOG drift check so
   a handoff surfaces any behind directory before HANDOVER.md is written, keeping
-  the guard's WARN findings only) and the packet builder. Writes nothing.
+  the guard's WARN findings only, and `review_packets` - the open findings of any
+  review round part-way through, read from `memory/*_review_packet.md`, reporting
+  `None` rather than an empty list when a packet's shape is not recognised) and the
+  packet builder. Writes nothing.
 - state.py - the seen-watermark: load/save state, read a handoff's `**Created:**`
   timestamp (mtime fallback), and decide whether a handoff is unread.
 - config.py - tunable constants (recent-commit count, LOG tail length, session
   look-back, the HANDOVER.md filename).
 
 ## Inputs
-The working tree (git), every project `LOG.md`, `memory/backlog.md`, the
-session-search shards, and the rolling `HANDOVER.md` at the project root.
+The working tree (git), every project `LOG.md`, `memory/backlog.md`, any
+`memory/*_review_packet.md`, the session-search shards, and the rolling
+`HANDOVER.md` at the project root.
 
 ## Outputs
 A briefing packet (stdout) and the seen watermark (`state.json`, gitignored). The
@@ -74,3 +78,4 @@ gather mode writes nothing; `--seen` writes state and a LOG entry.
   guard starts acting on the output inventory. Contents, Dependencies and Known
   Issues updated; no behaviour change.
 - 2026-08-04 - Line endings pinned on both text writes (the LOG.md append in `run.py` and the `state.json` save in `state.py`), which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.
+- 2026-08-27 - gather.py gained `review_packets` and `build_packet` an "Open review findings" section, wired into `--gather` by run.py, so a handoff reports how many findings of a review round are still open and where that round's packet is. It reads `memory/*_review_packet.md`, collecting `R<n>` tags under the `## Open` and `## Addressed` headings, and matches both shapes the packets use: a `### R4 - ...` heading and a `- **R1 - ...**` bullet. Two design points are load-bearing rather than incidental. It returns `None` for a section that is absent, distinct from `[]` for a section that is present and empty, so a packet whose shape has drifted reports as unreadable instead of as zero open findings, which would read as nothing left to do; this is the same rule `allowlist.py` follows in never letting an unanswered question render as an empty answer. And it reports without ever gating: the user rejected the stronger form, a handoff refused while findings are open, because crossing a session boundary with work outstanding is exactly what a handoff is for, so refusing one would make a review round impossible to continue. Degrades to `[]` on a missing `memory/` directory and skips an unreadable file, matching the other readers.

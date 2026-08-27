@@ -1,6 +1,6 @@
 # handoff - Skill Specification
 
-**Last modified:** 2026-07-03
+**Last modified:** 2026-08-27
 
 ## Purpose
 Write a structured `HANDOVER.md` that lets the next session (or another AI) resume
@@ -16,7 +16,8 @@ update or refresh the handoff document.
 ## Inputs
 - The briefing packet from `python workflows/handoff/scripts/run.py --gather`
   (branch, working tree, line churn, recent commits, changed-directory LOG tails,
-  active backlog, recent session activity).
+  active backlog, recent session activity, and any review round part-way through,
+  with its open findings and the path to its packet).
 - The current session's own context: what was being worked on, why, what was
   decided, and what is left. This is the part only the AI holds.
 - Any steer the user gives when triggering the handoff, e.g. "keep this in mind",
@@ -41,6 +42,14 @@ update or refresh the handoff document.
    - `## In progress` - what was mid-way through, and specifically why / where it
      was left (the stuck point, the next edit).
    - `## Next steps` - an ordered list the next session can act on directly.
+   - `## Open review findings` - required whenever the packet's section of the
+     same name lists a round in progress. State how many findings are still open
+     and name the packet file. **Never copy the findings in as their only copy.**
+     The packet is the record; this section is a pointer to it. On 2026-08-26 a
+     round's findings lived only in `HANDOVER.md` and the next handoff overwrote
+     them the same afternoon, which cost a recovery pass out of the session
+     archive. Open findings never delay or prevent a handoff: crossing a session
+     boundary with work outstanding is what a handoff is for.
    - `## Decisions made` - choices taken and the reasoning, so they are not
      relitigated.
    - `## Gotchas / guardrails` - anything that will trip up the next session,
@@ -70,7 +79,9 @@ Safety envelope for this skill. All five fields are required.
   LOG, and backlog collection) and write a single `HANDOVER.md` at the project
   root.
 - **Never:** Stage or commit `HANDOVER.md` (it is gitignored by design);
-  paraphrase away the user's steer; or claim a check passed that did not run.
+  paraphrase away the user's steer; claim a check passed that did not run; or
+  carry a review round's findings in this document as their only copy, since a
+  rolling file destroys them at the next handoff.
 - **Approval-gated:** None for writing the gitignored `HANDOVER.md`. Any actual
   git staging or commit is out of this skill's scope and stays under the normal
   git-permission rules.

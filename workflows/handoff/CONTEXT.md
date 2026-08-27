@@ -1,6 +1,6 @@
 # Handoff
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-08-27
 
 ## Purpose
 Clean session-to-session transitions for Book Dragon. When the user ends a working
@@ -30,8 +30,9 @@ child #4.
 
 ## Inputs
 - The working tree (git branch, status, diff), every project `LOG.md`, recent git
-  commits, `memory/backlog.md`, and the session-search index. All are read by the
-  gather script; no user flags are required.
+  commits, `memory/backlog.md`, any `memory/*_review_packet.md`, and the
+  session-search index. All are read by the gather script; no user flags are
+  required.
 - Biblio, to write the handoff document from the packet (see the skill).
 
 ## Outputs
@@ -59,7 +60,7 @@ child #4.
   the synthesis skill this workflow relies on to write the handoff.
 - `AGENTS.md` [[AGENTS]] - hosts the session-handoff trigger section and the
   startup recovery step.
-- `memory/backlog.md` [[memory/CONTEXT]], `workflows/session-search/` [[workflows/session-search/CONTEXT]] - signal sources for the packet.
+- `memory/backlog.md` [[memory/CONTEXT]], `memory/*_review_packet.md` [[memory/CONTEXT]], `workflows/session-search/` [[workflows/session-search/CONTEXT]] - signal sources for the packet. The review packets are the per-item record of a review round in progress, defined by the shared review process in `memory/review_process.md`; this workflow reads them and never writes one.
 - `workflows/doc-sync-guard/` [[workflows/doc-sync-guard/CONTEXT]] - run read-only for the packet's CONTEXT/LOG drift section, so a handoff surfaces any behind directory before HANDOVER.md is written; degrades to empty if unavailable.
 
 ## Known Issues
@@ -68,7 +69,13 @@ child #4.
   itself is script-backed and reliable once triggered.
 - `HANDOVER.md` is a single rolling file: it holds only the most recent handoff.
   History is deliberately not kept (the weekly-review store and LOG.md already
-  carry the durable record).
+  carry the durable record). **Anything with a lifetime longer than one session
+  must therefore not live here.** That is not a theoretical limit: on 2026-08-26 a
+  review round's findings were written into this file and destroyed by the next
+  handoff the same afternoon, one working day later, leaving the round's entire
+  remaining input recoverable only from the session archive. The structural cause
+  is a mismatch of lifetimes, a session-scoped file holding round-scoped material,
+  and it is why review packets exist and why the packet now reports them.
 - **The packet's doc-sync section surfaces drift only.** `doc_sync_drift` keeps
   the guard's WARN findings, so a DEGRADED finding (a component of the guard that
   could not run, today its output-inventory probe on an interpreter without
@@ -110,3 +117,27 @@ child #4.
   `TestDocSyncDriftSeverity` in the tests directory (24 -> 27 tests), so the
   documented boundary rests on a test rather than on a code read. No behaviour
   change.
+- 2026-08-27 - The gather packet gained an "Open review findings" section, and
+  `gather.py` the `review_packets` reader behind it, so a handoff reports how many
+  findings of an in-progress review round are still open and where that round's
+  packet is. The trigger was a real loss rather than a hypothetical: a round's
+  findings were written into `HANDOVER.md` and overwritten by the next handoff one
+  working day later, which is a session-scoped container holding round-scoped
+  material. The user's diagnosis is what shaped the fix, since he had assumed each
+  handover carried the review material forward cumulatively, which is what should
+  have happened. He also rejected the stronger enforcement offered, a handoff
+  refused while findings are open, on the grounds that crossing a boundary with
+  work outstanding is the whole purpose of a handoff, so the section reports and
+  never gates. The skill gained a matching required `## Open review findings`
+  section and a Hardening "Never" clause forbidding the findings to be carried here
+  as their only copy. Known Issues now records the lifetime rule the incident
+  proves. Tests 27 -> 40.
+- 2026-08-27 - Removed the stray `HANDOFF-PLAN.md` from this directory's root, on
+  the user's instruction. The 2026-07-10 hygiene sweep recorded above archived the
+  build plan but copied it rather than moving it, so a second identical file sat
+  here for seven weeks while the Revision History said it had been archived. The
+  two were confirmed byte-identical at 4,011 bytes immediately before the deletion
+  rather than on the earlier reading, so the archived copy is complete and nothing
+  was lost. Both were gitignored under the design-time-document rule, so nothing
+  had been published. The Contents section already described `archived/` as the
+  plan's location and needed no change; it was the tree that disagreed with it.

@@ -33,6 +33,12 @@ from pathlib import Path
 _LOG_LINE = re.compile(r"^\[\d{4}-\d{2}-\d{2}T")
 # A top-level Active backlog bullet, e.g. "- **Title** - description".
 _ACTIVE_BULLET = re.compile(r"^- \*\*(.+?)\*\*")
+# An H2 heading, e.g. "## Open - this round's scope". Deliberately not matching
+# "###", so a finding heading inside a section never resets the section.
+_H2 = re.compile(r"^##(?!#)\s+(.*)$")
+# A finding inside a review packet, tagged R<n>. Matches both shapes the packets
+# use: a "### R4 - ..." heading and a "- **R1 - ...**" bullet.
+_FINDING_ID = re.compile(r"^(?:#{2,6}\s+|[-*]\s+)(?:\*\*)?(R\d+)\b")
 
 
 # ---------------------------------------------------------------------------
@@ -249,10 +255,71 @@ def doc_sync_drift(project_root):
 
 
 # ---------------------------------------------------------------------------
+# open review findings
+# ---------------------------------------------------------------------------
+def review_packets(project_root):
+    """Return [{item, path, open, addressed}] for every memory/*_review_packet.md.
+
+    A review packet holds the findings of the review round currently being worked
+    through for one backlog item. This reader exists so a session boundary is never
+    silent about outstanding review work: on 2026-08-26 a round's findings were
+    written into HANDOVER.md and destroyed by the next handoff the same afternoon,
+    because a handover has a session's lifetime and a review round has a
+    multi-session one.
+
+    Reporting only, deliberately. A handoff is NEVER withheld because findings are
+    open - crossing a boundary with work outstanding is the entire purpose of a
+    handoff, so gating on it would make a review round impossible to continue. The
+    obligation is to carry the count and the pointer, never to block.
+
+    `open` and `addressed` are None when the corresponding `## Open` / `## Addressed`
+    section is absent, so a packet whose shape has drifted reports as unreadable
+    rather than as zero findings. An unanswered question must never be rendered as
+    an empty answer: "0 open" would read as "nothing left to do".
+
+    Degrades to [] on a missing memory directory, and skips a file it cannot read,
+    matching the other readers here - a broken packet never breaks the handoff.
+    """
+    memory = Path(project_root) / "memory"
+    if not memory.is_dir():
+        return []
+    packets = []
+    for path in sorted(memory.glob("*_review_packet.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        found = {}
+        section = None
+        for line in text.splitlines():
+            heading = _H2.match(line)
+            if heading:
+                name = heading.group(1).strip().lower()
+                section = ("open" if name.startswith("open")
+                           else "addressed" if name.startswith("addressed")
+                           else None)
+                if section is not None:
+                    found.setdefault(section, [])
+                continue
+            if section is None:
+                continue
+            hit = _FINDING_ID.match(line)
+            if hit and hit.group(1) not in found[section]:
+                found[section].append(hit.group(1))
+        packets.append({
+            "item": path.name[: -len("_review_packet.md")].replace("_", "-"),
+            "path": path.relative_to(project_root).as_posix(),
+            "open": found.get("open"),
+            "addressed": found.get("addressed"),
+        })
+    return packets
+
+
+# ---------------------------------------------------------------------------
 # packet assembly
 # ---------------------------------------------------------------------------
 def build_packet(*, timestamp, branch, status, diffstat, commits, dir_logs,
-                 backlog, sessions, doc_sync=()):
+                 backlog, sessions, doc_sync=(), review=()):
     """Assemble the handoff briefing packet as a markdown string for the AI."""
     lines = []
     lines.append("# Handoff briefing packet")
@@ -287,6 +354,28 @@ def build_packet(*, timestamp, branch, status, diffstat, commits, dir_logs,
     else:
         lines.append(
             "Clean - every changed directory's CONTEXT.md / LOG.md is current.")
+    lines.append("")
+
+    lines.append("## Open review findings")
+    if review:
+        lines.append(
+            "Carry the open count and the packet path into HANDOVER.md. Do NOT "
+            "copy the findings themselves in as their only copy: that is what "
+            "destroyed a review round on 2026-08-26. This never blocks a handoff.")
+        for entry in review:
+            if entry["open"] is None:
+                lines.append(
+                    f"- **{entry['item']}:** shape not recognised (no `## Open` "
+                    f"section) - read it rather than trusting a count. "
+                    f"Packet: `{entry['path']}`")
+                continue
+            ids = ", ".join(entry["open"]) if entry["open"] else "none"
+            done = len(entry["addressed"]) if entry["addressed"] is not None else "?"
+            lines.append(
+                f"- **{entry['item']}:** {len(entry['open'])} open ({ids}), "
+                f"{done} addressed. Packet: `{entry['path']}`")
+    else:
+        lines.append("No review packets in memory/ - no round is part-way through.")
     lines.append("")
 
     lines.append("## Line churn (git diff --stat HEAD)")

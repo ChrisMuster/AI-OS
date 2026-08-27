@@ -80,6 +80,7 @@ def cmd_gather(args):
         sessions=gather.recent_sessions(
             _SESSION_DATA, today, config.SESSION_LOOKBACK_DAYS),
         doc_sync=gather.doc_sync_drift(_PROJECT_ROOT),
+        review=gather.review_packets(_PROJECT_ROOT),
     )
     print(packet)
     print("---")

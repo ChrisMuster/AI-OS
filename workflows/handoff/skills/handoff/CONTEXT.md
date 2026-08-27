@@ -1,6 +1,6 @@
 # Handoff Skill
 
-**Last modified:** 2026-07-09
+**Last modified:** 2026-08-27
 
 ## Purpose
 The AI half of the handoff workflow: turn the deterministic gather packet into a
@@ -34,3 +34,4 @@ the required sections, then verify with `--status --json`.
 - 2026-07-03 - Initial creation. SKILL.md on the templates/SKILL.md.template schema.
 - 2026-07-03 - Made the user's trigger-time steer ("keep this in mind", "this is where I'm going next session") a first-class input: captured verbatim in a leading "Steer for next session" section, omitted when there is no steer.
 - 2026-07-09 - Added the required Hardening section to SKILL.md (umbrella Bucket-1 child #6): documents the single write boundary (HANDOVER.md at the project root) and the never-stage/commit rule.
+- 2026-08-27 - SKILL.md gained a required `## Open review findings` section in the HANDOVER.md structure, a matching Hardening "Never" clause, and the review packets in its Inputs list. The section carries the open count and the packet path and explicitly forbids copying a review round's findings in as their only copy, which is the failure it exists to prevent: on 2026-08-26 a round's findings lived only in `HANDOVER.md` and the next handoff overwrote them one working day later. It also states that open findings never delay or prevent a handoff, because the user rejected the gating form of the fix on the grounds that crossing a session boundary with work outstanding is precisely what a handoff is for.

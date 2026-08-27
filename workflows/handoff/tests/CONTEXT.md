@@ -1,6 +1,6 @@
 # Handoff - Tests
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-08-27
 
 ## Purpose
 Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
@@ -16,6 +16,13 @@ Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
   finding alone is not, and a degrade never masks real drift), and packet
   assembly (including the "CONTEXT/LOG drift (doc-sync)" section, clean and
   populated).
+- test_review_packets.py - the `review_packets` reader and the packet's "Open
+  review findings" section: both finding shapes, the absent-section `None` versus
+  present-but-empty `[]` distinction, an H3 finding heading not resetting its
+  section, duplicate and nested-numbered items not inflating a count, the
+  degrade-to-empty paths, and a live positive control asserting the reader
+  recognises the shape of the real packets in `memory/` rather than only the
+  fixtures written alongside it.
 
 ## Inputs
 None. Tests build their own temporary fixtures (temp dirs and an in-memory-style
@@ -62,3 +69,18 @@ Test results to stdout; exit code 0 on success, non-zero on failure.
   sees in the real tree. Part of the pass clearing the last 50 sites
   project-wide; `encoding` became a close-out blocking label in the same change.
   Test count unchanged at 27; no assertion touched.
+- 2026-08-27 - Added `test_review_packets.py` (13 tests, 27 -> 40) for the new
+  `review_packets` reader and its packet section. The load-bearing pair is
+  `test_missing_open_section_is_none_not_empty` and
+  `test_present_but_empty_open_section_is_empty_list`, which pin `None` and `[]`
+  in both directions so a drifted packet can never report as zero open findings.
+  The suite also carries a live positive control,
+  `TestReviewPacketsAgainstLivePacket`, running the reader over the real
+  `memory/*_review_packet.md` files rather than over fixtures alone, because a
+  parser tested only against fixtures its own author wrote validates its own
+  definition by construction. It asserts recognition and deliberately not counts,
+  since the counts move as a round is worked through, and skips cleanly on a
+  machine with no packet. Four mutations were run on the way in and all four were
+  caught: collapsing `None` into `[]`, letting an H3 heading reset its section,
+  dropping the duplicate-id guard, and dropping the bullet form from the finding
+  pattern.
