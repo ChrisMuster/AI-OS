@@ -165,6 +165,34 @@ def tracked_and_ignored():
     return None if out is None else set(_paths(out))
 
 
+def tracked_by_both(git_dir, project=None):
+    """Paths carried in BOTH repositories' indexes, once the personal one has some.
+
+    This is the post-seed form of the no-overlap question and it is a different
+    question from the one select() answers. select() asks whether the pending
+    *selection* contains a publicly tracked file, which is answerable before
+    anything is committed. This asks whether the two *indexes* share a path,
+    which is what the Stage A verify line needs and which only becomes
+    answerable once the seed commit exists.
+
+    It is here rather than in a shell pipeline because the comparison is a set
+    intersection, and the obvious shell spelling of it needs `comm`, which is
+    present in Git Bash and absent from PowerShell. That made the verify step
+    runnable on only some of this project's AIs, which is the same portability
+    defect the selection itself was rewritten to remove.
+
+    Returns None if git could not answer, so an unanswered question is never
+    read as an empty answer.
+    """
+    project = os.path.abspath(project or os.getcwd())
+    mine = _run(["--git-dir", os.path.abspath(git_dir), "--work-tree", project,
+                 "ls-files", "--cached", "-z"])
+    theirs = _run(["ls-files", "-z"])
+    if mine is None or theirs is None:
+        return None
+    return set(_paths(mine)) & set(_paths(theirs))
+
+
 # ------------------------------------------------------------------- the rule
 
 def select(specs, git_dir=None, project=None):
@@ -312,10 +340,32 @@ def main():
                     help="With --stage, print what would be added and write nothing")
     ap.add_argument("--self-test", action="store_true",
                     help="Prove the module can distinguish the two git contexts")
+    ap.add_argument("--tracked-by-both", action="store_true",
+                    help="Report paths carried in both repositories' indexes "
+                         "(the post-seed no-overlap check; needs --git-dir)")
     args = ap.parse_args()
 
     if args.self_test:
         return self_test()
+
+    if args.tracked_by_both:
+        if not args.git_dir:
+            print("--tracked-by-both requires --git-dir.")
+            return 1
+        if not Path(args.git_dir).exists():
+            print(f"No repository at {args.git_dir}; no-overlap check not run.")
+            return 1
+        both = tracked_by_both(args.git_dir)
+        if both is None:
+            print("git could not answer; no-overlap check not run.")
+            return 1
+        if both:
+            print(f"FAIL: {len(both)} file(s) tracked by both repositories:")
+            for p in sorted(both):
+                print(f"  {p}")
+            return 1
+        print("PASS: no file is tracked by both repositories.")
+        return 0
 
     specs = read_specs()
     if specs is None:

@@ -318,6 +318,121 @@ class StageTests(unittest.TestCase):
             self.assertNotIn("notes/private.md", out.stdout)
 
 
+# ------------------------------------------------------------- tracked by both
+
+class TrackedByBothTests(unittest.TestCase):
+    """Counting checker. Subject: a path carried in both repositories' indexes.
+
+    This answers the Stage A verify line, which asks about the state *after* the
+    seed commit. It is deliberately a different question from the one SelectTests
+    covers: that one asks whether the pending selection contains a publicly
+    tracked file, and is answerable while the personal index is still empty.
+
+    The rejection control is the load-bearing one. This check reports a problem by
+    returning a non-empty set, so its clean answer and its could-not-run answer
+    look identical from the call site unless the second is distinguishable. An
+    unanswered question returning an empty set would be a check that passes
+    loudest exactly when it is broken.
+    """
+
+    def _personal(self, root):
+        gd = os.path.join(os.path.dirname(root), "personal.git")
+        _git(root, "init", "--bare", "-q", gd)
+        return gd
+
+    def test_positive_control_a_file_in_both_indexes_is_found(self):
+        """notes/oops.md is tracked publicly. Staging it into the personal
+        repository puts one path in both indexes, which is the whole subject."""
+        with fixture() as root:
+            gd = self._personal(root)
+            self.assertTrue(allowlist.stage({"notes/oops.md"}, gd))
+            self.assertEqual(allowlist.tracked_by_both(gd), {"notes/oops.md"})
+
+    def test_negative_control_a_personal_only_file_is_not_found(self):
+        """The normal, correct case: the personal repository carries a private
+        file the public repository has never heard of."""
+        with fixture() as root:
+            gd = self._personal(root)
+            self.assertTrue(allowlist.stage({"notes/private.md"}, gd))
+            self.assertEqual(allowlist.tracked_by_both(gd), set())
+
+    def test_negative_control_a_public_only_file_is_not_found(self):
+        with fixture() as root:
+            gd = self._personal(root)
+            self.assertTrue(allowlist.stage({"notes/private.md"}, gd))
+            self.assertNotIn("readme.md", allowlist.tracked_by_both(gd))
+
+    def test_negative_control_an_empty_personal_index_is_clean(self):
+        with fixture() as root:
+            gd = self._personal(root)
+            self.assertEqual(allowlist.tracked_by_both(gd), set())
+
+    def test_rejection_control_an_unanswerable_question_is_not_a_clean_result(self):
+        with fixture() as root:
+            missing = os.path.join(os.path.dirname(root), "absent.git")
+            self.assertIsNone(allowlist.tracked_by_both(missing))
+
+
+# ----------------------------------------------------------------- raw/ at depth
+
+class RawDepthExclusionTests(unittest.TestCase):
+    """Validator. Subject: the depth-independence of the bulk-material exclusion.
+
+    The classification excludes source material under any `raw/` folder at any
+    depth, written `wikis/**/raw/**`. The superseded one-level spelling
+    `wikis/*/raw/**` reaches a live wiki's `raw/` and misses an archived wiki's,
+    which sits one level deeper. That difference is what let a source PDF be
+    claimed by Category A for two days without anyone editing a rule.
+
+    **These fixtures are synthetic on purpose, and that is the point of the class.**
+    The suite's other check on this is a sweep over the real selection, which can
+    only tell the two spellings apart while the tree actually contains a `raw/`
+    folder two levels down. Today exactly one does, it contributes three files out
+    of more than sixty-two thousand, and it is queued for deletion immediately after
+    Stage A. From that deletion onward the sweep would pass on either spelling, so
+    the distinction would stop being tested at the moment the evidence was removed.
+    A fixture does not decay when the tree changes shape.
+    """
+
+    FILES = ("wikis/live/raw/source.pdf",
+             "wikis/live/wiki/page.md",
+             "wikis/archived/old/raw/source.pdf",
+             "wikis/archived/old/wiki/page.md")
+
+    CORRECT = [":(glob)wikis/**", ":(exclude,glob)wikis/**/raw/**"]
+    SUPERSEDED = [":(glob)wikis/**", ":(exclude,glob)wikis/*/raw/**"]
+
+    @contextlib.contextmanager
+    def _wikis(self):
+        with fixture(ignore_rules="wikis/\n", force_add=(), plain_add=(),
+                     files=self.FILES) as root:
+            yield root
+
+    def test_positive_control_the_live_spelling_excludes_raw_at_both_depths(self):
+        with self._wikis():
+            selected = allowlist.shadow_selection(self.CORRECT)
+            self.assertIsNotNone(selected)
+            self.assertNotIn("wikis/live/raw/source.pdf", selected)
+            self.assertNotIn("wikis/archived/old/raw/source.pdf", selected)
+
+    def test_positive_control_authored_wiki_content_survives_the_exclusion(self):
+        """Without this, the class above would pass on a selection of nothing."""
+        with self._wikis():
+            selected = allowlist.shadow_selection(self.CORRECT)
+            self.assertIn("wikis/live/wiki/page.md", selected)
+            self.assertIn("wikis/archived/old/wiki/page.md", selected)
+
+    def test_rejection_control_the_superseded_spelling_leaks_the_deep_one(self):
+        """The load-bearing control. It proves this suite can tell the correct
+        spelling from the wrong one, rather than passing on both. If this ever
+        starts passing, the test has stopped measuring depth."""
+        with self._wikis():
+            selected = allowlist.shadow_selection(self.SUPERSEDED)
+            self.assertIsNotNone(selected)
+            self.assertNotIn("wikis/live/raw/source.pdf", selected)
+            self.assertIn("wikis/archived/old/raw/source.pdf", selected)
+
+
 # -------------------------------------------------------------------------- smoke
 
 class SmokeTests(unittest.TestCase):

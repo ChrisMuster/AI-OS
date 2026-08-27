@@ -1,6 +1,6 @@
 # Sync Architecture
 
-**Last modified:** 2026-08-26
+**Last modified:** 2026-08-27
 
 ## Purpose
 
@@ -21,8 +21,11 @@ replaces "the documents agree" as an assertion with a check that can fail.
   plan and proves what it actually selects against the real working tree.
   `--consistency` checks both design documents for the defect classes that have
   recurred: a superseded pathspec spelling left standing, a second copy of the
-  classification, an instruction to run a measuring script that is not in the tree,
-  and a stale review baseline.
+  classification, a missing review baseline, and any script path either document
+  names that neither exists in the tree nor is declared in the plan's
+  planned-artefacts block as something a stage has still to create. It also reports
+  how far each document has drifted from the version last reviewed, as information
+  rather than as a failure.
 - `scripts/allowlist.py` - the single executable copy of the selection rule, shared by
   this workflow's checks and by the Stage A build so the two cannot resolve the same
   pathspecs differently. Parses the plan's block, resolves it in the personal
@@ -31,9 +34,11 @@ replaces "the documents agree" as an assertion with a check that can fail.
   they must disagree and proves it can tell them apart. Pure Python over the git CLI
   with no shell pipeline, so it runs on any AI in the roster.
 - `tests/` - `workflows/sync-architecture/tests/` [[workflows/sync-architecture/tests/CONTEXT]] - The
-  test suite for the selection module, discovered and run by the close-out verifier.
-  Deliberately not hermetic: the subject under test is the difference between two git
-  contexts, so every fixture is a real repository built under `tempfile`.
+  test suites for the selection module and for the plan-consistency checks, discovered
+  and run by the close-out verifier. The selection suite is deliberately not hermetic:
+  its subject is the difference between two git contexts, so every fixture is a real
+  repository built under `tempfile`. The consistency suite needs no git, because its
+  subject is text.
 
 ## Inputs
 
@@ -72,7 +77,9 @@ while any file is both publicly tracked and matched by an ignore rule.
 6. Assert that the uncorrected selection contained no publicly tracked file, and that
    the corrected one excludes them.
 7. Check both design documents for the recurring defect classes.
-8. Compare each review baseline against its live document by SHA-256.
+8. Compare each live document against its review baseline: fail if the baseline is
+   absent, and otherwise report the drift as information, since the baseline holds
+   the last-reviewed version and is refreshed only after a review round finishes.
 9. Print the report and exit non-zero on any failure.
 10. Append LOG.md with a completion or failure entry.
 
@@ -150,3 +157,21 @@ while any file is both publicly tracked and matched by an ignore rule.
   Removing it changed nothing, `--work-tree` overrides `core.bare`, and the real
   selection stages without it. The argument and the claim are both gone; the property
   it was guarding is now asserted by a test.
+- 2026-08-27 - Widened the consistency check and added a post-seed overlap check, both
+  found by simulating a Stage A build from the plans rather than by reading them. The
+  missing-script rule had been keyed to one historical filename; it now checks every
+  script path either document names against the tree, with a fenced planned-artefacts
+  block declaring the ones a stage has still to create, which is what distinguishes
+  "never written" from "not built yet". `allowlist.py` gained `tracked_by_both` so the
+  plans' Stage A acceptance table could stop calling `comm`, which Git Bash has and
+  PowerShell does not. `tests/` gained a second suite and two classes, taking the
+  workflow to 48 tests.
+- 2026-08-27 - Inverted the review-baseline comparison. It had required a plan to be
+  byte-identical to its baseline and failed otherwise, telling the reader to refresh
+  before a review round. That encoded the convention backwards: the baseline holds
+  the version the reviewing AI last reviewed and is refreshed only after a round
+  finishes, so drift is normal and is the diff the next review reads. Drift is now
+  reported as information with a real added/removed count, and only a missing
+  baseline fails. The shared process in `memory/review_process.md` gained an explicit
+  six-step baseline cycle in the same pass, since the ambiguity originated there.
+  Workflow now at 54 tests.

@@ -24,6 +24,7 @@ individual files, both because naming them would put personal content into a tra
 file and because a structural assertion keeps working when the files change.
 """
 import argparse
+import difflib
 import hashlib
 import re
 import sys
@@ -54,6 +55,74 @@ def _read(path):
 # The parser lives in the selection module so the check and the build read the
 # plan's block through the same code. Re-exported here for check_consistency.
 extract_block = allowlist.extract_block
+
+PLANNED_MARKER = "```planned-artefacts\n"
+
+# Any script path either plan names. Deliberately anchored on "workflows/" so it
+# matches the project's own scripts and not an arbitrary word ending in .py.
+SCRIPT_RE = re.compile(r"workflows/[A-Za-z0-9_./-]+\.py")
+
+
+def extract_planned(text):
+    """Paths declared as artefacts a stage will create but which do not exist yet.
+
+    Returns a set, empty when the block is absent. Empty is the correct default:
+    it means nothing is exempt, so every script the plans name must be present.
+    An absent block must not read as "everything is excused".
+    """
+    start = text.find(PLANNED_MARKER)
+    if start == -1:
+        return set()
+    start += len(PLANNED_MARKER)
+    end = text.find("```", start)
+    if end == -1:
+        return set()
+    planned = set()
+    for line in text[start:end].splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            planned.add(line)
+    return planned
+
+
+def compare_to_baseline(baseline_text, live_text):
+    """Classify a plan against its review baseline. Returns (level, added, removed).
+
+    The baseline holds the version the reviewing AI last reviewed and is refreshed
+    only once a review round has finished, so a plan differing from it is the
+    normal state for most of an item's life and the difference is the deliverable
+    rather than a defect. Drift is therefore INFO.
+
+    A missing baseline is FAIL, because that is the one state with no diff surface
+    at all: the next review would have to re-read the whole document blind.
+    """
+    if live_text is None:
+        return ("SKIP", 0, 0)
+    if baseline_text is None:
+        return ("FAIL", 0, 0)
+    if hashlib.sha256(baseline_text.encode()).hexdigest() == \
+            hashlib.sha256(live_text.encode()).hexdigest():
+        return ("INFO", 0, 0)
+    added = removed = 0
+    for row in difflib.unified_diff(baseline_text.splitlines(),
+                                    live_text.splitlines(), lineterm="", n=0):
+        if row.startswith("+") and not row.startswith("+++"):
+            added += 1
+        elif row.startswith("-") and not row.startswith("---"):
+            removed += 1
+    return ("INFO", added, removed)
+
+
+def unresolved_scripts(text, planned, root=Path(".")):
+    """Script paths a document names that neither exist nor are declared planned.
+
+    Separated from check_consistency so it can be tested against a fixture tree
+    rather than only against this repository, where every referenced script
+    happens to exist and the check would pass without ever being shown able to
+    fail.
+    """
+    return [p for p in sorted(set(SCRIPT_RE.findall(text)))
+            if p not in planned and not (root / p).exists()]
 
 
 # ----------------------------------------------------------------------- allowlist
@@ -209,6 +278,33 @@ def check_consistency(findings):
                          f"{name}: no instruction to run a missing measuring script"
                          + ("" if not bad else f" (line(s) {bad})")))
 
+    # Every script the plans name must be in the tree, or be declared in the
+    # architecture plan as something a stage still has to create. This is the
+    # general form of the scope_measure defect: three documents carried an
+    # instruction to run a script that had only ever lived in a scratchpad, and
+    # nothing could tell that from a script not yet written. The declaration makes
+    # the difference explicit and therefore checkable.
+    plan_text = _read(PLAN)
+    planned = extract_planned(plan_text) if plan_text is not None else set()
+    for path in (PLAN, SPEC):
+        text = _read(path)
+        if text is None:
+            continue
+        missing = unresolved_scripts(text, planned)
+        findings.append(("PASS" if not missing else "FAIL",
+                         f"{path.name}: every script it names exists or is declared "
+                         f"as planned"
+                         + ("" if not missing
+                            else f" ({len(missing)} missing: {', '.join(missing)})")))
+
+    # A declaration that has come true is a stale exemption, so it is reported.
+    # INFO rather than FAIL: the moment to remove the line is just after the build,
+    # and failing the suite between those two acts would punish the correct order.
+    built = sorted(p for p in planned if Path(p).exists())
+    if built:
+        findings.append(("INFO", f"{PLAN.name}: planned artefact(s) now built, remove "
+                                 f"from the declaration: {', '.join(built)}"))
+
     text = _read(PLAN)
     if text is not None:
         specs = extract_block(text)
@@ -219,16 +315,32 @@ def check_consistency(findings):
             findings.append(("PASS" if extract_block(spec_text) is None else "FAIL",
                              f"{SPEC.name}: does NOT carry a second classification block"))
 
+    # The review baseline holds the version the reviewing AI last reviewed, and it
+    # is refreshed only once a review round has FINISHED. So drift between a plan
+    # and its baseline is the normal, correct state for most of an item's life: it
+    # is the diff the next review reads. It is reported, never failed.
+    #
+    # This used to be asserted the other way, as "byte-identical or FAIL (refresh
+    # before a review round)". That encoded the opposite convention, told the reader
+    # to do the one thing that destroys the diff, and was red for the whole duration
+    # of any correction pass, which is the state that trains people to ignore a
+    # check. What is genuinely a defect is a baseline that is absent, because then
+    # there is no diff surface at all.
     for baseline, live in BASELINES:
-        b, l = _read(baseline), _read(live)
-        if b is None or l is None:
-            findings.append(("SKIP", f"{baseline.name} or its live plan not present"))
-            continue
-        same = hashlib.sha256(b.encode()).hexdigest() == \
-               hashlib.sha256(l.encode()).hexdigest()
-        findings.append(("PASS" if same else "FAIL",
-                         f"{baseline.name} is byte-identical to {live.name}"
-                         + ("" if same else " (refresh before a review round)")))
+        level, added, removed = compare_to_baseline(_read(baseline), _read(live))
+        if level == "SKIP":
+            findings.append(("SKIP", f"{live.name} not present; baseline not compared"))
+        elif level == "FAIL":
+            findings.append(("FAIL", f"{baseline.name} is missing, so the next review "
+                                     f"of {live.name} has no diff surface"))
+        elif not added and not removed:
+            findings.append(("INFO", f"{live.name} is identical to {baseline.name}: "
+                                     f"no changes since the last review round"))
+        else:
+            findings.append(("INFO", f"{live.name} differs from {baseline.name} "
+                                     f"(+{added} / -{removed} lines); that diff is "
+                                     f"what the next review reads. Refresh the "
+                                     f"baseline only after that review has finished."))
 
 
 # ---------------------------------------------------------------------------- main
