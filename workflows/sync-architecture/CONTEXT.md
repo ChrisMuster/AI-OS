@@ -69,7 +69,12 @@ while any file is both publicly tracked and matched by an ignore rule.
    whose index is empty until the seed commit.
 3. Assert the positive controls: properties that must be TRUE of the selection, such
    as an authored personal folder contributing a non-markdown file and a file from a
-   subfolder. A suite of exclusions alone would pass on an empty allowlist.
+   subfolder. A suite of exclusions alone would pass on an empty allowlist. Where a
+   control would otherwise be broader than the claim it backs, it is narrowed: the
+   three audit trails inside derived folders are asserted one at a time rather than
+   as any-of-three, and the rule that all four authored folders take every file type
+   is proved by a synthetic fixture rather than by the tree, which cannot test it for
+   three of the four folders and cannot tell a broken rule from a deleted file.
 4. Assert the category sweeps: kinds of file that must not appear at all.
 5. Assert the invariant the design rests on: no file is both publicly tracked and
    matched by an ignore rule. While that holds, the two git contexts return the same
@@ -109,10 +114,16 @@ while any file is both publicly tracked and matched by an ignore rule.
   faults it knows about and nothing more. It cannot establish that the documents are
   correct, only that they are free of the specific errors that have recurred. Treat a
   clean run as a floor rather than a verdict.
-- The assertions are structural rather than naming individual files, deliberately: a
-  tracked file must not carry personal filenames, and a structural assertion also keeps
-  working when the underlying files change. The trade is that it proves a property
-  holds for some file rather than for one named file.
+- The assertions over **personal** content are structural rather than naming individual
+  files, deliberately: a tracked file must not carry personal filenames, and a
+  structural assertion also keeps working when the underlying files change. The trade is
+  that it proves a property holds for some file rather than for one named file. Two
+  narrower cases are exempt and are asserted by name, because neither publishes anything
+  personal and neither can be removed by ordinary use: the three audit trails inside
+  derived folders, which are fixed paths the workflows maintain themselves, and the
+  documentation files inside `memory/backlog-backups/`. Where a structural assertion
+  over personal content would be too weak, the answer is a synthetic fixture rather than
+  a named file, since a fixture tests the rule instead of the tree.
 - The allowlist check reflects the working tree at the moment it runs. The design
   documents are themselves inside the selection, so editing them changes the reported
   count and size. No figure it prints should be copied into a document.
@@ -175,3 +186,22 @@ while any file is both publicly tracked and matched by an ignore rule.
   baseline fails. The shared process in `memory/review_process.md` gained an explicit
   six-step baseline cycle in the same pass, since the ambiguity originated there.
   Workflow now at 54 tests.
+- 2026-08-27 - Tightened two positive controls that were broader than the claims they
+  backed, which is the [[feedback_verify_the_checker]] fault rather than a gap in
+  coverage. The three audit trails inside derived folders were asserted as
+  "any of the three", so two of them could have dropped out of the selection with the
+  suite still reporting PASS; they are now asserted one at a time by path, which adds
+  no brittleness because the workflows themselves maintain those files. And the rule
+  that all four authored personal folders take every file type was proved only by
+  "an authored folder contributes at least one non-markdown file", which a single zip
+  satisfies, so the PDF and four PNGs the 2026-08-24 decision was taken over could
+  all have stopped being selected unnoticed. That rule now has a synthetic fixture,
+  `AuthoredFolderFileTypeTests`, on the same pattern as the existing depth fixture and
+  for two reasons stated in it: three of the four folders contain no non-markdown file
+  today, so the tree cannot test the rule at all for them, and a real-tree control
+  cannot distinguish a broken pattern from a deliberate deletion, which matters
+  because this suite gates the seed commit and a false alarm would block a build. The
+  new control was mutation-tested rather than trusted: pointing one of the three named
+  audit trails at a path that does not exist made the checker exit non-zero and report
+  a FAIL, and the mutation was then reverted and the green result re-confirmed.
+  Workflow now at 59 tests across two suites, 42 and 17.

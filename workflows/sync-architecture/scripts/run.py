@@ -170,11 +170,18 @@ def check_allowlist(findings):
                  and "memory/backlog-backups/LOG.md" in selected),
         ("the user profile is selected", lambda: "USER.md" in selected),
         ("the root audit trail is selected", lambda: "LOG.md" in selected),
-        ("an audit trail inside a derived folder is selected",
-         lambda: any_sel(lambda p: p.endswith("/LOG.md")
-                         and ("session-search/data" in p
-                              or "knowledge-graph/index" in p
-                              or "web-research/outputs" in p))),
+        # Named one at a time rather than as "any of the three". The claim is that
+        # all three are Category A: a folder being derived does not make its own
+        # audit trail derived. An any-of control passes while two of the three are
+        # missing, which is a weaker statement than the one the plan makes. These
+        # are fixed project paths that the workflows themselves maintain, so naming
+        # them costs nothing in brittleness and publishes nothing personal.
+        ("the session-search audit trail is selected",
+         lambda: "workflows/session-search/data/LOG.md" in selected),
+        ("the knowledge-graph audit trail is selected",
+         lambda: "workflows/knowledge-graph/index/LOG.md" in selected),
+        ("the web-research audit trail is selected",
+         lambda: "workflows/web-research/outputs/LOG.md" in selected),
         ("authored wiki content is selected",
          lambda: any_sel(lambda p: "/wiki/" in p and p.startswith("wikis/"))),
         ("a design-time document is selected",

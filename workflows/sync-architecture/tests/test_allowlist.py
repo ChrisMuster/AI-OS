@@ -433,6 +433,114 @@ class RawDepthExclusionTests(unittest.TestCase):
             self.assertIn("wikis/archived/old/raw/source.pdf", selected)
 
 
+# --------------------------------------------------- authored folders, every type
+
+class AuthoredFolderFileTypeTests(unittest.TestCase):
+    """Validator. Subject: the four authored personal folders take EVERY file type.
+
+    The decision of 2026-08-24 settled that `conversations/`, `reviews/`,
+    `user-inputs/` and `journal/entries/` take everything they contain regardless
+    of extension, and that the media-and-PDF exclusion is scoped to bulk source
+    material under any `raw/`. Six real files turned on it: a PDF, four PNGs in a
+    subfolder, and a zip. `user-inputs/` exists precisely to receive a CV as a PDF
+    or a `.docx`.
+
+    **These fixtures are synthetic on purpose, for two reasons.**
+
+    First, a sweep over the real tree cannot test the rule for three of the four
+    folders: as of 2026-08-27 `reviews/`, `user-inputs/` and `journal/entries/`
+    contain no non-markdown file at all, so there is nothing there for a real-tree
+    control to find. The rule would go untested until the day a CV arrived, which
+    is the day it matters.
+
+    Second, a real-tree control cannot tell a broken rule from an ordinary tidy-up.
+    A file that stops being selected because the pattern broke and a file that stops
+    being selected because it was deleted produce identical output, and this suite
+    gates the Stage A seed commit, so a false alarm blocks a build. A fixture asks
+    only about the rule, which cannot be deleted by accident.
+    """
+
+    FILES = ("conversations/notes.md",
+             "conversations/review.pdf",
+             "conversations/assets/screenshot.png",
+             "conversations/pack.zip",
+             "reviews/2026-08-23.md",
+             "reviews/attachment.pdf",
+             "user-inputs/cv.pdf",
+             "user-inputs/cv.docx",
+             "journal/entries/2026-08.md",
+             "journal/entries/scan.png",
+             "wikis/w/raw/bulk.pdf")
+
+    AUTHORED = [":(glob)conversations/**", ":(glob)reviews/**",
+                ":(glob)user-inputs/**", ":(glob)journal/entries/**"]
+    # The shape the decision replaced: scoped to markdown, so it misses every one
+    # of the six files the decision was taken to protect.
+    MARKDOWN_ONLY = [":(glob)conversations/*.md", ":(glob)reviews/*.md",
+                     ":(glob)user-inputs/*.md", ":(glob)journal/entries/*.md"]
+
+    NON_MARKDOWN = ("conversations/review.pdf",
+                    "conversations/assets/screenshot.png",
+                    "conversations/pack.zip",
+                    "reviews/attachment.pdf",
+                    "user-inputs/cv.pdf",
+                    "user-inputs/cv.docx",
+                    "journal/entries/scan.png")
+
+    @contextlib.contextmanager
+    def _authored(self):
+        rules = "conversations/\nreviews/\nuser-inputs/\njournal/\nwikis/\n"
+        with fixture(ignore_rules=rules, force_add=(), plain_add=(),
+                     files=self.FILES) as root:
+            yield root
+
+    def test_positive_control_every_authored_folder_takes_every_file_type(self):
+        """One assertion per file, so a partial regression names the file that
+        broke rather than reporting that 'something' is missing."""
+        with self._authored():
+            selected = allowlist.shadow_selection(self.AUTHORED)
+            self.assertIsNotNone(selected)
+            for rel in self.NON_MARKDOWN:
+                with self.subTest(path=rel):
+                    self.assertIn(rel, selected)
+
+    def test_positive_control_a_subfolder_contributes_a_non_markdown_file(self):
+        """The four PNGs sat in a subfolder, and a single `*` does not reach one.
+        Asserted separately because a depth failure and a file-type failure are
+        different defects that a combined check would conflate."""
+        with self._authored():
+            selected = allowlist.shadow_selection(self.AUTHORED)
+            self.assertIn("conversations/assets/screenshot.png", selected)
+
+    def test_positive_control_markdown_is_still_selected(self):
+        """Without this the class above would pass on a rule that took only
+        non-markdown files, which is the opposite defect and equally wrong."""
+        with self._authored():
+            selected = allowlist.shadow_selection(self.AUTHORED)
+            self.assertIn("conversations/notes.md", selected)
+            self.assertIn("journal/entries/2026-08.md", selected)
+
+    def test_rejection_control_a_markdown_scoped_rule_misses_all_of_them(self):
+        """The load-bearing control. It proves this suite can tell the settled rule
+        from the shape it replaced, rather than passing on both. If this ever starts
+        passing, the class has stopped measuring file type."""
+        with self._authored():
+            selected = allowlist.shadow_selection(self.MARKDOWN_ONLY)
+            self.assertIsNotNone(selected)
+            self.assertIn("conversations/notes.md", selected)
+            for rel in self.NON_MARKDOWN:
+                with self.subTest(path=rel):
+                    self.assertNotIn(rel, selected)
+
+    def test_negative_control_bulk_material_is_not_swept_in(self):
+        """A PDF under a `raw/` folder is not an instance of the subject at all.
+        Without this, 'the authored patterns select PDFs' could be satisfied by a
+        rule that selects every PDF anywhere, which would swallow the bulk."""
+        with self._authored():
+            selected = allowlist.shadow_selection(self.AUTHORED)
+            self.assertNotIn("wikis/w/raw/bulk.pdf", selected)
+
+
 # -------------------------------------------------------------------------- smoke
 
 class SmokeTests(unittest.TestCase):
