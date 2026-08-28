@@ -367,7 +367,8 @@ def check_consistency(findings):
             findings.append(("INFO", f"{live.name} differs from {baseline.name} "
                                      f"(+{added} / -{removed} lines); that diff is "
                                      f"what the next review reads. Refresh the "
-                                     f"baseline only after that review has finished."))
+                                     f"baseline as soon as the reviewing AI has "
+                                     f"recorded its findings, not once they are fixed."))
 
 
 # ---------------------------------------------------------------------------- main

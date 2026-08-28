@@ -56,6 +56,10 @@ update or refresh the handoff document.
      **unlabelled**, carry the count as given. Both wordings mean the reader saw
      something it could not fully parse, and a number guessed over the top of that
      is exactly the false reassurance the packet exists to prevent.
+     Where the packet separates plan-readiness findings from review-process
+     findings, keep that separation here under its own sub-headings. Collapsed into
+     one list, a repair to the review loop reads as a blocker on building the plan,
+     which misstates what the next session is free to do.
    - `## Decisions made` - choices taken and the reasoning, so they are not
      relitigated.
    - `## Gotchas / guardrails` - anything that will trip up the next session,

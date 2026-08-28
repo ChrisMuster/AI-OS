@@ -133,7 +133,8 @@ class CompareToBaselineTests(unittest.TestCase):
     """Validator. Subject: a plan measured against the version last reviewed.
 
     The convention this encodes: the baseline holds the version the reviewing AI
-    last reviewed, and it is refreshed only once a review round has *finished*. A
+    last reviewed, and it is refreshed as soon as that AI has *recorded its
+    findings*, which is not the same moment as those findings being fixed. A
     plan differing from its baseline is therefore the normal state for most of an
     item's life, and the difference is the deliverable for the next review rather
     than a defect.
