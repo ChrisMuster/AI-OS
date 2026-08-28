@@ -31,10 +31,13 @@ names personal content:
     fixed project locations, not personal files, and asserting them one by one
     rather than as an any-of-three keeps the control able to fail when two of the
     three go missing.
-  - The rule that the four authored personal folders take every file type is
-    exercised against a synthetic fixture in the test suite rather than against the
-    real tree, because three of those four folders hold no non-markdown file today,
-    so the tree cannot exercise the rule for them at all.
+  - The rule that the four authored personal folders' include patterns take every
+    file type is exercised against a synthetic fixture in the test suite rather
+    than against the real tree, because three of those four folders hold no
+    non-markdown file today, so the tree cannot exercise the rule for them at all.
+    The claim is about the include patterns being type-blind, not about the
+    resulting selection: a declared exclusion may still remove a path, which is a
+    separate mechanism checked by boundary completeness rather than here.
 """
 import argparse
 import difflib
@@ -102,9 +105,10 @@ def compare_to_baseline(baseline_text, live_text):
     """Classify a plan against its review baseline. Returns (level, added, removed).
 
     The baseline holds the version the reviewing AI last reviewed and is refreshed
-    only once a review round has finished, so a plan differing from it is the
-    normal state for most of an item's life and the difference is the deliverable
-    rather than a defect. Drift is therefore INFO.
+    as soon as that AI has recorded its findings, not when those findings are
+    fixed. So a plan differing from it is the normal state for most of an item's
+    life, and the difference is the deliverable rather than a defect. Drift is
+    therefore INFO.
 
     A missing baseline is FAIL, because that is the one state with no diff surface
     at all: the next review would have to re-read the whole document blind.
@@ -281,8 +285,10 @@ def check_consistency(findings):
                          f"{name}: no superseded wikis/*/raw spelling standing alone"
                          + ("" if not bad else f" (line(s) {bad})")))
 
-        # The four authored personal folders take every file type, so a .md-scoped
-        # pattern for any of them is the defect that reversed the decision once.
+        # The four authored personal folders' include patterns take every file
+        # type, so a .md-scoped pattern for any of them is the defect that reversed
+        # the decision once. This is a claim about the include patterns; removal by
+        # a declared exclusion is a different mechanism and is not checked here.
         bad = [i + 1 for i, line in enumerate(text.splitlines())
                if re.search(r"(conversations|reviews|user-inputs|journal/entries)/\*\.md",
                             line)]
@@ -336,7 +342,8 @@ def check_consistency(findings):
                              f"{SPEC.name}: does NOT carry a second classification block"))
 
     # The review baseline holds the version the reviewing AI last reviewed, and it
-    # is refreshed only once a review round has FINISHED. So drift between a plan
+    # is refreshed as soon as that AI has RECORDED ITS FINDINGS, which is not the
+    # same moment as those findings being fixed. So drift between a plan
     # and its baseline is the normal, correct state for most of an item's life: it
     # is the diff the next review reads. It is reported, never failed.
     #

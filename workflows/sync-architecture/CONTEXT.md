@@ -1,6 +1,6 @@
 # Sync Architecture
 
-**Last modified:** 2026-08-27
+**Last modified:** 2026-08-28
 
 ## Purpose
 
@@ -84,7 +84,8 @@ while any file is both publicly tracked and matched by an ignore rule.
 7. Check both design documents for the recurring defect classes.
 8. Compare each live document against its review baseline: fail if the baseline is
    absent, and otherwise report the drift as information, since the baseline holds
-   the last-reviewed version and is refreshed only after a review round finishes.
+   the last-reviewed version and is refreshed as soon as the reviewing AI has
+   recorded its findings, rather than when those findings are fixed.
 9. Print the report and exit non-zero on any failure.
 10. Append LOG.md with a completion or failure entry.
 
@@ -205,3 +206,22 @@ while any file is both publicly tracked and matched by an ignore rule.
   audit trails at a path that does not exist made the checker exit non-zero and report
   a FAIL, and the mutation was then reverted and the green result re-confirmed.
   Workflow now at 59 tests across two suites, 42 and 17.
+- 2026-08-28 - Documentation-only pass over this workflow, correcting a cross-AI
+  review's findings about the design documents rather than changing any behaviour;
+  the test count is unchanged at 59. Two wordings this workflow had propagated were
+  the problem. The baseline rule was written here and in `scripts/` as "refreshed
+  only once a review round has finished", which reads as "once the findings are
+  fixed" and is how a reviewing AI came to withhold a refresh it owed; it now reads
+  "as soon as the reviewing AI has recorded its findings", with the Known Issues
+  entry about refresh timing sharpened to name that moment as the one the check
+  cannot observe. And the claim that the four authored personal folders "take every
+  file type" was narrowed everywhere to their *include patterns* taking every file
+  type, because the unqualified form is false of this tree: `conversations/.obsidian/`
+  is deliberately excluded, so the folders do not in fact take everything, while the
+  patterns really are type-blind, which is the property the fixture proves. The
+  distinction matters because the plans specify a check to be built from these words.
+  Verified by simulating a Stage A seed against a throwaway repository rather than by
+  re-reading: 18 assertions passed, including a post-seed sweep of the seeded
+  repository's tracked paths with a positive control proving it can fail, and the
+  authored-folder invariant showing exactly four carve-outs, all of them the declared
+  `.obsidian` exclusion and none undeclared.

@@ -436,12 +436,22 @@ class RawDepthExclusionTests(unittest.TestCase):
 # --------------------------------------------------- authored folders, every type
 
 class AuthoredFolderFileTypeTests(unittest.TestCase):
-    """Validator. Subject: the four authored personal folders take EVERY file type.
+    """Validator. Subject: the four authored personal folders' INCLUDE PATTERNS
+    take every file type.
 
-    The decision of 2026-08-24 settled that `conversations/`, `reviews/`,
-    `user-inputs/` and `journal/entries/` take everything they contain regardless
-    of extension, and that the media-and-PDF exclusion is scoped to bulk source
-    material under any `raw/`. Six real files turned on it: a PDF, four PNGs in a
+    The subject is the include patterns rather than the resulting selection, and
+    the distinction was sharpened on 2026-08-28 after a review found the broader
+    phrasing standing in several places. "These folders take every file type" is
+    false of the tree as it stands: `conversations/.obsidian/` is deliberately
+    excluded. What is true, and what this fixture proves, is that the include
+    patterns are type-blind, so no file is lost to an extension-scoped rule. Files
+    may still be removed by a declared exclusion, and that is a separate mechanism
+    with its own invariant in `boundary.py`.
+
+    The decision of 2026-08-24 settled that the include patterns for
+    `conversations/`, `reviews/`, `user-inputs/` and `journal/entries/` match
+    regardless of extension, and that the media-and-PDF exclusion is scoped to bulk
+    source material under any `raw/`. Six real files turned on it: a PDF, four PNGs in a
     subfolder, and a zip. `user-inputs/` exists precisely to receive a CV as a PDF
     or a `.docx`.
 
@@ -465,14 +475,18 @@ class AuthoredFolderFileTypeTests(unittest.TestCase):
     contains it. Deleting an authored folder from the block outright would leave this
     class green. That coverage belongs to the boundary-completeness check
     (`boundary.py`, a Stage A deliverable), whose second named invariant is that
-    nothing in those four folders is anything but Category A except where an
-    exclusion line in the block names it; it walks the ignored set on disk and treats
+    nothing in those four folders is anything but Category A except where a
+    *declared* exclusion carves it out; it walks the ignored set on disk and treats
     the allowlist as the thing under test, which is the direction that reaches a
-    folder dropped from the block. The exception is not a loophole: an exclusion line
-    is the deliberate case, and accidental loss of protection is what the invariant
-    exists to catch. This docstring read "a
+    folder dropped from the block. The exception is not a loophole, and the reason
+    is that it is a closed set rather than a property: an exclusion may carve into
+    an authored folder only if it is listed in the plan's declared table, which
+    holds `**/.obsidian/**` and nothing else today, so a future exclusion cannot
+    widen the exception merely by existing. Accidental loss of protection is what
+    the invariant exists to catch. This docstring read "a
     rule cannot be deleted by accident" until 2026-08-28, which stated a limit of
-    this fixture as though it were a property of it.
+    this fixture as though it were a property of it, and phrased the exception
+    against the block rather than against the declared set until later the same day.
     """
 
     FILES = ("conversations/notes.md",
