@@ -18,10 +18,23 @@ The plans are design-time documents and are gitignored, so on a fresh clone they
 absent. That is reported as SKIPPED rather than as a failure: a check that cannot run
 must say so rather than pass silently.
 
-No personal filename appears in this file. The allowlist assertions are structural
-("some selected file under this directory is not markdown") rather than naming
-individual files, both because naming them would put personal content into a tracked
-file and because a structural assertion keeps working when the files change.
+No personal filename appears in this file, and that is the constraint the assertions
+are written around: this file is tracked publicly, so naming a personal file here
+would publish it.
+
+Most allowlist assertions are therefore structural ("some selected file under this
+directory is not markdown") rather than naming individual files, which also keeps
+them working when the files change. Two deliberate exceptions exist, and neither
+names personal content:
+
+  - Three derived-folder audit trails are asserted individually by path. They are
+    fixed project locations, not personal files, and asserting them one by one
+    rather than as an any-of-three keeps the control able to fail when two of the
+    three go missing.
+  - The rule that the four authored personal folders take every file type is
+    exercised against a synthetic fixture in the test suite rather than against the
+    real tree, because three of those four folders hold no non-markdown file today,
+    so the tree cannot exercise the rule for them at all.
 """
 import argparse
 import difflib

@@ -457,7 +457,22 @@ class AuthoredFolderFileTypeTests(unittest.TestCase):
     A file that stops being selected because the pattern broke and a file that stops
     being selected because it was deleted produce identical output, and this suite
     gates the Stage A seed commit, so a false alarm blocks a build. A fixture asks
-    only about the rule, which cannot be deleted by accident.
+    only about the rule, which gives an answer that means one thing.
+
+    **What this class does not cover.** It carries its own copy of the four folder
+    names and never reads the allowlist block, so it proves the rule behaves
+    correctly when the rule is present and says nothing about whether the block still
+    contains it. Deleting an authored folder from the block outright would leave this
+    class green. That coverage belongs to the boundary-completeness check
+    (`boundary.py`, a Stage A deliverable), whose second named invariant is that
+    nothing in those four folders is anything but Category A except where an
+    exclusion line in the block names it; it walks the ignored set on disk and treats
+    the allowlist as the thing under test, which is the direction that reaches a
+    folder dropped from the block. The exception is not a loophole: an exclusion line
+    is the deliberate case, and accidental loss of protection is what the invariant
+    exists to catch. This docstring read "a
+    rule cannot be deleted by accident" until 2026-08-28, which stated a limit of
+    this fixture as though it were a property of it.
     """
 
     FILES = ("conversations/notes.md",
