@@ -36,9 +36,26 @@ _ACTIVE_BULLET = re.compile(r"^- \*\*(.+?)\*\*")
 # An H2 heading, e.g. "## Open - this round's scope". Deliberately not matching
 # "###", so a finding heading inside a section never resets the section.
 _H2 = re.compile(r"^##(?!#)\s+(.*)$")
-# A finding inside a review packet, tagged R<n>. Matches both shapes the packets
-# use: a "### R4 - ..." heading and a "- **R1 - ...**" bullet.
-_FINDING_ID = re.compile(r"^(?:#{2,6}\s+|[-*]\s+)(?:\*\*)?(R\d+)\b")
+# The two item shapes a review packet uses for a finding: an "### R4 - ..."
+# sub-heading and a "- **R1 - ...**" top-level bullet. The bullet pattern is
+# anchored with no leading whitespace on purpose, so an indented sub-bullet inside
+# a finding's body is prose rather than another finding.
+_SUB_HEADING = re.compile(r"^#{3,6}\s+(.*)$")
+_TOP_BULLET = re.compile(r"^[-*]\s+(.*)$")
+
+# A finding's label, if it carries one: any short uppercase prefix plus a number,
+# so R1, F3 and BUG12 all read. This used to require R<n> specifically, which is
+# why a round labelled F1 to F5 was read as zero findings on 2026-08-28. A label is
+# now optional: the count is what matters, and an unlabelled bullet is a finding.
+_FINDING_LABEL = re.compile(r"^(?:\*\*)?([A-Z]{1,4}\d+)\b")
+
+# First words that mark a section as the open list or the addressed list. Matched
+# on the first word so a reviewer can write "Open", "Outstanding", "Still to fix",
+# "Addressed", "Fixed" or "Done" and be understood.
+_OPEN_WORDS = frozenset(
+    ("open", "outstanding", "remaining", "unresolved", "todo", "still"))
+_ADDRESSED_WORDS = frozenset(
+    ("addressed", "fixed", "done", "closed", "resolved", "complete", "completed"))
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +274,61 @@ def doc_sync_drift(project_root):
 # ---------------------------------------------------------------------------
 # open review findings
 # ---------------------------------------------------------------------------
+def _section_kind(heading_text):
+    """Classify an H2 heading as the open list, the addressed list, or neither.
+
+    The format requirement on a review packet is deliberately this small, and it is
+    the only one: somewhere in the file, a section saying what is still open and a
+    section saying what has been dealt with. Every other section is free-form and is
+    ignored here rather than rejected, so a packet can carry a good / okay / bad
+    split, a checks table, or anything else asked of the reviewer, without the
+    mechanism falling over. That breadth is the point: on 2026-08-28 a reviewing AI
+    was asked for a good / okay / bad packet, produced exactly that, and the reader
+    could not read the result at all.
+
+    "Open questions" is excluded, because a packet may legitimately carry one and
+    its entries are questions rather than findings.
+    """
+    name = heading_text.strip().strip("*_# ").lower()
+    if not name or "question" in name:
+        return None
+    first = name.split()[0].rstrip(":,-")
+    if first in _OPEN_WORDS:
+        return "open"
+    if first in _ADDRESSED_WORDS:
+        return "addressed"
+    return None
+
+
+def _finding_label(item_text):
+    """The finding's label if it has one, else None. A label is optional."""
+    hit = _FINDING_LABEL.match(item_text.strip())
+    return hit.group(1) if hit else None
+
+
+def _resolve_items(section):
+    """Collapse a section's two candidate item lists into one, or None if absent.
+
+    Sub-headings win over bullets where both are present. A packet that uses
+    "### R1 - ..." headings for its findings normally has bullets inside each
+    finding's body, so counting both would multiply the count by the length of the
+    prose rather than by the number of findings.
+
+    Labelled items are de-duplicated; unlabelled ones are not, because two bullets
+    with no label are two findings and nothing distinguishes them.
+    """
+    if section is None:
+        return None
+    items, seen = [], set()
+    for label in (section["headings"] or section["bullets"]):
+        if label is not None:
+            if label in seen:
+                continue
+            seen.add(label)
+        items.append(label)
+    return items
+
+
 def review_packets(project_root):
     """Return [{item, path, open, addressed}] for every memory/*_review_packet.md.
 
@@ -272,10 +344,18 @@ def review_packets(project_root):
     handoff, so gating on it would make a review round impossible to continue. The
     obligation is to carry the count and the pointer, never to block.
 
-    `open` and `addressed` are None when the corresponding `## Open` / `## Addressed`
-    section is absent, so a packet whose shape has drifted reports as unreadable
-    rather than as zero findings. An unanswered question must never be rendered as
-    an empty answer: "0 open" would read as "nothing left to do".
+    `open` and `addressed` are None when no section of that kind is present, so a
+    packet whose shape has drifted reports as unreadable rather than as zero
+    findings. An unanswered question must never be rendered as an empty answer:
+    "0 open" would read as "nothing left to do".
+
+    Otherwise each is a list with one entry per finding, holding the finding's label
+    where it has one and None where it does not. So the *count* is always the length
+    of the list, and is right whether or not the reviewer used labels at all. This
+    matters because the earlier version returned only recognised `R<n>` labels: a
+    section full of findings labelled some other way produced an empty list, which
+    rendered as a confident "0 open" rather than as a warning. That is the same
+    failure the None case above exists to prevent, reached by a different route.
 
     Degrades to [] on a missing memory directory, and skips a file it cannot read,
     matching the other readers here - a broken packet never breaks the handoff.
@@ -294,23 +374,24 @@ def review_packets(project_root):
         for line in text.splitlines():
             heading = _H2.match(line)
             if heading:
-                name = heading.group(1).strip().lower()
-                section = ("open" if name.startswith("open")
-                           else "addressed" if name.startswith("addressed")
-                           else None)
+                section = _section_kind(heading.group(1))
                 if section is not None:
-                    found.setdefault(section, [])
+                    found.setdefault(section, {"headings": [], "bullets": []})
                 continue
             if section is None:
                 continue
-            hit = _FINDING_ID.match(line)
-            if hit and hit.group(1) not in found[section]:
-                found[section].append(hit.group(1))
+            sub = _SUB_HEADING.match(line)
+            if sub:
+                found[section]["headings"].append(_finding_label(sub.group(1)))
+                continue
+            bullet = _TOP_BULLET.match(line)
+            if bullet:
+                found[section]["bullets"].append(_finding_label(bullet.group(1)))
         packets.append({
             "item": path.name[: -len("_review_packet.md")].replace("_", "-"),
             "path": path.relative_to(project_root).as_posix(),
-            "open": found.get("open"),
-            "addressed": found.get("addressed"),
+            "open": _resolve_items(found.get("open")),
+            "addressed": _resolve_items(found.get("addressed")),
         })
     return packets
 
@@ -365,14 +446,24 @@ def build_packet(*, timestamp, branch, status, diffstat, commits, dir_logs,
         for entry in review:
             if entry["open"] is None:
                 lines.append(
-                    f"- **{entry['item']}:** shape not recognised (no `## Open` "
-                    f"section) - read it rather than trusting a count. "
-                    f"Packet: `{entry['path']}`")
+                    f"- **{entry['item']}:** shape not recognised (no section "
+                    f"naming what is still open) - read it rather than trusting a "
+                    f"count. Packet: `{entry['path']}`")
                 continue
-            ids = ", ".join(entry["open"]) if entry["open"] else "none"
+            labelled = [i for i in entry["open"] if i]
+            total = len(entry["open"])
+            if total == 0:
+                shown = "none"
+            elif len(labelled) == total:
+                shown = ", ".join(labelled)
+            elif labelled:
+                shown = (f"{len(labelled)} labelled: {', '.join(labelled)}; "
+                         f"{total - len(labelled)} unlabelled")
+            else:
+                shown = "unlabelled"
             done = len(entry["addressed"]) if entry["addressed"] is not None else "?"
             lines.append(
-                f"- **{entry['item']}:** {len(entry['open'])} open ({ids}), "
+                f"- **{entry['item']}:** {total} open ({shown}), "
                 f"{done} addressed. Packet: `{entry['path']}`")
     else:
         lines.append("No review packets in memory/ - no round is part-way through.")

@@ -1,6 +1,6 @@
 # Handoff - Tests
 
-**Last modified:** 2026-08-27
+**Last modified:** 2026-08-28
 
 ## Purpose
 Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
@@ -22,7 +22,12 @@ Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
   section, duplicate and nested-numbered items not inflating a count, the
   degrade-to-empty paths, and a live positive control asserting the reader
   recognises the shape of the real packets in `memory/` rather than only the
-  fixtures written alongside it.
+  fixtures written alongside it. `TestReviewPacketToleratesAnyPacketShape` covers
+  the free-form packet layouts a reviewer may write (a good / okay / bad split,
+  section-name synonyms, unlabelled findings, `Open questions` as a negative
+  control), and `TestUnreadableLabelsAreNeverRenderedAsZero` covers the rendering
+  rule that an item the reader cannot label is still counted rather than shown as
+  zero.
 
 ## Inputs
 None. Tests build their own temporary fixtures (temp dirs and an in-memory-style
@@ -84,3 +89,4 @@ Test results to stdout; exit code 0 on success, non-zero on failure.
   caught: collapsing `None` into `[]`, letting an H3 heading reset its section,
   dropping the duplicate-id guard, and dropping the bullet form from the finding
   pattern.
+- 2026-08-28 - Added `TestReviewPacketToleratesAnyPacketShape` and `TestUnreadableLabelsAreNeverRenderedAsZero`, taking the suite from 40 to 50 tests, alongside the reader change that lets a review packet be written in any shape. The regression control is built from the packet that actually broke the mechanism on 2026-08-28 rather than from the new implementation: good / okay / bad sections with findings labelled F1 to F5, which the old reader saw as zero open findings. It is deliberately paired with a control asserting that those free-form sections do not contribute to the counts, because tolerating extra sections is only safe if they are ignored rather than absorbed, and fixing an uncountable packet by inflating the count would trade one wrong number for another. The second class covers the silent half, that unlabelled findings must render their count rather than "0 open", with a counterpart control that a genuinely finished round can still say zero. Both mutations were run: reverting the label pattern to `R<n>` fires five tests, and removing the open-questions guard fires one.

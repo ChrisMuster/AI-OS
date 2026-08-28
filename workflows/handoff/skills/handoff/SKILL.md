@@ -50,6 +50,12 @@ update or refresh the handoff document.
      them the same afternoon, which cost a recovery pass out of the session
      archive. Open findings never delay or prevent a handoff: crossing a session
      boundary with work outstanding is what a handoff is for.
+     If the packet's section says **shape not recognised**, do not invent a count
+     and do not write zero: say the packet could not be read mechanically, name it,
+     and tell the next session to read it directly. If it reports items as
+     **unlabelled**, carry the count as given. Both wordings mean the reader saw
+     something it could not fully parse, and a number guessed over the top of that
+     is exactly the false reassurance the packet exists to prevent.
    - `## Decisions made` - choices taken and the reasoning, so they are not
      relitigated.
    - `## Gotchas / guardrails` - anything that will trip up the next session,
