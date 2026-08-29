@@ -267,6 +267,85 @@ def check_allowlist(findings):
                                  f"{len(raw) - len(selected)} removed as publicly tracked"))
 
 
+# ----------------------------------------------------------- boundary.py's inputs
+
+def check_boundary_inputs(text, allow_specs, findings):
+    """Prove the two blocks boundary.py needs beyond the three category blocks.
+
+    Two of that script's failure conditions are stated against the authored
+    folders and the declared exclusion set. Until 2026-08-29 neither had a
+    machine-readable form: the folders were marked only by a comment inside the
+    allowlist block, which extract_block discards, and the declared set existed
+    only as rows of a markdown table. A builder would have hand-transcribed
+    both, which is the second copy of the classification that the plan's
+    section 3 exists to prevent.
+
+    Three assertions, and the middle one is the load-bearing one:
+
+    1. Both blocks are present and non-empty.
+    2. Every authored folder is also claimed by the allowlist block. This is the
+       drift that loses data: a folder narrowed or dropped from Category A while
+       the invariant still claims to guard it. The reverse direction is NOT
+       checkable and the plan says so - this block is the only statement of
+       which folders are authored, so there is nothing to compare a missing
+       fifth folder against.
+    3. Every exclusion that reaches an authored folder is declared. Phrasing the
+       exception against the allowlist block's own exclusions would let any
+       later exclusion satisfy it by existing, which is the defect corrected on
+       2026-08-28; membership of a declared set is what makes it deliberate.
+    """
+    authored = allowlist.extract_block(text, allowlist.AUTHORED_FOLDERS_LABEL)
+    declared = allowlist.extract_block(text, allowlist.DECLARED_EXCLUSIONS_LABEL)
+
+    findings.append(("PASS" if authored else "FAIL",
+                     f"{PLAN.name}: carries a usable authored-folders block"))
+    findings.append(("PASS" if declared else "FAIL",
+                     f"{PLAN.name}: carries a usable declared-exclusions block"))
+    if not authored or not allow_specs:
+        return
+
+    missing = [spec for spec in authored if spec not in allow_specs]
+    findings.append(("PASS" if not missing else "FAIL",
+                     f"{PLAN.name}: every authored folder is also in the allowlist "
+                     f"block" + (f" (missing: {', '.join(missing)})" if missing else "")))
+
+    # An exclusion resolved as written selects the complement, so each one is
+    # inverted before being asked what it reaches. That inversion is the rule the
+    # plan states beside the blocks, and it lives in allowlist.py so the check and
+    # a future boundary.py cannot implement it two different ways.
+    reach = _authored_reach(authored, [s for s in allow_specs
+                                       if s.startswith(":(exclude")])
+    if reach is None:
+        findings.append(("SKIP", "git could not answer the declared-exclusion check"))
+        return
+    undeclared = sorted(spec for spec, hits in reach.items()
+                        if hits and spec not in (declared or []))
+    findings.append(("PASS" if not undeclared else "FAIL",
+                     f"{PLAN.name}: every exclusion reaching an authored folder is "
+                     f"declared" + (f" (undeclared: {', '.join(undeclared)})"
+                                    if undeclared else "")))
+
+
+def _authored_reach(authored, exclusions):
+    """Map each exclusion to the authored-folder paths it carves out.
+
+    Returns None if git could not answer, so an unanswered question is never
+    read as "nothing reaches an authored folder". A zero here is the one result
+    that looks identical whether the instrument works or not, which is why the
+    test suite feeds this a control that must come back non-empty.
+    """
+    in_folders = allowlist.public_selection(authored)
+    if in_folders is None:
+        return None
+    reach = {}
+    for spec in exclusions:
+        carved = allowlist.public_selection([allowlist.positive(spec)])
+        if carved is None:
+            return None
+        reach[spec] = in_folders & carved
+    return reach
+
+
 # --------------------------------------------------------------------- consistency
 
 def check_consistency(findings):
@@ -340,6 +419,7 @@ def check_consistency(findings):
         if spec_text is not None:
             findings.append(("PASS" if extract_block(spec_text) is None else "FAIL",
                              f"{SPEC.name}: does NOT carry a second classification block"))
+        check_boundary_inputs(text, specs, findings)
 
     # The review baseline holds the version the reviewing AI last reviewed, and it
     # is refreshed as soon as that AI has RECORDED ITS FINDINGS, which is not the

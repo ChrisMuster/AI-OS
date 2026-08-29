@@ -180,5 +180,88 @@ class CompareToBaselineTests(unittest.TestCase):
         self.assertEqual((level, added, removed), ("INFO", 0, 1))
 
 
+# ------------------------------------------------------- boundary.py's two blocks
+
+class BoundaryInputTests(unittest.TestCase):
+    """Subject: the two blocks boundary.py reads beyond the three category blocks.
+
+    Two of that script's failure conditions are stated against the authored
+    folders and the declared exclusion set, and until 2026-08-29 neither was
+    machine-readable, so the script could not be built from the document without
+    hand-copying a classification the plan forbids copying.
+
+    **The load-bearing control is
+    `test_rejection_control_an_undeclared_exclusion_reaching_an_authored_folder_fails`.**
+    That check passes on the live plan, and a passing result proves nothing until
+    the check has been shown capable of failing: a zero is the one answer that
+    looks the same whether the instrument works or not. The control feeds it a
+    real exclusion over a real authored folder and requires the FAIL.
+    """
+
+    @staticmethod
+    def _levels(findings, needle):
+        return [level for level, label in findings if needle in label]
+
+    def _plan_text(self):
+        return (PROJECT_ROOT / "SYNC-ARCHITECTURE-PLAN.md").read_text(encoding="utf-8")
+
+    def test_positive_control_the_live_plan_satisfies_every_assertion(self):
+        text = self._plan_text()
+        specs = runner.extract_block(text)
+        findings = []
+        runner.check_boundary_inputs(text, specs, findings)
+        self.assertNotIn("FAIL", [level for level, _ in findings])
+        self.assertTrue(self._levels(findings, "authored-folders block"))
+        self.assertTrue(self._levels(findings, "declared-exclusions block"))
+
+    def test_rejection_control_a_missing_authored_folders_block_fails(self):
+        text = self._plan_text().replace("```authored-folders", "```removed-label")
+        findings = []
+        runner.check_boundary_inputs(text, [":(glob)conversations/**"], findings)
+        self.assertIn("FAIL", self._levels(findings, "authored-folders block"))
+
+    def test_rejection_control_a_missing_declared_exclusions_block_fails(self):
+        text = self._plan_text().replace("```declared-exclusions", "```removed-label")
+        findings = []
+        runner.check_boundary_inputs(text, [":(glob)conversations/**"], findings)
+        self.assertIn("FAIL", self._levels(findings, "declared-exclusions block"))
+
+    def test_rejection_control_an_authored_folder_absent_from_the_allowlist_fails(self):
+        """The drift that loses data: a folder narrowed or dropped from Category A
+        while the invariant still claims to guard it."""
+        text = self._plan_text()
+        findings = []
+        runner.check_boundary_inputs(text, [":(glob)reviews/**"], findings)
+        levels = self._levels(findings, "every authored folder is also in the allowlist")
+        self.assertIn("FAIL", levels)
+
+    def test_rejection_control_an_undeclared_exclusion_reaching_an_authored_folder_fails(self):
+        text = self._plan_text()
+        specs = runner.extract_block(text)
+        intruder = ":(exclude,glob)conversations/**"
+        findings = []
+        runner.check_boundary_inputs(text, specs + [intruder], findings)
+        hits = self._levels(findings, "every exclusion reaching an authored folder")
+        if not hits:
+            self.skipTest("git could not answer")
+        self.assertIn("FAIL", hits)
+        self.assertTrue(any(intruder in label for _, label in findings),
+                        "the failing exclusion was not named")
+
+    def test_negative_control_an_exclusion_missing_the_authored_folders_passes(self):
+        """Not an instance at all: an exclusion that carves nothing out of an
+        authored folder needs no declaration, so a clean result here is known not
+        to be silence from the check over-matching every exclusion."""
+        text = self._plan_text()
+        specs = runner.extract_block(text)
+        findings = []
+        runner.check_boundary_inputs(
+            text, specs + [":(exclude,glob)workflows/**/__pycache__/**"], findings)
+        hits = self._levels(findings, "every exclusion reaching an authored folder")
+        if not hits:
+            self.skipTest("git could not answer")
+        self.assertNotIn("FAIL", hits)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -124,6 +124,90 @@ class ExtractBlockTests(unittest.TestCase):
         self.assertIsNone(allowlist.extract_block(text))
 
 
+class LabelledBlockTests(unittest.TestCase):
+    """Counting checker. Subject: one named block among several in a document.
+
+    The label argument is what made boundary.py buildable from the plan. Before
+    it, this function found one fixed label, so the authored-folder list and the
+    declared-exclusion set had no machine-readable form at all and a builder
+    would have hand-copied both.
+
+    The rejection control below is the one that matters: reading the wrong block
+    is worse than reading none, because the result still looks like pathspecs.
+    """
+
+    DOC = ("```allowlist\n:(glob)conversations/**\n:(exclude,glob)**/.obsidian/**\n```\n"
+           "prose between the blocks\n"
+           "```authored-folders\n:(glob)conversations/**\n```\n"
+           "```declared-exclusions\n:(exclude,glob)**/.obsidian/**\n```\n")
+
+    def test_positive_control_each_label_returns_its_own_block(self):
+        self.assertEqual(allowlist.extract_block(self.DOC, "authored-folders"),
+                         [":(glob)conversations/**"])
+        self.assertEqual(allowlist.extract_block(self.DOC, "declared-exclusions"),
+                         [":(exclude,glob)**/.obsidian/**"])
+
+    def test_positive_control_the_default_is_still_the_allowlist(self):
+        """Callers written before the label existed must keep working."""
+        self.assertEqual(allowlist.extract_block(self.DOC),
+                         allowlist.extract_block(self.DOC, "allowlist"))
+        self.assertEqual(len(allowlist.extract_block(self.DOC)), 2)
+
+    def test_rejection_control_an_absent_label_returns_none(self):
+        self.assertIsNone(allowlist.extract_block(self.DOC, "category-b"))
+
+    def test_negative_control_a_label_is_not_matched_as_a_prefix(self):
+        """`allowlist` must not answer for a block labelled `allowlist-old`."""
+        doc = "```allowlist-old\n:(glob)stale/**\n```\n"
+        self.assertIsNone(allowlist.extract_block(doc, "allowlist"))
+
+    def test_the_live_plan_carries_all_four_blocks(self):
+        """The document itself, not a fixture: a block deleted from the plan is a
+        build blocker for boundary.py and must not pass silently here."""
+        text = (PROJECT_ROOT / "SYNC-ARCHITECTURE-PLAN.md").read_text(encoding="utf-8")
+        for label in (allowlist.BLOCK_LABEL, allowlist.CATEGORY_B_LABEL,
+                      allowlist.CATEGORY_C_LABEL, allowlist.AUTHORED_FOLDERS_LABEL,
+                      allowlist.DECLARED_EXCLUSIONS_LABEL):
+            with self.subTest(label=label):
+                self.assertTrue(allowlist.extract_block(text, label),
+                                f"the plan has no usable ```{label} block")
+
+
+class PositiveInversionTests(unittest.TestCase):
+    """Validator. Subject: an exclusion pathspec turned into what it carves out.
+
+    An `:(exclude,glob)X` spec resolved as written selects the complement, which
+    on this tree is 178,544 paths rather than the handful the row means. Asking
+    what an exclusion reaches therefore needs the inversion, and it lives here so
+    the consistency check and a future boundary.py cannot implement it twice.
+    """
+
+    def test_positive_control_a_glob_exclusion_inverts(self):
+        self.assertEqual(allowlist.positive(":(exclude,glob)**/.obsidian/**"),
+                         ":(glob)**/.obsidian/**")
+
+    def test_positive_control_a_bare_exclusion_inverts(self):
+        self.assertEqual(allowlist.positive(":(exclude)a/b.md"), "a/b.md")
+
+    def test_negative_control_a_plain_spec_is_unchanged(self):
+        for spec in (":(glob)conversations/**", "USER.md", "LOG.md"):
+            with self.subTest(spec=spec):
+                self.assertEqual(allowlist.positive(spec), spec)
+
+    def test_rejection_control_the_inversion_changes_what_git_returns(self):
+        """The whole point, proved against git rather than asserted as string
+        surgery: the written form and the inverted form must not select the same
+        set, or the inversion is doing nothing."""
+        spec = ":(exclude,glob)**/.obsidian/**"
+        as_written = allowlist.public_selection([spec])
+        inverted = allowlist.public_selection([allowlist.positive(spec)])
+        if as_written is None or inverted is None:
+            self.skipTest("git could not answer")
+        self.assertTrue(inverted, "the inverted spec selected nothing at all")
+        self.assertNotEqual(as_written, inverted)
+        self.assertGreater(len(as_written), len(inverted))
+
+
 # ----------------------------------------------------------------- the invariant
 
 class TrackedAndIgnoredTests(unittest.TestCase):

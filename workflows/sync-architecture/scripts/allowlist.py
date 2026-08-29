@@ -39,7 +39,16 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 
 PLAN = Path("SYNC-ARCHITECTURE-PLAN.md")
-BLOCK_MARKER = "```allowlist\n"
+BLOCK_LABEL = "allowlist"
+BLOCK_MARKER = "```" + BLOCK_LABEL + "\n"
+
+# The other labelled blocks the plan carries. Named here so a caller asks for a
+# block by a constant rather than by a string literal that can drift from the
+# document.
+CATEGORY_B_LABEL = "category-b"
+CATEGORY_C_LABEL = "category-c"
+AUTHORED_FOLDERS_LABEL = "authored-folders"
+DECLARED_EXCLUSIONS_LABEL = "declared-exclusions"
 
 # Pathspecs are passed on the command line, which is length-limited on Windows.
 # Staging is chunked rather than relying on a shell to split it.
@@ -79,16 +88,29 @@ def _paths(out):
 
 # ---------------------------------------------------------------- the allowlist
 
-def extract_block(text):
-    """Pull the pathspecs out of the plan's ```allowlist block.
+def extract_block(text, label=BLOCK_LABEL):
+    """Pull the pathspecs out of one of the plan's labelled fenced blocks.
 
     The plan is the authority, so this reads it rather than a copy. A copy is
     what let a settled decision fail to reach the patterns that implement it.
+
+    `label` selects which block. It defaulted to nothing at all until
+    2026-08-29, when the plan gained four blocks rather than one and the
+    single fixed label became the reason boundary.py could not be built from
+    the document: two of its failure conditions are stated against the
+    authored-folder list and the declared-exclusion set, and neither had any
+    machine-readable form because this function could not have returned one.
+
+    Comment lines are dropped, which is worth knowing rather than discovering.
+    A grouping comment inside a block is invisible here, so a set identified
+    only by a comment is not readable through this function and needs a block
+    of its own. That is exactly why `authored-folders` exists.
     """
-    start = text.find(BLOCK_MARKER)
+    marker = "```" + label + "\n"
+    start = text.find(marker)
     if start == -1:
         return None
-    start += len(BLOCK_MARKER)
+    start += len(marker)
     end = text.find("```", start)
     if end == -1:
         return None
@@ -100,12 +122,31 @@ def extract_block(text):
     return specs or None
 
 
-def read_specs(plan=PLAN):
-    """Return the plan's pathspecs, or None if the plan or its block is absent."""
+def positive(spec):
+    """Turn an exclusion pathspec into the positive one naming what it carves out.
+
+    An `:(exclude,glob)X` spec resolved on its own selects the *complement*:
+    measured on this tree, the raw-material exclusion alone returns 178,544
+    paths, meaning every ignored file except the ones it means. So a check
+    asking what an exclusion reaches cannot resolve it as written. Removing
+    `exclude,` from the magic prefix is the inversion, and the plan states the
+    rule alongside the blocks.
+
+    A spec that is not an exclusion comes back unchanged.
+    """
+    if spec.startswith(":(exclude,"):
+        return ":(" + spec[len(":(exclude,"):]
+    if spec.startswith(":(exclude)"):
+        return spec[len(":(exclude)"):]
+    return spec
+
+
+def read_specs(plan=PLAN, label=BLOCK_LABEL):
+    """Return one block's pathspecs, or None if the plan or that block is absent."""
     if not Path(plan).exists():
         return None
     with open(plan, encoding="utf-8") as fh:
-        return extract_block(fh.read())
+        return extract_block(fh.read(), label)
 
 
 # ------------------------------------------------------------------ the contexts
@@ -113,6 +154,24 @@ def read_specs(plan=PLAN):
 def public_tracked():
     """Every path the public repository tracks. None if git is unavailable."""
     out = _run(["ls-files", "-z"])
+    return None if out is None else set(_paths(out))
+
+
+def public_selection(specs):
+    """Resolve pathspecs against the ignored set in PUBLIC-repository context.
+
+    This is the context the plan's own table assigns to the question "which
+    category claims a path", and it is not interchangeable with the shadow one.
+    In shadow context the same walk omits every already-seeded file and adds
+    every publicly tracked file, because the personal repository's info/exclude
+    marks those ignored there: measured on a fixture, 53 paths against 33, with
+    the default-reliance count going from 1 to 15.
+
+    None if git could not answer, so an unanswered question is never read as an
+    empty selection.
+    """
+    out = _run(["ls-files", "--others", "--ignored", "--exclude-standard",
+                "-z", "--"] + list(specs))
     return None if out is None else set(_paths(out))
 
 
