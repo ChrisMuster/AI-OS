@@ -807,6 +807,128 @@ class SequenceSweepTests(unittest.TestCase):
         self.assertFalse(any("sequence" in m for _, m in findings))
 
 
+class SectionReferenceParseTests(unittest.TestCase):
+    """``find_section_references`` is a COUNTING checker: the subject is a section
+    reference, so a legal instance must be FOUND and a non-instance must not be."""
+
+    def refs(self, text):
+        return run.find_section_references(lines_of(text))
+
+    def kinds(self, text):
+        return [(kind, raw, target) for _, kind, raw, target in self.refs(text)]
+
+    def test_positive_control_bare_numbered_reference_is_found(self):
+        found = self.kinds("as described in section 4 above")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][0], "number")
+        self.assertIsNone(found[0][2])
+
+    def test_positive_control_targeted_reference_carries_its_document(self):
+        found = self.kinds("see section 3.6 of `SHADOW-REPOSITORY-PLAN.md` for it")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][2], "SHADOW-REPOSITORY-PLAN.md")
+
+    def test_positive_control_quoted_title_is_found(self):
+        found = self.kinds('see "Why The Personal Repository Is Worth Building"')
+        self.assertEqual([k for k, _, _ in found], ["title"])
+
+    def test_positive_control_reference_wrapped_across_lines_is_found(self):
+        # THE regression test for this check's reason to exist. A reference wraps
+        # wherever the paragraph wrapped, and a per-line pattern cannot see it. On
+        # 2026-08-30 a line-based orphan sweep reported clean while exactly this
+        # shape pointed at a section deleted an hour earlier.
+        text = 'See the sync plan\'s "Why\n`ROADMAP.md` is here" for the reasoning.\n'
+        found = self.kinds(text)
+        self.assertEqual([k for k, _, _ in found], ["title"])
+        self.assertIn("ROADMAP.md", found[0][1])
+
+    def test_positive_control_wrapped_numbered_reference_is_found(self):
+        found = self.kinds("carried by Stage G and by section\n12 of the plan\n")
+        self.assertEqual([k for k, _, _ in found], ["number"])
+
+    def test_line_number_reported_is_where_the_reference_starts(self):
+        text = "alpha\nbeta\nsee section 9 here\n"
+        self.assertEqual(self.refs(text)[0][0], 3)
+
+    def test_negative_control_word_section_without_a_number(self):
+        self.assertEqual(self.refs("this section explains the rule"), [])
+
+    def test_negative_control_short_quote_is_not_a_title(self):
+        self.assertEqual(self.refs('he said "The end" and left'), [])
+
+    def test_negative_control_quote_not_opening_like_a_title(self):
+        # A quoted table row or a quoted rule is not a section reference, and this
+        # is the discrimination that keeps the check off wallpaper duty.
+        self.assertEqual(self.refs('the row reads "nothing from Category B here"'), [])
+
+
+class XrefResolutionTests(unittest.TestCase):
+    """``check_xref`` is a VALIDATING checker: the subject is a well-formed set of
+    documents, so a legal instance must produce NOTHING."""
+
+    LIVE = "## 4. The personal layer\n\n## 6a. Automation\n\nsee section 4 here\n"
+
+    def test_positive_control_resolving_references_produce_nothing(self):
+        docs = [("live.md", lines_of(self.LIVE))]
+        self.assertEqual(run.check_xref(docs)["live.md"], [])
+
+    def test_positive_control_reference_resolves_across_documents(self):
+        # These documents cite each other's sections by bare number constantly, so
+        # resolving against the whole set rather than the containing file is the
+        # behaviour, not a leniency.
+        a = ("a.md", lines_of("## 9. New machine setup\n\ntext\n"))
+        b = ("b.md", lines_of("follow section 9 when setting up\n"))
+        self.assertEqual(run.check_xref([a, b])["b.md"], [])
+
+    def test_rejection_control_unresolved_number_is_warn(self):
+        a = ("a.md", lines_of("## 4. Only section\n\nsee section 13 here\n"))
+        findings = run.check_xref([a])["a.md"]
+        self.assertEqual([s for s, _ in findings], ["WARN"])
+        self.assertIn("resolves to no section", findings[0][1])
+
+    def test_rejection_control_targeted_reference_missing_in_named_document(self):
+        a = ("a.md", lines_of("see section 12 of `b.md` for it\n"))
+        b = ("b.md", lines_of("## 4. Something\n\ntext\n"))
+        findings = run.check_xref([a, b])["a.md"]
+        self.assertTrue(any("does not exist in b.md" in m for _, m in findings))
+
+    def test_rejection_control_unresolved_title_is_info_not_warn(self):
+        # A quoted table row looks identical to a title from the outside, so this
+        # tier is a worklist rather than a verdict.
+        a = ("a.md", lines_of('## 4. Real\n\nsee "The Missing Section Title Here"\n'))
+        findings = run.check_xref([a])["a.md"]
+        self.assertEqual([s for s, _ in findings], ["INFO"])
+
+    def test_targeted_reference_into_a_document_not_given_is_not_a_finding(self):
+        # Unresolvable is not the same fact as broken. Reporting the second for the
+        # first sends a reader hunting for a defect that is not there.
+        a = ("a.md", lines_of("see section 12 of `absent.md` for it\n"))
+        self.assertEqual(run.check_xref([a])["a.md"], [])
+
+    def test_history_document_has_its_findings_demoted_to_info(self):
+        # A decision log referring to a section since deleted is the file doing its
+        # job. Both real instances on this check's first run were exactly that.
+        a = ("log.md", lines_of("## 1. X\n\nsection 13e of the plan recommended\n"))
+        plain = run.check_xref([a])["log.md"]
+        demoted = run.check_xref([a], history=["log.md"])["log.md"]
+        self.assertEqual([s for s, _ in plain], ["WARN"])
+        self.assertEqual([s for s, _ in demoted], ["INFO"])
+        self.assertEqual(plain[0][1], demoted[0][1])
+
+    def test_instrument_control_no_references_at_all_fails(self):
+        # The sweep's own positive control. A resolver that extracted nothing
+        # reports "no unresolved references", which reads exactly like a clean set.
+        a = ("a.md", lines_of("## 1. Heading\n\nprose with no references at all\n"))
+        findings = run.check_xref([a])["a.md"]
+        self.assertEqual([s for s, _ in findings], ["FAIL"])
+        self.assertIn("extracted no references", findings[0][1])
+
+    def test_title_match_ignores_case_punctuation_and_backticks(self):
+        a = ("a.md", lines_of('## Why `ROADMAP.md` Is Private\n\ntext\n'))
+        b = ("b.md", lines_of('see "Why ROADMAP.md is private" for it\n'))
+        self.assertEqual(run.check_xref([a, b])["b.md"], [])
+
+
 class SmokeTests(unittest.TestCase):
     """The real script as a subprocess: the CLI contract a caller depends on.
 

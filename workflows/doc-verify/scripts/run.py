@@ -42,6 +42,22 @@ line endings or typography. That gap is what the `hygiene` check closes.
                 exists and the range is inside it. Path-less shorthand (`:265`)
                 is reported as unresolvable by form.
 
+Opt-in, and not in CHECK_NAMES, so a run without the flag cannot report a sweep it
+never performed:
+
+    --xref      Cross-document. Every "section 4" and every quoted section title
+                resolves against the headings of ALL files given, matched on the
+                joined text so a reference wrapped across two lines is still seen.
+                Pass the whole related set, companions included: the resolution
+                set is exactly the files passed, and a reference into a file left
+                out reports as unresolved. An unresolved numbered reference is a
+                WARN; an unresolved quoted title is an INFO candidate, because a
+                quoted table row looks identical to a title from the outside.
+    --history   Names a file whose outbound references are records rather than
+                instructions, demoting its findings to INFO. A decision log
+                referring to a section since deleted is doing its job, and
+                reporting that at WARN every run is how a check becomes wallpaper.
+
 Severities:
     FAIL   a definite structural defect: a ragged table row, a sequence gap,
            duplicate or out-of-order member, a citation whose file is missing or
@@ -736,6 +752,201 @@ def check_citations(lines, root):
 
 
 # ---------------------------------------------------------------------------
+# Cross-document references (opt-in)
+# ---------------------------------------------------------------------------
+# Why this is not a grep, and why it joins the lines before matching. A reference
+# is written for a reader, so it wraps wherever the paragraph wrapped: `See the
+# sync plan's "Why` / `` `ROADMAP.md` is here" `` is one reference across two
+# lines. A per-line pattern cannot match it, and the failure is silent in the
+# worst direction - the sweep reports clean while the reference is broken. That
+# happened on 2026-08-30: a line-based orphan check passed over a title pointing
+# at a section deleted an hour earlier. So the text is joined first and the line
+# number recovered from the match offset.
+XREF_MIN_TITLE_WORDS = 3
+
+# A quoted string is only a candidate section title if it opens like one. Without
+# this the sweep picks up every quoted table row and phrase in the document, which
+# is noise a reader has to clear before the real findings are visible.
+XREF_TITLE_OPENERS = ("Why", "What", "The", "How", "Where", "Which", "When",
+                      "Registration", "Stage")
+
+
+def join_lines_with_map(lines):
+    """Join lines with single spaces; return (text, starts).
+
+    ``starts[i]`` is the offset in ``text`` at which line ``i`` begins, so a match
+    offset maps back to a line number without re-scanning.
+    """
+    parts, starts, offset = [], [], 0
+    for line in lines:
+        starts.append(offset)
+        parts.append(line)
+        offset += len(line) + 1
+    return " ".join(parts), starts
+
+
+def line_of_offset(starts, offset):
+    """1-indexed line number containing ``offset``."""
+    low, high = 0, len(starts) - 1
+    while low < high:
+        mid = (low + high + 1) // 2
+        if starts[mid] <= offset:
+            low = mid
+        else:
+            high = mid - 1
+    return low + 1
+
+
+def find_headings(lines):
+    """Return (titles, numbers) for one document.
+
+    ``titles`` are normalised heading texts; ``numbers`` the section numbers a
+    heading opens with (``## 6a. Automation`` -> ``6a``, ``### 3.1 ...`` -> ``3.1``).
+    """
+    titles, numbers = set(), set()
+    for line in lines:
+        match = re.match(r'^#{1,6}\s+(.+?)\s*$', line)
+        if not match:
+            continue
+        title = match.group(1)
+        titles.add(normalise_title(title))
+        numbered = re.match(r'^(\d+[a-z]?(?:\.\d+)?)[.\s]', title)
+        if numbered:
+            numbers.add(numbered.group(1))
+    return titles, numbers
+
+
+def normalise_title(text):
+    """Lowercase alphanumerics only, so backticks, punctuation and case in a
+    reference do not have to match the heading character for character."""
+    return re.sub(r'[^a-z0-9]', '', text.lower())
+
+
+def find_section_references(lines):
+    """Return the section references in one document.
+
+    Each is ``(line_number, kind, raw, target)``: ``kind`` is ``"number"`` or
+    ``"title"``, and ``target`` is the document a numbered reference names
+    explicitly, or None when it names none.
+    """
+    text, starts = join_lines_with_map(lines)
+    found = []
+
+    # "section 7b of `SHADOW-REPOSITORY-PLAN.md`" - names its target, so it can be
+    # resolved against that document alone and a miss is a hard finding.
+    targeted = []
+    for match in re.finditer(
+            r'sections?\s+(\d+[a-z]?(?:\.\d+)?)\s+of\s+`([^`]+\.md)`', text, re.I):
+        targeted.append(match.span())
+        found.append((line_of_offset(starts, match.start()), "number",
+                      match.group(0), match.group(2)))
+
+    # A bare "section 4" / "sections 3 and 4" names no document, so it resolves
+    # against the whole set: these documents cite each other's sections constantly
+    # and by number alone, and treating every such reference as local would report
+    # a wall of findings that are all correct.
+    #
+    # Overlap with the targeted spans is subtracted rather than excluded by a
+    # lookahead, because a lookahead does not survive backtracking: on
+    # "section 3.6 of `x.md`" the number group gives back "3.6" for "3", at which
+    # point the lookahead sees ".6 of" and passes, and the same reference is
+    # counted twice. A positive control caught that; reading the pattern did not.
+    for match in re.finditer(r'sections?\s+(\d+[a-z]?(?:\.\d+)?)\b', text, re.I):
+        if any(start <= match.start() < end for start, end in targeted):
+            continue
+        found.append((line_of_offset(starts, match.start()), "number",
+                      match.group(0), None))
+
+    # A quoted section title.
+    for match in re.finditer(r'"([^"]{6,95})"', text):
+        quoted = match.group(1)
+        if not quoted.startswith(XREF_TITLE_OPENERS):
+            continue
+        if len(quoted.split()) < XREF_MIN_TITLE_WORDS:
+            continue
+        found.append((line_of_offset(starts, match.start()), "title", quoted, None))
+    return found
+
+
+def check_xref(documents, history=()):
+    """Resolve every section reference against the headings of the whole set.
+
+    ``documents`` is a list of ``(name, lines)``. Returns ``{name: findings}``.
+
+    The resolution set is exactly the documents passed in. A reference into a
+    companion file that was not passed reports as unresolved, which is why the
+    caller is expected to pass the plans and their memory companions together
+    rather than one file at a time.
+
+    A numbered reference that names its target document, or resolves nowhere in
+    the set, is a WARN: those are mechanically decidable. A quoted title that
+    resolves nowhere is an INFO candidate, because a quoted table row or a phrase
+    in prose looks identical to a title from the outside and only a reader can
+    tell them apart.
+
+    ``history`` names documents whose outbound references are **records rather
+    than instructions**, and everything they raise is demoted to INFO. A decision
+    log or a review ledger exists to say what a document used to contain, so a
+    reference from one to a section since deleted is the file doing its job. Both
+    real instances on the first run of this check were exactly that, one of them a
+    sentence recording the deletion. Reporting those at WARN every run is how a
+    check becomes wallpaper, and a demoted finding is still printed, so nothing is
+    hidden by it.
+    """
+    history = {Path(name).as_posix() for name in history}
+    titles_by_doc, numbers_by_doc = {}, {}
+    for name, lines in documents:
+        titles_by_doc[name], numbers_by_doc[name] = find_headings(lines)
+    all_titles = set().union(*titles_by_doc.values()) if titles_by_doc else set()
+    all_numbers = set().union(*numbers_by_doc.values()) if numbers_by_doc else set()
+
+    findings = {name: [] for name, _ in documents}
+    total = 0
+    for name, lines in documents:
+        is_history = Path(name).as_posix() in history
+        warn = "INFO" if is_history else "WARN"
+        for number, kind, raw, target in find_section_references(lines):
+            total += 1
+            if kind == "number":
+                if target is not None:
+                    matched = [doc for doc in numbers_by_doc
+                               if Path(doc).name == Path(target).name]
+                    if not matched:
+                        # The named document is not in the set, so this reference
+                        # is unresolvable rather than broken. Saying so is the
+                        # honest result; calling it broken would be a wrong answer.
+                        continue
+                    section = raw.split()[1]
+                    if not any(section in numbers_by_doc[doc] for doc in matched):
+                        findings[name].append((
+                            warn, f"line {number}: `{raw}` names a section that "
+                                  f"does not exist in {target}"))
+                else:
+                    section = re.findall(r'\d+[a-z]?(?:\.\d+)?', raw)[0]
+                    if section not in all_numbers:
+                        findings[name].append((
+                            warn, f"line {number}: `{raw}` resolves to no section "
+                                  f"in any document given"))
+            else:
+                key = normalise_title(raw)
+                if not any(key == title or key in title for title in all_titles):
+                    findings[name].append((
+                        "INFO", f"line {number}: quoted title \"{raw}\" matches no "
+                                f"heading in any document given; adjudicate as a "
+                                f"broken reference or as ordinary quoted text"))
+    if total == 0:
+        # The positive control, on the same argument as the sequence sweep's: a
+        # resolver that extracted nothing reports "no unresolved references",
+        # which is indistinguishable from a clean set. Fail instead of passing.
+        for name, _ in documents:
+            findings[name].append((
+                "FAIL", "cross-reference sweep extracted no references at all, so "
+                        "its clean result is a statement about the sweep rather "
+                        "than about the documents"))
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 def check_document(text, root, only=None, data=None, sequence_config=None):
@@ -884,6 +1095,16 @@ def main(argv=None):
                         help="JSON config enabling the opt-in sequence sweep: "
                              "subject and relation vocabularies, plus the known "
                              "members the sweep must find (its positive control)")
+    parser.add_argument("--xref", action="store_true",
+                        help="Opt-in cross-document sweep: resolve every section "
+                             "reference against the headings of ALL files given. "
+                             "Pass the whole related set, companions included")
+    parser.add_argument("--history", action="append", metavar="PATH", default=[],
+                        help="With --xref: a file whose outbound references are "
+                             "records rather than instructions (a decision log, a "
+                             "review ledger). Its findings are demoted to INFO, "
+                             "since referring to a deleted section is its job. "
+                             "Repeatable")
     args = parser.parse_args(argv)
 
     sequence_config = None
@@ -910,6 +1131,24 @@ def main(argv=None):
             hard_error = True
             continue
         results.append((name, findings, stats))
+
+    # Runs once over the whole set rather than per file, because a reference can
+    # only be resolved against headings the per-file pass has no way to see.
+    if args.xref:
+        documents = []
+        for name in args.files:
+            try:
+                with open(Path(name), encoding="utf-8") as handle:
+                    documents.append((name, blank_fenced_lines(
+                        handle.read().split("\n"))))
+            except (OSError, UnicodeDecodeError):
+                # Already reported as a hard error by the per-file pass above;
+                # skipping keeps this sweep from reporting the same fault twice.
+                continue
+        if documents:
+            by_name = check_xref(documents, history=args.history)
+            results = [(name, findings + by_name.get(name, []), stats)
+                       for name, findings, stats in results]
 
     if args.json:
         print(findings_json(results))
