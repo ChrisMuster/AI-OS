@@ -112,7 +112,7 @@ workflows/reddit-collector/.reader_server.pid
 # blocks. Infrastructure, not a logged workflow run - never committed.
 workflows/rule-hooks/fire-log.jsonl
 
-# Design-time documents (plans, handovers, proposals, roadmaps) are personal
+# Design-time documents (plans, handovers, proposals, roadmaps, briefs) are personal
 # working artifacts — never committed. They routinely capture machine-, session-,
 # and user-specific context. Durable, generic design decisions live in the tracked
 # CONTEXT.md files instead. A genuinely generic forward-looking design doc may be

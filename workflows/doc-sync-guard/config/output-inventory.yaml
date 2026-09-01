@@ -271,6 +271,13 @@ rows:
     doc_sync: E12
     provenance: ["sweep-1"]
 
+  - path: "**/*-BRIEF.md"
+    assertion: assert-ignored
+    example: "workflows/example/EXAMPLE-BRIEF.md"
+    seed: false
+    doc_sync: E12
+    provenance: ["sweep-1"]
+
   # -----------------------------------------------------------------------
   # Assert tracked: negation lines. Each must stay visible to git.
   # -----------------------------------------------------------------------
