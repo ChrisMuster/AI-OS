@@ -1,11 +1,12 @@
 # Sync Architecture
 
-**Last modified:** 2026-08-28
+**Last modified:** 2026-09-01
 
 ## Purpose
 
-Read-only verification for the sync architecture design documents and for the file
-classification they define. It exists because that classification is the thing the
+Verification for the sync architecture design documents and for the file
+classification they define, plus the two gates the Stage A build runs against the
+personal repository that classification fills. It exists because that classification is the thing the
 build acts on: it decides which files a second, private git repository will track
 permanently, and a mistake in it is discovered only after a permanent commit.
 
@@ -33,9 +34,23 @@ replaces "the documents agree" as an assertion with a check that can fail.
   the invariant that makes those two contexts agree. `--self-test` builds a tree where
   they must disagree and proves it can tell them apart. Pure Python over the git CLI
   with no shell pipeline, so it runs on any AI in the roster.
+- `scripts/preseed.py` - the pre-seed gate, run immediately before the personal
+  repository's seed commit. Rejects a secrets file and any overlap with the public
+  tracked set, both blocking, and flags any selected file over 25 MiB, reporting only.
+  Its contract is the exit code: the seed commit is chained on it, so the commit cannot
+  happen if the gate fails. That matters more here than elsewhere in the project,
+  because the personal repository has no hooks at all and so carries no automatic
+  backstop underneath these checks.
+- `scripts/boundary.py` - boundary completeness, run against the freshly seeded
+  repository. Answers whether every gitignored path has exactly one owner, which is the
+  failure that destroyed the backlog on 2026-08-04. Five failing conditions plus one
+  that reports, and it is the only instrument in the design a broken allowlist does not
+  blind, because it starts from the disk and treats the allowlist as the thing under
+  test rather than reading it to decide what to look at.
+- `archived/` - `workflows/sync-architecture/archived/` [[workflows/sync-architecture/archived/CONTEXT]] - Superseded design-time documents for this work, kept as a record of what the live plans used to say rather than as anything to build from. Individual files are not listed there, being gitignored personal content.
 - `tests/` - `workflows/sync-architecture/tests/` [[workflows/sync-architecture/tests/CONTEXT]] - The
-  test suites for the selection module and for the plan-consistency checks, discovered
-  and run by the close-out verifier. The selection suite is deliberately not hermetic:
+  test suites for the selection module, the plan-consistency checks and the two Stage A
+  gates, discovered and run by the close-out verifier. The selection suite is deliberately not hermetic:
   its subject is the difference between two git contexts, so every fixture is a real
   repository built under `tempfile`. The consistency suite needs no git, because its
   subject is text.
@@ -225,3 +240,30 @@ while any file is both publicly tracked and matched by an ignore rule.
   repository's tracked paths with a positive control proving it can fail, and the
   authored-folder invariant showing exactly four carve-outs, all of them the declared
   `.obsidian` exclusion and none undeclared.
+- 2026-09-01 - Added `scripts/preseed.py` and `scripts/boundary.py` with their two test
+  suites, during the Stage A build and on the user's explicit authorisation. These are
+  the two artefacts the architecture plan's planned-artefacts block declared, and this
+  workflow now carries the gates as well as the checks, which is why the Purpose line
+  above no longer says read-only: `boundary.py` and `preseed.py` are read-only, but the
+  workflow's role has widened from verifying documents to gating a permanent commit.
+  The decision to build positive controls now rather than at Stage E was the user's, and
+  it changed the outcome rather than only the confidence: one control was passing
+  vacuously, and two mutations that a green suite would have accepted were caught, one of
+  them the `raw/` invariant, which no run against this project can exercise because every
+  `raw/` directory in the tree sits under `wikis/`. The first live `boundary.py` run also
+  returned a real finding, two design-time documents relying on the Category C default
+  after `.gitignore` gained a pattern the classification never followed; the
+  classification block and its table were corrected in the same pass.
+- 2026-09-01 - Added `archived/` and moved the pre-split history document into it from a
+  holding folder outside the project, at the user's instruction during the Stage A
+  close-out. Three sibling documents in that folder were deleted instead: they were
+  pre-cut rollback copies whose stated retention condition, Stage A being built and
+  working, had just been met. The fourth was kept because it is a different kind of
+  artefact that had been swept in with them, and the difference decided the outcome
+  rather than the folder it sat in: the live architecture plan cites it by name, its
+  reference resolved to nothing from inside the project, and being outside the personal
+  repository's worktree it was the one document there with no history and no second
+  copy. Moving it in fixes the citation and gives it history for the first time. The
+  live plan's reference was repointed at the new path in the same pass, since a
+  correction that leaves the pointer behind is the half-done kind this project keeps
+  recording.
