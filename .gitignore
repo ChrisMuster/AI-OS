@@ -122,6 +122,7 @@ workflows/rule-hooks/fire-log.jsonl
 **/HANDOVER.md
 **/PROPOSAL.md
 **/ROADMAP.md
+**/*-BRIEF.md
 
 # Doc-sync-guard certification output and ignored-content state
 workflows/doc-sync-guard/certification/*
