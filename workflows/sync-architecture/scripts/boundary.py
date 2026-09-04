@@ -14,7 +14,7 @@ same way, because a scan cannot report a file it was never told to look for.
 **This check starts from the disk and treats the allowlist as the thing under
 test.** Preserve that direction if it is ever rewritten.
 
-Six conditions, per the architecture plan's section 3 exit-code table:
+Eight conditions, per the architecture plan's section 3 exit-code table:
 
   a path claimed by two categories                                      FAIL
   a path under any raw/ claimed by Category A                           FAIL
@@ -22,13 +22,27 @@ Six conditions, per the architecture plan's section 3 exit-code table:
       line of the declared-exclusions block carves out                  FAIL
   an exclusion in the allowlist block that reaches an authored folder
       and is not declared                                               FAIL
-  a path the personal repository tracks that Category B or C claims     FAIL
+  a path the personal repository tracks that is still ignored and that
+      Category A does not claim                                         FAIL
+  a path the personal repository tracks that is no longer gitignored    FAIL
+  a path the personal repository tracks that has gone from disk         REPORT
   a path relying on the Category C default because no block names it    REPORT
 
-The last one reports rather than fails on purpose. Under the Category C default
-an unnamed path is classified, not unclassified, so the finding is a prompt to
-decide whether it belongs in A or in C. Making it fail would turn an ordinary
-new file into a build blocker.
+**The post-seed sweep is a whitelist and must stay one.** Those three middle
+conditions were one condition until 2026-09-02, and it asked whether a tracked
+path was claimed by the EXPLICIT category-b or category-c blocks. A blacklist
+catches only what somebody remembered to name, and the plan's Category C
+default means an unnamed path is classified rather than unclassified, so a file
+that fell out of Category A while the personal repository kept tracking it was
+reported by the last condition, which does not fail, and by nothing else. Every
+check in this suite passed on that state. Ask what Category A claims, never
+what B and C name.
+
+The two REPORT rows report rather than fail on purpose, and for the same
+reason. Under the Category C default an unnamed path is a prompt to decide
+whether it belongs in A or in C, and a tracked path that has gone from disk is
+what an ordinary deletion looks like before it is committed to the personal
+repository. Failing on either would turn routine work into a build blocker.
 
 **Which git context each question is asked in is part of the specification, not
 an implementation detail.** Measured on a fixture, walking the ignored set in
@@ -157,7 +171,7 @@ def personal_tracked(git_dir, project=None):
 
 
 def check(plan, git_dir, project=None, sample=5):
-    """Run all six conditions. Returns (findings, failed).
+    """Run all eight conditions. Returns (findings, failed).
 
     findings is a list of (level, message) with levels FAIL, REPORT, PASS, INFO.
     """
@@ -237,14 +251,57 @@ def check(plan, git_dir, project=None, sample=5):
                                  "row is not discharged. Run this after the seed "
                                  "commit."))
     else:
-        bad = {p for p in tracked if p in B or p in C}
-        if bad:
-            findings.append(("FAIL", f"{len(bad)} path(s) tracked by the personal "
-                                     f"repository are claimed by Category B or C: "
-                                     f"{show(bad)}"))
-        else:
-            findings.append(("PASS", f"none of the {len(tracked)} path(s) the "
-                                     f"personal repository tracks is Category B or C"))
+        # Every path the personal repository tracks must be Category A.
+        #
+        # This is a whitelist, and until 2026-09-02 it was a blacklist: it
+        # asked whether a tracked path was claimed by the EXPLICIT category-b
+        # or category-c blocks, and passed on anything neither block named.
+        # That form cannot see the case it most needs to. A path no block
+        # names is Category C by the plan's default, so a file the personal
+        # repository already tracks can fall out of Category A, become
+        # default-C, and be reported only by the sixth condition, which does
+        # not fail. Every check in this suite passed on exactly that state.
+        # A blacklist can only ever catch what somebody remembered to name,
+        # and the file nobody has thought about is the whole failure mode.
+        #
+        # The three branches are one question with three answers, separated
+        # because the remedies differ and lumping them together would report a
+        # routine deletion as a build blocker. They partition the strays
+        # exactly: `everything` holds only paths that exist on disk, so a
+        # stray is in it, or absent from disk, or neither.
+        base = Path(os.path.abspath(project or os.getcwd()))
+        stray = tracked - A
+        gone = {p for p in stray if not (base / p).exists()}
+        misfiled = stray & everything
+        escaped = stray - everything - gone
+
+        if misfiled:
+            findings.append(("FAIL", f"{len(misfiled)} path(s) tracked by the "
+                                     f"personal repository are still ignored but "
+                                     f"Category A does not claim them: "
+                                     f"{show(misfiled)}"))
+        if escaped:
+            findings.append(("FAIL", f"{len(escaped)} path(s) tracked by the "
+                                     f"personal repository are no longer "
+                                     f"gitignored, so the public repository owns "
+                                     f"them or their ignore rule has gone: "
+                                     f"{show(escaped)}"))
+        if gone:
+            # REPORT, on the same argument the Category C default takes. This
+            # is what an ordinary deletion looks like between the file leaving
+            # the disk and that removal being committed to the personal
+            # repository, and a gate that blocks on it blocks on routine work.
+            # It is surfaced rather than ignored because the same shape also
+            # covers a deletion nobody ever committed.
+            findings.append(("REPORT", f"{len(gone)} path(s) tracked by the "
+                                       f"personal repository no longer exist on "
+                                       f"disk, so a deletion has not been "
+                                       f"committed there yet: {show(gone)}"))
+        if not misfiled and not escaped:
+            findings.append(("PASS", f"of the {len(tracked)} path(s) the personal "
+                                     f"repository tracks, none is a still-ignored "
+                                     f"path outside Category A and none has left "
+                                     f"the ignored set"))
 
     # --- 6. relying on the Category C default. REPORT ONLY.
     orphans = everything - A - B - C
@@ -322,7 +379,8 @@ def self_test():
         # ------------------------------------------------------- dirty fixture
         dirty = tmp / "dirty"
         _write(dirty / ".gitignore",
-               ".env\nnotes/*\nbulk/*\nauthored/*\nextra/*\nlost/*\n")
+               ".env\nnotes/*\nbulk/*\nauthored/*\nextra/*\nlost/*\nboth/*\n"
+               "solo/*\n")
         _write(dirty / ".env", "SECRET=1\n")
         _write(dirty / "notes" / "a.md", "x\n")
         _write(dirty / "bulk" / "raw" / "big.bin", "x\n")
@@ -330,13 +388,29 @@ def self_test():
         _write(dirty / "authored" / "state" / "x.json", "{}\n")
         _write(dirty / "extra" / "dup.md", "x\n")
         _write(dirty / "lost" / "orphan.md", "x\n")
+        # The three strays, one per branch of the post-seed sweep. Each is a
+        # path the personal repository tracks and Category A does not claim,
+        # and they differ only in WHY, which is the whole of what decides the
+        # verdict. They are named distinctly rather than suffixed onto
+        # `orphan.md`, because an assertion matching a path substring would
+        # otherwise be satisfied by the wrong finding.
+        _write(dirty / "lost" / "kept.md", "x\n")       # still ignored, unclaimed
+        _write(dirty / "notes" / "gone.md", "x\n")      # deleted below, post-seed
+        _write(dirty / "both" / "shared.md", "x\n")     # publicly tracked below
+        # Explicitly Category C and claimed by nothing else, which is what
+        # `extra/dup.md` is not: that one is in the allowlist block as well and
+        # is the fixture's collision case, so under a rule reading "not
+        # Category A" it is Category A and the sweep rightly leaves it to the
+        # collision check. Proving the sweep catches an explicitly named
+        # Category C path needs a path that is only that.
+        _write(dirty / "solo" / "only-c.md", "x\n")
         dirty_plan = dirty / "PLAN.md"
         _write(dirty_plan, _plan({
             "allowlist": [":(glob)notes/**", ":(glob)authored/**",
                           ":(glob)bulk/**", ":(glob)extra/**",
                           ":(exclude,glob)authored/state/**"],
             "category-b": [".env"],
-            "category-c": [":(glob)extra/**"],
+            "category-c": [":(glob)extra/**", ":(glob)solo/**"],
             "authored-folders": [":(glob)authored/**"],
             # Present but irrelevant, so the block exists while the exclusion
             # above stays undeclared. An absent block would fail for a different
@@ -346,11 +420,19 @@ def self_test():
         try:
             os.chdir(dirty)
             allowlist._run(["init", "-q", "."])
-            allowlist._run(["add", "-f", ".gitignore", "PLAN.md"])
+            allowlist._run(["add", "-f", ".gitignore", "PLAN.md",
+                            "both/shared.md"])
             allowlist._run(["-c", "user.email=t@t", "-c", "user.name=t",
                             "commit", "-qm", "public"])
             gd = tmp / "dirty-personal.git"
-            _seed(dirty, gd, [".env", "extra/dup.md"])
+            _seed(dirty, gd, [".env", "extra/dup.md", "solo/only-c.md",
+                              "lost/kept.md", "notes/gone.md",
+                              "both/shared.md"])
+            # Deleted AFTER the seed, which is the only way to reach the state
+            # this branch is about: the file is in the personal repository's
+            # index and no longer on disk, so the ignored-set walk cannot see
+            # it and Category A cannot claim it.
+            (dirty / "notes" / "gone.md").unlink()
 
             findings, failed = check(Path("PLAN.md"), str(gd))
             text = " | ".join(f"{lvl}:{msg}" for lvl, msg in findings)
@@ -366,14 +448,42 @@ def self_test():
                  any("authored path(s) are not" in m for m in fails))
             want("an undeclared exclusion reaching an authored folder is caught",
                  any("without being declared" in m for m in fails))
+            # These two and `lost/kept.md` below now fire on one branch rather
+            # than on two, because the rule is "not Category A" and no longer
+            # "named by category-b or category-c". All three instances are
+            # kept: an explicitly named B path, an explicitly named C path,
+            # and a path relying on the default are three different ways to
+            # arrive in the personal repository wrongly, and a later narrowing
+            # of the rule could catch one and miss another.
             want("a Category B path tracked by the personal repo is caught",
-                 any("Category B or C" in m and ".env" in m for m in fails))
+                 any("Category A does not claim" in m and ".env" in m
+                     for m in fails))
             want("a Category C path tracked by the personal repo is caught",
-                 any("Category B or C" in m and "extra/dup.md" in m for m in fails))
+                 any("Category A does not claim" in m and "solo/only-c.md" in m
+                     for m in fails))
             want("a path named by no block is REPORTED, not failed",
                  any(lvl == "REPORT" and "orphan.md" in msg
                      for lvl, msg in findings)
                  and not any("orphan.md" in m for m in fails))
+
+            # The three strays. The first is the case that passed every check
+            # this suite had until 2026-09-02: a path the personal repository
+            # tracks that no block names, so the old sweep looked for it in the
+            # explicit Category B and C sets and did not find it there. Pairing
+            # it with the untracked orphan above is the point of the fixture,
+            # because the two are the same kind of path and must not get the
+            # same verdict: an unnamed file is a prompt to decide, an unnamed
+            # file the personal repository is already carrying is a defect.
+            want("a tracked path relying on the Category C default is caught",
+                 any("Category A does not claim" in m and "lost/kept.md" in m
+                     for m in fails))
+            want("a tracked path the public repository now owns is caught",
+                 any("no longer gitignored" in m and "both/shared.md" in m
+                     for m in fails))
+            want("a tracked path deleted from disk is REPORTED, not failed",
+                 any(lvl == "REPORT" and "notes/gone.md" in msg
+                     for lvl, msg in findings)
+                 and not any("notes/gone.md" in m for m in fails))
             want("the check fails overall", failed)
         finally:
             os.chdir(cwd)
@@ -439,7 +549,7 @@ def main():
     ap.add_argument("--git-dir", help="The personal repository's git directory. "
                                       "Required: the post-seed sweep asks it what "
                                       "it holds, and a run without it does five "
-                                      "sixths of the check while appearing to do "
+                                      "eighths of the check while appearing to do "
                                       "all of it.")
     ap.add_argument("--plan", default=str(allowlist.PLAN),
                     help="The document carrying the labelled blocks")
@@ -451,10 +561,10 @@ def main():
         return self_test()
 
     if not args.git_dir:
-        print("--git-dir is required. Five of the six conditions are asked in "
+        print("--git-dir is required. Five of the eight conditions are asked in "
               "public-repository context, but the post-seed tracked sweep has to "
               "ask the personal repository what it holds, so a run without it "
-              "would do five sixths of the check while appearing to do all of it.")
+              "would do five eighths of the check while appearing to do all of it.")
         return 1
     if not Path(args.git_dir).exists():
         print(f"No repository at {args.git_dir}; the check did not run.")

@@ -161,7 +161,23 @@ class CompareToBaselineTests(unittest.TestCase):
 
     def test_negative_control_an_identical_baseline_reports_no_change(self):
         level, added, removed = runner.compare_to_baseline("a\nb\n", "a\nb\n")
+        self.assertEqual((level, added, removed), ("IDENTICAL", 0, 0))
+
+    def test_rejection_control_byte_difference_with_no_line_delta_is_not_identical(self):
+        """IDENTICAL and "zero line delta" are different answers.
+
+        These two strings differ in bytes and produce no line diff at all, because
+        `splitlines` gives the same list for both. Collapsing them into one answer
+        is what let a file that is not identical clear a gate whose entire claim is
+        byte-identity. Caught by the gate's own control before it had ever been run
+        against the real plans."""
+        level, added, removed = runner.compare_to_baseline("a\nb\n", "a\nb")
+        self.assertNotEqual(level, "IDENTICAL")
         self.assertEqual((level, added, removed), ("INFO", 0, 0))
+
+    def test_positive_control_a_deletion_is_counted_on_the_removed_side(self):
+        level, added, removed = runner.compare_to_baseline("a\nb\nc\n", "a\nc\n")
+        self.assertEqual((level, added, removed), ("INFO", 0, 1))
 
     def test_rejection_control_a_missing_baseline_is_a_failure(self):
         """The one genuine defect: no baseline means no diff surface at all, so the
@@ -175,9 +191,97 @@ class CompareToBaselineTests(unittest.TestCase):
         level, _, _ = runner.compare_to_baseline("a\nb\n", None)
         self.assertEqual(level, "SKIP")
 
-    def test_positive_control_a_deletion_is_counted_on_the_removed_side(self):
-        level, added, removed = runner.compare_to_baseline("a\nb\nc\n", "a\nc\n")
-        self.assertEqual((level, added, removed), ("INFO", 0, 1))
+
+class BuildFreezeTests(unittest.TestCase):
+    """Validator. Subject: the build-authorisation gate.
+
+    The gate makes the same measurement `check_consistency` makes and reports it
+    at a different severity, so **the severity difference is the entire content
+    of the check** and is what these controls have to pin. A suite that only
+    asserted "drift fails here" would pass just as well if the other reading had
+    also been changed to fail, which would break the correction pass the INFO
+    reading exists to protect.
+
+    The load-bearing control is therefore
+    `test_positive_control_the_same_drift_is_information_elsewhere_and_blocking_here`:
+    one input, two readings, and both must hold at once.
+
+    Fixtures are real files under `tempfile` with `BASELINES` rebound, because
+    the function reads from disk and a stubbed reader would be testing the stub.
+    """
+
+    def _findings(self, baseline_text, live_text):
+        """Run the gate over one fixture pair. None means "this file is absent"."""
+        original = runner.BASELINES
+        with tempfile.TemporaryDirectory(prefix="build-freeze-") as tmp:
+            tmp = Path(tmp)
+            baseline, live = tmp / "CODEX-PLAN.md", tmp / "PLAN.md"
+            for path, text in ((baseline, baseline_text), (live, live_text)):
+                if text is not None:
+                    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                        fh.write(text)
+            try:
+                runner.BASELINES = [(baseline, live)]
+                findings = []
+                runner.check_build_freeze(findings)
+                return findings
+            finally:
+                runner.BASELINES = original
+
+    def _levels(self, findings):
+        return [level for level, _ in findings]
+
+    def test_positive_control_a_frozen_plan_passes(self):
+        """Byte-identical is the only state that clears the gate, and it has to be
+        reachable: a gate that cannot pass would simply be a broken build step."""
+        findings = self._findings("a\nb\n", "a\nb\n")
+        self.assertEqual(self._levels(findings), ["PASS"])
+        self.assertIn("byte-identical", findings[0][1])
+
+    def test_rejection_control_drift_blocks_the_build(self):
+        findings = self._findings("a\nb\n", "a\nb\nc\n")
+        self.assertEqual(self._levels(findings), ["FAIL"])
+        self.assertIn("+1 / -0", findings[0][1])
+
+    def test_positive_control_the_same_drift_is_information_elsewhere_and_blocking_here(self):
+        """THE control. One input, both readings, asserted together.
+
+        If a later edit made drift fail everywhere, this fires and the two tests
+        above would not: they would both still pass while the correction pass had
+        been turned permanently red, which is the state that trains a reader to
+        ignore a check.
+        """
+        planning_level, added, removed = runner.compare_to_baseline("a\nb\n", "a\nb\nc\n")
+        self.assertEqual(planning_level, "INFO")
+        self.assertEqual((added, removed), (1, 0))
+
+        gate = self._findings("a\nb\n", "a\nb\nc\n")
+        self.assertEqual(self._levels(gate), ["FAIL"])
+
+    def test_rejection_control_a_missing_baseline_blocks_the_build(self):
+        """No baseline means nothing records which version was reviewed, so the
+        gate has no evidence a review happened at all. It must not pass by
+        default: an unanswerable question is never a clear gate."""
+        findings = self._findings(None, "a\nb\n")
+        self.assertEqual(self._levels(findings), ["FAIL"])
+        self.assertIn("missing", findings[0][1])
+
+    def test_rejection_control_a_missing_live_plan_blocks_rather_than_skips(self):
+        """This is where the gate deliberately parts company with the read-only
+        check. There, an absent plan is SKIPPED, because a gitignored document is
+        legitimately missing on a fresh clone and a check that cannot run must
+        say so. Here it blocks, because the question is whether to authorise a
+        build and there is nothing to build from."""
+        self.assertEqual(runner.compare_to_baseline("a\nb\n", None)[0], "SKIP")
+        findings = self._findings("a\nb\n", None)
+        self.assertEqual(self._levels(findings), ["FAIL"])
+
+    def test_negative_control_a_trailing_newline_difference_is_not_invisible(self):
+        """The gate's claim is byte-identity, so a difference that a line-based
+        reading would lose still has to block. Without this, "identical" could
+        quietly mean "identical apart from whitespace"."""
+        findings = self._findings("a\nb\n", "a\nb")
+        self.assertEqual(self._levels(findings), ["FAIL"])
 
 
 # ------------------------------------------------------- boundary.py's two blocks

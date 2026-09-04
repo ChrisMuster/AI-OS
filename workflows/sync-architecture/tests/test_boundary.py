@@ -8,8 +8,16 @@ so a clean result is known not to be silence from over-matching).
 
 **The integration controls live in the module's `--self-test` and are reached
 from here rather than copied.** That self-test builds real fixtures and proves
-every one of the five failing conditions can fire. Re-implementing them here
-would be the second copy of a rule this workflow exists to keep in one place.
+every one of the six failing conditions can fire, and that the two reporting
+conditions report rather than fail. Re-implementing them here would be the
+second copy of a rule this workflow exists to keep in one place.
+
+Three of those controls cover the post-seed sweep's whitelist form, added on
+2026-09-02 when that sweep was found to pass on a path the personal repository
+tracks which no category block names. The pairing is what proves the rule: the
+same unnamed path is a REPORT when nothing tracks it and a FAIL when the
+personal repository does, and a fixture carrying only one of the two cannot
+tell a correct check from one that fails on everything unnamed.
 `BoundarySmokeTests.test_the_self_test_passes` is what gives close-out reach to
 them, because close-out discovers suites at `workflows/*/tests/test_*.py` only,
 and a check that exists but is unreachable by the gate is not covered by it.
@@ -98,8 +106,8 @@ class BoundarySmokeTests(unittest.TestCase):
         self.assertIn("All self-tests passed.", proc.stdout)
 
     def test_rejection_control_a_missing_git_dir_is_refused(self):
-        # Five of the six conditions need no git directory, so a run without one
-        # would do five sixths of the check while appearing to do all of it.
+        # Five of the eight conditions need no git directory, so a run without
+        # one would do five eighths of the check while appearing to do all of it.
         proc = self._run()
         self.assertEqual(proc.returncode, 1)
         self.assertIn("--git-dir is required", proc.stdout)

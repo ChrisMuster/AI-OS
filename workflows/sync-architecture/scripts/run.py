@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verification for the sync architecture plans and their Stage A allowlist.
 
-Read-only. Two checks, run together by default:
+Read-only. Two checks, run together by default, plus one gate that is opt-in:
 
   --allowlist    Extract the executable classification block from the architecture
                  plan and prove what it actually selects against the real tree,
@@ -11,8 +11,18 @@ Read-only. Two checks, run together by default:
   --consistency  Check both plans for the defect classes that have recurred:
                  superseded pathspec spellings, a second copy of the classification,
                  references to artefacts that do not exist, and stale review baselines.
+  --build-ready  Everything above, plus the build-authorisation gate: each plan must
+                 be byte-identical to its review baseline, so the plan about to be
+                 built is provably the plan that was reviewed.
 
-Both are read-only and take no destructive action, so neither carries --dry-run.
+**--build-ready is not a stricter version of --check; it is the same measurement in
+a different phase.** Drift from a baseline is normal while a plan is being planned,
+because it is the diff the next review reads, so --check reports it. At the moment a
+build is authorised the same drift means the document changed after the review that
+cleared it, so --build-ready fails on it. Nothing in the tree records which phase the
+work is in, so the phase is declared by which flag is run.
+
+All three are read-only and take no destructive action, so none carries --dry-run.
 
 The plans are design-time documents and are gitignored, so on a fresh clone they are
 absent. That is reported as SKIPPED rather than as a failure: a check that cannot run
@@ -112,6 +122,16 @@ def compare_to_baseline(baseline_text, live_text):
 
     A missing baseline is FAIL, because that is the one state with no diff surface
     at all: the next review would have to re-read the whole document blind.
+
+    **IDENTICAL and INFO-with-zero-counts are different answers and must stay
+    different.** Byte-identity returns IDENTICAL; a pair whose bytes differ while
+    a line diff finds nothing returns INFO with zero counts, which is a real and
+    reportable state rather than a synonym for identity. They were one answer
+    until 2026-09-02, when the build-freeze gate was added and its whole claim is
+    byte-identity: reading a zero line delta as identical let a file that differs
+    only in its final newline clear a gate that exists to prove nothing changed.
+    Found by the control that asserts it, before the gate had ever been run in
+    anger.
     """
     if live_text is None:
         return ("SKIP", 0, 0)
@@ -119,7 +139,7 @@ def compare_to_baseline(baseline_text, live_text):
         return ("FAIL", 0, 0)
     if hashlib.sha256(baseline_text.encode()).hexdigest() == \
             hashlib.sha256(live_text.encode()).hexdigest():
-        return ("INFO", 0, 0)
+        return ("IDENTICAL", 0, 0)
     added = removed = 0
     for row in difflib.unified_diff(baseline_text.splitlines(),
                                     live_text.splitlines(), lineterm="", n=0):
@@ -128,6 +148,63 @@ def compare_to_baseline(baseline_text, live_text):
         elif row.startswith("-") and not row.startswith("---"):
             removed += 1
     return ("INFO", added, removed)
+
+
+def check_build_freeze(findings):
+    """The build-authorisation gate: what is about to be built must BE what was
+    reviewed.
+
+    This makes exactly the same measurement `check_consistency` already makes, at
+    a different severity, and that difference is the entire content of the check.
+    While a plan is being planned, drift from its baseline is normal and is the
+    diff the next review reads, so it is reported. At the moment a build is
+    authorised the same drift is a blocker, because it means the document changed
+    after the review that cleared it. One command cannot serve both readings, so
+    the phase is declared by which flag is run.
+
+    Written 2026-09-02, after the sync architecture plans were found to have been
+    built from a version no baseline had ever held: the cut happened on 30 and 31
+    August and the baseline still held the pre-cut documents five days later.
+    Nothing was done wrong at the time. There was no rule that a plan finalised
+    for building gets frozen, and drift is reported as information by design, so
+    a five-day-stale baseline spanning a whole document rewrite and a healthy
+    mid-cycle drift produced identical output.
+
+    **What this gate does not check.** It compares files. It cannot know whether
+    the review that preceded the freeze was any good, or whether the reviewing AI
+    read the whole document or two sections of it. A clear gate says the plan
+    being built is the plan that was reviewed, and nothing more than that.
+    """
+    for baseline, live in BASELINES:
+        level, added, removed = compare_to_baseline(_read(baseline), _read(live))
+        if level == "SKIP":
+            findings.append(("FAIL", f"{live.name} is not present, so there is "
+                                     f"nothing to build from and the freeze gate "
+                                     f"cannot pass"))
+        elif level == "FAIL":
+            findings.append(("FAIL", f"{baseline.name} is missing, so nothing "
+                                     f"records which version of {live.name} was "
+                                     f"reviewed and the gate has no evidence a "
+                                     f"review happened at all"))
+        elif level == "IDENTICAL":
+            findings.append(("PASS", f"{live.name} is byte-identical to "
+                                     f"{baseline.name}: the plan to be built is "
+                                     f"the plan that was reviewed"))
+        elif not added and not removed:
+            # Bytes differ while a line diff finds nothing. The gate's claim is
+            # byte-identity, so this blocks: "nothing changed" and "nothing a
+            # line diff can see changed" are not the same statement.
+            findings.append(("FAIL", f"{live.name} differs from {baseline.name} in "
+                                     f"bytes but not in lines, so something changed "
+                                     f"that a line diff cannot show. The gate's "
+                                     f"claim is byte-identity; resolve it before "
+                                     f"building."))
+        else:
+            findings.append(("FAIL", f"{live.name} differs from {baseline.name} "
+                                     f"(+{added} / -{removed} lines), so it changed "
+                                     f"after the review that cleared it. Send that "
+                                     f"diff back for review, refresh the baseline "
+                                     f"to what was reviewed, then build."))
 
 
 def unresolved_scripts(text, planned, root=Path(".")):
@@ -440,15 +517,23 @@ def check_consistency(findings):
         elif level == "FAIL":
             findings.append(("FAIL", f"{baseline.name} is missing, so the next review "
                                      f"of {live.name} has no diff surface"))
-        elif not added and not removed:
+        elif level == "IDENTICAL":
             findings.append(("INFO", f"{live.name} is identical to {baseline.name}: "
                                      f"no changes since the last review round"))
+        elif not added and not removed:
+            findings.append(("INFO", f"{live.name} differs from {baseline.name} in "
+                                     f"bytes but not in lines, so the change is "
+                                     f"whitespace or a final newline rather than "
+                                     f"content"))
         else:
             findings.append(("INFO", f"{live.name} differs from {baseline.name} "
                                      f"(+{added} / -{removed} lines); that diff is "
                                      f"what the next review reads. Refresh the "
                                      f"baseline as soon as the reviewing AI has "
-                                     f"recorded its findings, not once they are fixed."))
+                                     f"recorded its findings, not once they are "
+                                     f"fixed. Drift is normal here and a blocker at "
+                                     f"a build: run --build-ready before authorising "
+                                     f"a stage."))
 
 
 # ---------------------------------------------------------------------------- main
@@ -462,14 +547,23 @@ def main():
                     help="Only prove what the classification block selects")
     ap.add_argument("--consistency", action="store_true",
                     help="Only check the plans for known defect classes")
+    ap.add_argument("--build-ready", action="store_true",
+                    help="The build-authorisation gate: every check above, plus a "
+                         "requirement that each plan is byte-identical to its "
+                         "review baseline. Drift is information everywhere else "
+                         "and a blocker here, and that difference is the whole of "
+                         "the check. Run it before authorising a stage.")
     args = ap.parse_args()
-    run_all = args.check or not (args.allowlist or args.consistency)
+    run_all = (args.check or args.build_ready
+               or not (args.allowlist or args.consistency))
 
     findings = []
     if run_all or args.allowlist:
         check_allowlist(findings)
     if run_all or args.consistency:
         check_consistency(findings)
+    if args.build_ready:
+        check_build_freeze(findings)
 
     print("# Sync Architecture Verification\n")
     for level in ("FAIL", "SKIP", "PASS", "INFO"):
@@ -489,6 +583,18 @@ def main():
         print(f"No failures, but {len(skips)} check(s) could not run.")
     else:
         print("All checks passed.")
+
+    if args.build_ready:
+        # Stated separately from the pass/fail line because the gate answers a
+        # narrower question than the report above it, and the narrowness is the
+        # part that gets dropped when a result is quoted second-hand.
+        print("\nBUILD GATE: " + ("BLOCKED - do not authorise the build."
+                                  if fails else
+                                  "CLEAR - each plan is frozen at the version "
+                                  "that was reviewed."))
+        print("A clear gate says the plan being built is the plan that was "
+              "reviewed. It does not say that review was adequate, or that the "
+              "reviewer read the whole document.")
     return 1 if fails else 0
 
 

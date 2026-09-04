@@ -1,12 +1,12 @@
 # Sync Architecture - Archived
 
-**Last modified:** 2026-09-01
+**Last modified:** 2026-09-03
 
 ## Purpose
 Holds the completed design-time documents behind the sync architecture work: superseded plan states kept as a record of what the live documents used to say, rather than as instructions anyone builds from. These are personal, design-time working artifacts that capture session- and setup-specific context, so they are gitignored and local-only (see the design-time-document rule in `AGENTS.md` [[AGENTS]]). The durable, generic design decisions live in the tracked `CONTEXT.md` files; the rationale for the live plan lives in its decision log and review ledger, neither of which is here. A document arrives here when the work it specifies is finished or the state it records has been superseded, not when it stops being read.
 
 ## Contents
-Plan documents, named `*-PLAN.md`. Individual files are not listed here - they are personal, gitignored, local-only content. The filesystem is the authoritative source of what exists in this directory.
+Plan documents named `*-PLAN.md`, and the briefs of closed review rounds named `*-BRIEF.md`. Individual files are not listed here - they are personal, gitignored, local-only content. The filesystem is the authoritative source of what exists in this directory.
 
 ## Inputs
 None. This is a local reference archive, not a runnable workflow.
@@ -27,3 +27,4 @@ N/A. This is an archive container, not a workflow.
 
 ## Revision History
 - 2026-09-01 - Created during the Stage A close-out, to receive `SYNC-ARCHITECTURE-PRESPLIT-HISTORY-PLAN.md` from a holding folder outside the project. Three sibling documents in that folder were deleted rather than archived, at the user's instruction: they were pre-cut rollback copies whose purpose was discharged once the blind build test proved the cut removed no instruction and Stage A was built and working. This one was kept and moved because it is a different kind of document that had been swept in with them. It is the pre-split history archive, the live plan cites it by name, and it records a state from before the personal repository existed, so it is the one document in that folder with no other copy anywhere. Moving it into the project rather than leaving it outside also brings it inside the personal repository's worktree, so it now has history for the first time.
+- 2026-09-03 - Widened to receive the briefs of closed review rounds as well as superseded plan states, and took delivery of the first, the brief that drove the 2026-08-28 document review round. It is archived rather than deleted because its structure is reusable and because it records what that round was actually asked to do, which nothing else preserves. The Contents section now names both document kinds, since a reader meeting only `*-PLAN.md` there would read a brief in this directory as misfiled. The arrival is worth recording for how it happened as well as that it did: the brief was destroyed at its previous path by a write that assumed the path was free, and it was recovered from the personal repository's history, which is the case the third Known Issue above describes. That entry claimed archiving here gives a document a restore path; the claim was exercised rather than assumed on the day it was first needed.

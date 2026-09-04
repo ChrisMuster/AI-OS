@@ -1,6 +1,6 @@
 # Sync Architecture
 
-**Last modified:** 2026-09-01
+**Last modified:** 2026-09-02
 
 ## Purpose
 
@@ -17,7 +17,16 @@ replaces "the documents agree" as an assertion with a check that can fail.
 ## Contents
 
 - `scripts/` - `workflows/sync-architecture/scripts/` [[workflows/sync-architecture/scripts/CONTEXT]] - Holds the workflow's entry point, the shared selection module, and their documentation.
-- `scripts/run.py` - the entry point. Runs two read-only checks, together by default.
+- `scripts/run.py` - the entry point. Runs two read-only checks, together by default,
+  plus an opt-in `--build-ready` gate. The gate requires each plan to be
+  byte-identical to its review baseline, so the plan about to be built is provably
+  the plan that was reviewed. It is the same baseline measurement the consistency
+  check already makes, at a different severity, and that difference is its whole
+  content: drift is information while a plan is being planned, because it is the
+  diff the next review reads, and a blocker at the moment a stage is authorised,
+  because it means the document changed after the review that cleared it. Nothing
+  in the tree records which phase the work is in, so the phase is declared by which
+  flag is run.
   `--allowlist` extracts the executable classification block from the architecture
   plan and proves what it actually selects against the real working tree.
   `--consistency` checks both design documents for the defect classes that have
@@ -43,10 +52,13 @@ replaces "the documents agree" as an assertion with a check that can fail.
   backstop underneath these checks.
 - `scripts/boundary.py` - boundary completeness, run against the freshly seeded
   repository. Answers whether every gitignored path has exactly one owner, which is the
-  failure that destroyed the backlog on 2026-08-04. Five failing conditions plus one
-  that reports, and it is the only instrument in the design a broken allowlist does not
+  failure that destroyed the backlog on 2026-08-04. Six failing conditions plus two
+  that report, and it is the only instrument in the design a broken allowlist does not
   blind, because it starts from the disk and treats the allowlist as the thing under
-  test rather than reading it to decide what to look at.
+  test rather than reading it to decide what to look at. Its post-seed sweep asks what
+  Category A claims rather than what the `category-b` and `category-c` blocks name,
+  which is a whitelist where the original was a blacklist; the difference is what lets
+  it see a tracked path that no block names at all.
 - `archived/` - `workflows/sync-architecture/archived/` [[workflows/sync-architecture/archived/CONTEXT]] - Superseded design-time documents for this work, kept as a record of what the live plans used to say rather than as anything to build from. Individual files are not listed there, being gitignored personal content.
 - `tests/` - `workflows/sync-architecture/tests/` [[workflows/sync-architecture/tests/CONTEXT]] - The
   test suites for the selection module, the plan-consistency checks and the two Stage A
@@ -59,7 +71,12 @@ replaces "the documents agree" as an assertion with a check that can fail.
 
 - The architecture plan and its Stage A build spec at the project root. Both are
   design-time documents and therefore gitignored, so on a fresh clone they are absent.
-  Their absence is reported as SKIPPED rather than as a pass or a failure.
+  Their absence is reported as SKIPPED rather than as a pass or a failure, except
+  under `--build-ready`, where it blocks: there is then nothing to build from, and a
+  gate that treats "I could not tell" as a pass is not a gate.
+- Their `CODEX-*` review baselines, also gitignored. The `--build-ready` gate needs
+  them present, since a missing baseline means nothing records which version was
+  reviewed.
 - The architecture plan must carry a fenced ` ```allowlist ` block. That block is the
   authority for the classification, and the check reads it from the document rather
   than from a copy, so the two cannot drift apart.
@@ -102,7 +119,10 @@ while any file is both publicly tracked and matched by an ignore rule.
    the last-reviewed version and is refreshed as soon as the reviewing AI has
    recorded its findings, rather than when those findings are fixed.
 9. Print the report and exit non-zero on any failure.
-10. Append LOG.md with a completion or failure entry.
+10. Before authorising a build stage, run `--build-ready` as a separate act. Zero drift
+    from each baseline clears the gate; any drift blocks it, and the changed material
+    goes back for review before the build starts.
+11. Append LOG.md with a completion or failure entry.
 
 ## Dependencies
 
@@ -267,3 +287,26 @@ while any file is both publicly tracked and matched by an ignore rule.
   live plan's reference was repointed at the new path in the same pass, since a
   correction that leaves the pointer behind is the half-done kind this project keeps
   recording.
+- 2026-09-02 - Rewrote `boundary.py`'s post-seed tracked sweep as a whitelist, closing
+  finding C1 of the Codex code review of the Stage A scripts. It had asked whether a
+  tracked path was claimed by the explicit `category-b` or `category-c` blocks, which is
+  the right question only while every ignored path is named by some block; the plan's
+  Category C default exists so that they need not be, so a file falling out of Category
+  A while the personal repository kept tracking it was reported by the default-reliance
+  condition, which does not fail, and by nothing else. It now asks what Category A
+  claims. The strays split three ways because the remedies differ, taking the check from
+  six conditions to eight: still ignored and unclaimed fails, no longer gitignored fails,
+  and gone from disk reports, that last being an uncommitted deletion rather than a
+  misfiled file, on the argument the plan already makes for the default. The alternative
+  remedy the finding offered, a removal gate on `--stage`, was rejected rather than
+  deferred: it would act on the allowlist's word where this check exists to treat the
+  allowlist as the thing under test, it would run only when somebody remembered to stage,
+  and removing a path from an index does not remove it from history, so it would turn a
+  permanent capture green. Both design documents were corrected in the same pass, the
+  section 3 exit-code table, the step 8 sweep specification, the Stage A acceptance row
+  and the Stage A build spec, since the sweep's shape is specified there and a change
+  landing only in code is the fault this workflow exists to catch. The measurement that
+  shaped the fix was taken before any code changed: all 538 paths the personal repository
+  tracks are Category A and nothing relies on the default, so C1 was latent rather than
+  live and the tightening turns no existing path red.
+- 2026-09-02 - Repaired the review baselines and added the build-authorisation gate that stops them going stale again, at the user's instruction and with their explicit override of the rule that only the AI whose name a baseline carries may refresh it. The `CODEX-*` baselines were found holding the **pre-cut** plans five days after the cut, so the documents Stage A was actually built from had never been anybody's baseline: drift read +701/-904 and +455/-680 lines, which is a whole document rewrite rather than a reviewable diff. Nothing was done wrong at the time, which is why the fix is a rule rather than more care. There was no clause saying a plan finalised for building gets frozen, the baseline moves only at a review event owned by the reviewer, the reviewer never returned for a document round, and drift is reported as information by design, so a five-day-stale baseline and a healthy mid-cycle one produced identical output. Both baselines were reset byte for byte to the personal repository's seed commit c947435, which the Stage A log entries show is the plans as they stood when that build began, and the superseded copies remain recoverable from that repository's HEAD. Drift now reads +109/-92 and +42/-5, which is the genuinely unreviewed material. `run.py` gained `--build-ready`, which requires each plan to be byte-identical to its baseline before a stage is authorised: the same measurement the consistency check already makes, at a severity that depends on the phase, which is the whole of the check. Proved by exit code rather than by prose, with `--build-ready` exiting 1 on the current tree and `--check` exiting 0 on the same tree.
