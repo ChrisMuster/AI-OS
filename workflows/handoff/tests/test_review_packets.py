@@ -241,6 +241,242 @@ class TestReviewPacketToleratesAnyPacketShape(unittest.TestCase):
         self.assertEqual(packet["open"], ["F1"])
 
 
+class TestLabelsCarryingARoundNumber(unittest.TestCase):
+    """Findings labelled R13-1, R13-2, ... are distinct findings.
+
+    Added 2026-09-18, after a real packet of twelve addressed findings reported
+    one. The label pattern stopped at the first run of digits, so every finding in
+    a round labelled this way carried the label of the round itself and
+    de-duplication collapsed them. The dangerous direction is the open list: nine
+    open findings would have rendered as "1 open", which reads as almost nothing
+    left to do.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "memory").mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, lines):
+        body = "\n".join(lines) + "\n"
+        (self.root / "memory" / "thing_review_packet.md").write_bytes(
+            body.encode("utf-8"))
+        return gather.review_packets(self.root)[0]
+
+    def test_regression_control_the_real_packet_shape(self):
+        """Taken from the packet that miscounted, not from the new pattern."""
+        packet = self._write([
+            "# Packet",
+            "## Open",
+            "- **R13-1, BLOCKER, A9 false negative: node inline flags.**",
+            "- **R13-2, MAJOR, A9 false positive: flags after a script.**",
+            "- **R13-9, BOUNDARY, A3 false positive: stack positions.**",
+            "## Addressed",
+            "- **R13-10, A9 false negative: an option value read as a script.**",
+            "- **R13-11, A9 false positive: node -r names a module.**",
+        ])
+        self.assertEqual(packet["open"], ["R13-1", "R13-2", "R13-9"])
+        self.assertEqual(packet["addressed"], ["R13-10", "R13-11"])
+
+    def test_a_round_label_and_a_finding_label_are_different(self):
+        """`R13` and `R13-1` must not collapse into one another."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **R13 - the round as a whole**",
+            "- **R13-1 - one finding in it**",
+        ])
+        self.assertEqual(packet["open"], ["R13", "R13-1"])
+
+    def test_a_repeated_finding_label_is_still_counted_once(self):
+        """The de-duplication itself must survive the fix."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "### R13-1 - one finding",
+            "- **R13-1 - restated in the body**",
+        ])
+        self.assertEqual(packet["open"], ["R13-1"])
+
+    def test_control_a_spaced_dash_is_prose_not_part_of_the_label(self):
+        """`R1 - description` labels R1; only an attached `-N` joins the label.
+
+        Without this the widened pattern could swallow the description of every
+        finding written in the older style, which is most of them.
+        """
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **R1 - 2 of the plans disagree**",
+            "- **F3.2 - a dotted sub-number also reads**",
+        ])
+        self.assertEqual(packet["open"], ["R1", "F3.2"])
+
+
+class TestALabelIsTakenWholeOrNotAtAll(unittest.TestCase):
+    """A label the reader cannot accept must cost the label, never the finding.
+
+    Added 2026-09-18 as R14-3. The round-number fix above stopped the pattern
+    truncating at the first run of digits, but `\\b` still let it give ground: with
+    a suffix it could not accept attached, it backtracked to whatever shorter
+    prefix ended on a word boundary, so `R13-1a` and `R13-2a` both matched as
+    `R13` and de-duplication merged two findings into one. That is the same
+    collapse, through the one route the earlier fix left open, and it fails in the
+    dangerous direction: the finding leaves the count rather than merely losing
+    its label.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "memory").mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, lines):
+        body = "\n".join(lines) + "\n"
+        (self.root / "memory" / "thing_review_packet.md").write_bytes(
+            body.encode("utf-8"))
+        return gather.review_packets(self.root)[0]
+
+    def test_regression_control_alpha_suffixes_do_not_collapse(self):
+        """The reported shape: two findings, two items, not one."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **R13-1a - the first sublabelled finding**",
+            "- **R13-2a - the second sublabelled finding**",
+        ])
+        self.assertEqual(len(packet["open"]), 2)
+        self.assertNotIn("R13", packet["open"])
+
+    def test_regression_control_slash_suffixes_do_not_collapse(self):
+        """The same backtrack reached through `/` rather than a letter."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **R13/1 - the first finding**",
+            "- **R13/2 - the second finding**",
+        ])
+        self.assertEqual(len(packet["open"]), 2)
+        self.assertNotIn("R13", packet["open"])
+
+    def test_a_refused_label_is_reported_rather_than_swallowed(self):
+        """The count is kept whole, and the bad spelling is named."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **R13-1a - a sublabelled finding**",
+        ])
+        self.assertEqual(packet["labels_noncanonical"], ["R13-1a"])
+
+    def test_a_readable_but_non_canonical_label_is_still_counted(self):
+        """A complaint must never cost a finding its label or its place.
+
+        The dotted form reads fine and is merely not the agreed spelling, so it
+        is counted, labelled, and complained about, all three.
+        """
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **F3.2 - a dotted sub-number**",
+        ])
+        self.assertEqual(packet["open"], ["F3.2"])
+        self.assertEqual(packet["labels_noncanonical"], ["F3.2"])
+
+    def test_control_the_canonical_forms_raise_nothing(self):
+        """Both accepted spellings, in both sections, and a bolded one."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **R14-1 - a round-scoped finding**",
+            "- **D9 - an item-scoped running sequence**",
+            "## Addressed",
+            "- **BUG12 - letters and digits, no group**",
+        ])
+        self.assertEqual(packet["open"], ["R14-1", "D9"])
+        self.assertEqual(packet["addressed"], ["BUG12"])
+        self.assertEqual(packet["labels_noncanonical"], [])
+
+    def test_control_an_unlabelled_finding_is_not_a_complaint(self):
+        """No label at all is allowed. Only a broken one is worth reporting."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "- the reviewer wrote no label here",
+            "- nor here",
+        ])
+        self.assertEqual(packet["open"], [None, None])
+        self.assertEqual(packet["labels_noncanonical"], [])
+
+    def test_control_a_spaced_dash_still_labels_and_raises_nothing(self):
+        """`R1 - description` is prose after a canonical label, not a complaint."""
+        packet = self._write([
+            "# Packet", "## Open",
+            "- **R1 - 2 of the plans disagree**",
+        ])
+        self.assertEqual(packet["open"], ["R1"])
+        self.assertEqual(packet["labels_noncanonical"], [])
+
+    def test_a_complaint_is_never_raised_about_a_discarded_bullet(self):
+        """Headings win over bullets, so the complaint set must follow them.
+
+        Otherwise the warning names findings that were never counted, which sends
+        a reader looking for an item the packet section does not show.
+        """
+        packet = self._write([
+            "# Packet", "## Open",
+            "### R14-1 - the finding, as a heading",
+            "- **F3.2 - a bullet in its body, discarded by the count**",
+        ])
+        self.assertEqual(packet["open"], ["R14-1"])
+        self.assertEqual(packet["labels_noncanonical"], [])
+
+
+class TestNonCanonicalLabelsAreRendered(unittest.TestCase):
+    """The complaint has to reach the packet, or the standard decays again.
+
+    The user's call on 2026-09-18: a non-canonical label should not be there at
+    all, so when one appears he wants to be told rather than have it quietly
+    tolerated.
+    """
+
+    def _packet(self, **kwargs):
+        base = dict(
+            timestamp="2026-09-18T11:00:00+01:00", branch="main",
+            status=[], diffstat="", commits=[], dir_logs=[], backlog=[],
+            sessions={"total": 0, "by_ai": {}, "titles": []})
+        base.update(kwargs)
+        return gather.build_packet(**base)
+
+    def test_the_offending_tokens_are_named(self):
+        out = self._packet(review=[{
+            "item": "thing", "path": "memory/thing_review_packet.md",
+            "open": ["R14-1"], "addressed": [],
+            "labels_noncanonical": ["R13-1a", "F3.2"]}])
+        self.assertIn("Non-canonical finding labels", out)
+        self.assertIn("`R13-1a`", out)
+        self.assertIn("`F3.2`", out)
+
+    def test_it_is_raised_even_when_the_open_section_is_unreadable(self):
+        """The drifted packet is the one most worth complaining about."""
+        out = self._packet(review=[{
+            "item": "thing", "path": "memory/thing_review_packet.md",
+            "open": None, "addressed": None,
+            "labels_noncanonical": ["R13-1a"]}])
+        self.assertIn("shape not recognised", out)
+        self.assertIn("Non-canonical finding labels", out)
+
+    def test_control_a_clean_packet_says_nothing_about_labels(self):
+        out = self._packet(review=[{
+            "item": "thing", "path": "memory/thing_review_packet.md",
+            "open": ["R14-1"], "addressed": [], "labels_noncanonical": []}])
+        self.assertNotIn("Non-canonical", out)
+
+    def test_control_an_entry_with_no_such_key_is_not_a_crash(self):
+        """Every other caller and test builds the entry without the key."""
+        out = self._packet(review=[{
+            "item": "thing", "path": "memory/thing_review_packet.md",
+            "open": ["R14-1"], "addressed": []}])
+        self.assertIn("1 open", out)
+        self.assertNotIn("Non-canonical", out)
+
+
 class TestUnreadableLabelsAreNeverRenderedAsZero(unittest.TestCase):
     """The silent half of the defect, which is the more dangerous half.
 

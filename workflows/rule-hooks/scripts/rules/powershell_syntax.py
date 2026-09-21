@@ -36,41 +36,17 @@ not the recurring fault, and each would need its own false-positive analysis.
 
 import re
 
-from core import Decision, format_block
+from core import Decision, format_block, strip_heredoc_bodies
 
 RULE_ID = "A8"
-
-# A heredoc redirection: <<DELIM, <<'DELIM', <<"DELIM", <<-DELIM.
-_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
 # A PowerShell here-string OPENS with @' or @" as the last thing on the line.
 _OPENER_RE = re.compile(r"(?:^|\s)@(['\"])[ \t]*$", re.MULTILINE)
 
-
-def _strip_heredoc_bodies(command):
-    """Return *command* with heredoc bodies removed.
-
-    Content quoted into a command is data, not syntax: a heredoc body that
-    contains a here-string (documentation, a sample, a file being written) is
-    not the fault this rule is looking for. The opening and terminating lines
-    are kept so the surrounding command is still scanned.
-    """
-    lines = command.splitlines()
-    kept, i, total = [], 0, len(lines)
-    while i < total:
-        line = lines[i]
-        kept.append(line)
-        i += 1
-        match = _HEREDOC_RE.search(line)
-        if not match:
-            continue
-        delimiter = match.group(2)
-        while i < total and lines[i].strip() != delimiter:
-            i += 1
-        if i < total:
-            kept.append(lines[i])  # the terminator closes the body
-            i += 1
-    return "\n".join(kept)
+# The heredoc-body stripper moved to core on 2026-09-02, when A3 needed the
+# same behaviour. One copy, per the rule this project keeps relearning: a
+# second copy of a rule is the thing that drifts. Behaviour here is unchanged.
+_strip_heredoc_bodies = strip_heredoc_bodies
 
 
 def check(ctx):

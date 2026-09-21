@@ -1,6 +1,6 @@
 # Doc-Verify Config
 
-**Last modified:** 2026-08-12
+**Last modified:** 2026-09-05
 
 ## Purpose
 
@@ -10,7 +10,7 @@ A config carries three things: the **subject** terms (what the statement is abou
 
 ## Contents
 
-- `sequence-example.json` - `workflows/doc-verify/config/sequence-example.json` - Worked example of a sweep config, carrying the stage-order vocabulary it was first built for. Copy it and replace the vocabularies for a different statement class.
+- `sequence-example.json` - `workflows/doc-verify/config/sequence-example.json` [[workflows/doc-verify/config/CONTEXT]] - Worked example of a sweep config, carrying the stage-order vocabulary it was first built for. Copy it and replace the vocabularies for a different statement class.
 
 ## Inputs
 
@@ -37,3 +37,4 @@ N/A. This is a configuration directory, not a workflow.
 
 - 2026-08-06 - Initial creation, alongside doc-verify's opt-in sequence sweep. Holds the worked-example config carrying the subject and relation vocabularies and the known-members positive control.
 - 2026-08-12 - Corrected a mistranscribed known member in `sequence-example.json`. The first entry read "must not start until it has landed" where the document it controls says "must not start until 4a has landed", so the positive control had been failing and every run of the sweep reported FAIL with the message that its vocabulary has a hole. The vocabulary never had one: the sentence was being found as a candidate throughout, and the candidate count is unchanged at 61 either side of the fix. This is the failure mode the Known Issues bullet above describes from the other direction - the control is written by hand, so it can be wrong about the document rather than about the vocabulary, and a control that fails for its own reasons trains a reader to discount the one signal it exists to give.
+- 2026-09-05 - An Obsidian link inserted by the link pass, run as the close-out step of unrelated rule-hooks work. Recorded because the file changed rather than because the change is interesting: the link pass edits any CONTEXT.md holding an unlinked backtick path reference, so a directory nobody touched still ends the day with a modified document and its documentation has to move with it.

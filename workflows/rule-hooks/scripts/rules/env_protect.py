@@ -19,9 +19,16 @@ RULE_ID = "A7"
 
 
 def _is_env_target(basename):
-    if basename == ".env.example":
+    # Case-folded, because this is the only rule of the five that was not:
+    # A4 uses IGNORECASE and A9 lowercases, while this one compared exactly.
+    # On Windows and macOS `.ENV` IS `.env`, so `echo K=v | tee .ENV` wrote
+    # the real file and the guard written for that file did not fire. It
+    # affected the Edit/Write path as well as the shell path, so it was a
+    # bypass of the tool-level guard rather than a shell-parsing nicety.
+    name = basename.lower()
+    if name == ".env.example":
         return False
-    return basename == ".env" or basename.startswith(".env.")
+    return name == ".env" or name.startswith(".env.")
 
 
 def _shell_written_env(command):

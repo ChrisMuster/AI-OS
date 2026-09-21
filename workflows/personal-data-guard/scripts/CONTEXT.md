@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-09-05
 
 ## Purpose
 Holds the personal-data-guard implementation. `run.py` is both a CLI and an importable module: it discovers committable files via git, derives the user's personal markers at runtime from `USER.md` [[USER]] and `.env`, and classifies each text file for emails, personal home paths, the user's name/username, and an optional denylist of personal nouns. The script source is generic - every real marker is read at runtime from local gitignored sources, never baked in - so it never carries personal data and never flags itself.
@@ -29,7 +29,7 @@ python workflows/personal-data-guard/scripts/run.py --check [--json]
 ## Dependencies
 - `AGENTS.md` [[AGENTS]] (root) - The personal-data isolation rules this script enforces.
 - `USER.md` [[USER]] and `.env` (root, gitignored) - Read at runtime for name and email markers.
-- `workflows/personal-data-guard/config/denylist.txt` (gitignored, optional) - Extra personal nouns.
+- `workflows/personal-data-guard/config/denylist.txt` [[workflows/personal-data-guard/config/CONTEXT]] (gitignored, optional) - Extra personal nouns.
 - Python 3.9+ standard library (argparse, os, re, subprocess, json, pathlib); the `git` CLI.
 
 ## Known Issues
@@ -39,3 +39,4 @@ python workflows/personal-data-guard/scripts/run.py --check [--json]
 
 ## Revision History
 - 2026-06-25 - Initial creation. Read-only check script with ASCII-safe, runtime-sourced markers; git-scoped discovery; placeholder allowlists for emails and path usernames.
+- 2026-09-05 - An Obsidian link inserted by the link pass, run as the close-out step of unrelated rule-hooks work. Recorded because the file changed rather than because the change is interesting: the link pass edits any CONTEXT.md holding an unlinked backtick path reference, so a directory nobody touched still ends the day with a modified document and its documentation has to move with it.

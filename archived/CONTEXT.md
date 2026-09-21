@@ -1,11 +1,11 @@
 # Archived
 
-**Last modified:** 2026-08-13
+**Last modified:** 2026-09-05
 
 ## Purpose
 Holds finished project-level design-time documents that have no owning workflow. Book Dragon's convention is that a spent plan is archived into the `archived/` directory of the workflow it was written to build, but some plans govern the project as a whole rather than any one workflow, and before this directory existed they had nowhere to go. This is that destination, and only that: a plan belonging to a workflow still goes to that workflow's own `archived/` directory.
 
-These are personal, design-time working artifacts. They capture session-, machine- and user-specific context, so they are gitignored and local-only (see the design-time-document rule in `AGENTS.md` [[AGENTS]]). The durable, generic design decisions live in the tracked `CONTEXT.md` files and `README.md`, not here.
+These are personal, design-time working artifacts. They capture session-, machine- and user-specific context, so they are gitignored and local-only (see the design-time-document rule in `AGENTS.md` [[AGENTS]]). The durable, generic design decisions live in the tracked `CONTEXT.md` files and `README.md` [[README]], not here.
 
 **A document arrives here only when the work it specifies is finished or abandoned, never when it merely stops being read.** A live plan, a history archive of a plan still being built from, and a review baseline whose subject is still under review all stay at the project root until their item is done. A superseded plan is finished for this purpose: the work it specified will never be carried out.
 
@@ -25,9 +25,10 @@ N/A. This is an archive container, not a workflow.
 - `AGENTS.md` [[AGENTS]] - defines the Archiving procedure this directory implements, and the design-time-document rule that makes its contents gitignored and unlisted.
 
 ## Known Issues
-- The archived documents describe the project as it was being designed; they contain planning-phase language by nature and are not maintained. Treat the tracked `CONTEXT.md` files and `README.md` as the current truth.
+- The archived documents describe the project as it was being designed; they contain planning-phase language by nature and are not maintained. Treat the tracked `CONTEXT.md` files and `README.md` [[README]] as the current truth.
 - Archived documents are deliberately never edited to read as current. An archived plan is a record of what was intended, so rewriting it to match today destroys the only thing it is good for. Stale references and superseded instructions inside them are expected, not findings. Where a document could be mistaken for live guidance, it carries a banner at the top saying so; the banner is added on arrival and not revisited afterwards.
 - The boundary between this directory and a workflow's own `archived/` is a judgement call at the margin: a plan that mostly builds one workflow belongs to that workflow even if it touches others. When it is genuinely unclear, ask rather than guess.
 
 ## Revision History
 - 2026-08-13 - Created to give project-level plans an archive destination. The gap it closes was found when a superseded whole-project plan had no owning workflow to be archived into and was renamed in place at the project root instead, which is not an archive. The first document archived here is that plan, superseded by a replacement architecture and never started.
+- 2026-09-05 - An Obsidian link inserted by the link pass, run as the close-out step of unrelated rule-hooks work. Recorded because the file changed rather than because the change is interesting: the link pass edits any CONTEXT.md holding an unlinked backtick path reference, so a directory nobody touched still ends the day with a modified document and its documentation has to move with it.

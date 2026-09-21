@@ -1,6 +1,6 @@
 # Handoff - Tests
 
-**Last modified:** 2026-08-28
+**Last modified:** 2026-09-18
 
 ## Purpose
 Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
@@ -27,7 +27,15 @@ Hermetic unit tests for the handoff gather readers and the seen-watermark logic.
   section-name synonyms, unlabelled findings, `Open questions` as a negative
   control), and `TestUnreadableLabelsAreNeverRenderedAsZero` covers the rendering
   rule that an item the reader cannot label is still counted rather than shown as
-  zero.
+  zero. `TestLabelsCarryingARoundNumber` covers a label that carries a round
+  number (`R13-1`, `F3.2`), which the reader used to truncate to the round and
+  then de-duplicate into a single item, with a control that an unattached dash
+  (`R1 - a description`) is still prose. `TestALabelIsTakenWholeOrNotAtAll`
+  covers the remaining backtrack, where an attached suffix the pattern could not
+  accept made it fall back to a shorter valid label, and the canonical-form
+  reporting that went in with the fix; `TestNonCanonicalLabelsAreRendered` covers
+  that the complaint reaches the packet, including on a packet whose open section
+  has drifted, with a control that an entry carrying no such key is not a crash.
 
 ## Inputs
 None. Tests build their own temporary fixtures (temp dirs and an in-memory-style
@@ -90,3 +98,5 @@ Test results to stdout; exit code 0 on success, non-zero on failure.
   dropping the duplicate-id guard, and dropping the bullet form from the finding
   pattern.
 - 2026-08-28 - Added `TestReviewPacketToleratesAnyPacketShape` and `TestUnreadableLabelsAreNeverRenderedAsZero`, taking the suite from 40 to 50 tests, alongside the reader change that lets a review packet be written in any shape. The regression control is built from the packet that actually broke the mechanism on 2026-08-28 rather than from the new implementation: good / okay / bad sections with findings labelled F1 to F5, which the old reader saw as zero open findings. It is deliberately paired with a control asserting that those free-form sections do not contribute to the counts, because tolerating extra sections is only safe if they are ignored rather than absorbed, and fixing an uncountable packet by inflating the count would trade one wrong number for another. The second class covers the silent half, that unlabelled findings must render their count rather than "0 open", with a counterpart control that a genuinely finished round can still say zero. Both mutations were run: reverting the label pattern to `R<n>` fires five tests, and removing the open-questions guard fires one.
+- 2026-09-18 - Added `TestLabelsCarryingARoundNumber` (50 to 54 tests) for labels that carry a round number, which the reader truncated to the round so that de-duplication merged every finding of a round into one item. The regression control is taken from the real packet that miscounted, twelve addressed findings reported as one, rather than from the new pattern, and the class carries the two controls the widening needs in the other direction: that an unattached dash is still prose, so `R1 - a description` labels `R1` and no finding's text is swallowed, and that a repeated label is still counted once, since de-duplication is the behaviour the fix works through rather than around. Mutation-tested: restoring the old pattern fires all four, a no-op control fires none.
+- 2026-09-18 - Added `TestALabelIsTakenWholeOrNotAtAll` (8 tests) and `TestNonCanonicalLabelsAreRendered` (4), taking the suite from 54 to 66, for R14-3 and the one-canonical-label standard added with it. The two regression controls are the shapes the round-14 review reported, `R13-1a`/`R13-2a` and `R13/1`/`R13-2`, each asserted to count as two items rather than one. The controls run in the direction the widening risks: the canonical forms and an unlabelled finding must raise no complaint, a readable but non-canonical label must still be counted and labelled as well as complained about, and a complaint must never be raised about a bullet the headings-win rule discarded, since a warning naming an item the count does not show sends a reader looking for a finding that is not there. Mutation-tested on both halves: restoring the old pattern fires the three tests pinning the boundary, a canonical rule accepting anything fires the complaint test, one accepting nothing fires the three clean-packet controls, and a respelled no-op control for each fires none.

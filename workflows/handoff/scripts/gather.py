@@ -47,7 +47,45 @@ _TOP_BULLET = re.compile(r"^[-*]\s+(.*)$")
 # so R1, F3 and BUG12 all read. This used to require R<n> specifically, which is
 # why a round labelled F1 to F5 was read as zero findings on 2026-08-28. A label is
 # now optional: the count is what matters, and an unlabelled bullet is a finding.
-_FINDING_LABEL = re.compile(r"^(?:\*\*)?([A-Z]{1,4}\d+)\b")
+#
+# **A round number in the label is part of it.** The pattern stopped at the first
+# run of digits, so a round labelling its findings R13-1, R13-2, ... gave every one
+# of them the label `R13`, and de-duplication then collapsed them into a single
+# item: on 2026-09-18 a packet holding twelve addressed findings reported one, and
+# the same shape would have reported nine open findings as one open. A trailing
+# `-N` or `.N` group is therefore read as part of the label. The dash must be
+# attached, so `R1 - a description` still labels `R1` and its prose is not
+# absorbed.
+#
+# **A label is taken whole or not at all.** `\b` here let the pattern give ground:
+# where a suffix it could not accept was attached, it backtracked to whatever
+# shorter prefix did end on a word boundary, so `R13-1a` and `R13-2a` both matched
+# as `R13` and de-duplication merged two findings into one. That is the same
+# collapse the round-number fix above closed, reached by the one route that fix
+# left open, and it is the dangerous direction: a finding disappears from the
+# count rather than merely losing its label. The trailing class therefore refuses
+# every character a label could have continued with, so an unacceptable suffix
+# fails the match outright and the item is read as unlabelled. An unlabelled item
+# is always counted, and unlabelled items are never de-duplicated, so a malformed
+# label now costs the label and never the finding.
+_FINDING_LABEL = re.compile(
+    r"^(?:\*\*)?([A-Z]{1,4}\d+(?:[-.]\d+)*)(?![A-Za-z0-9._/\-])")
+
+# The one label form a packet is meant to use: one to four uppercase letters, the
+# number, and at most one attached `-N`. `R14-1` for a round-scoped finding, `D9`
+# for an item-scoped running sequence. Anything else - a dotted `F3.2`, a lettered
+# `R13-1a`, a slashed `R13/1`, a second group `R13-1-2` - is reported rather than
+# silently tolerated. The reader still COUNTS what it can read, because a count
+# must never regress over a formatting complaint; the standard is enforced by
+# being visible, not by dropping findings. The rule is stated in
+# `memory/review_process.md`, which is what both the writing and the reviewing AI
+# are pointed at.
+_CANONICAL_LABEL = re.compile(r"^[A-Z]{1,4}\d+(?:-\d+)?$")
+
+# A token that opens like a label, used only to tell "this reviewer wrote a label
+# the reader cannot accept" from "this finding has no label at all". Both are
+# counted identically; only the first is worth complaining about.
+_LABEL_SHAPED = re.compile(r"^(?:\*\*)?([A-Z]{1,4}\d+[A-Za-z0-9._/\-]*)")
 
 # First words that mark a section as the open list or the addressed list. Matched
 # on the first word so a reviewer can write "Open", "Outstanding", "Still to fix",
@@ -300,10 +338,27 @@ def _section_kind(heading_text):
     return None
 
 
-def _finding_label(item_text):
-    """The finding's label if it has one, else None. A label is optional."""
-    hit = _FINDING_LABEL.match(item_text.strip())
-    return hit.group(1) if hit else None
+def _read_label(item_text):
+    """Return `(label, complaint)` for one finding's text.
+
+    `label` is the finding's label, or None where it has none the reader accepts.
+    `complaint` is the raw token to report when the reviewer wrote something
+    label-shaped that is not the canonical form - either a label the reader read
+    but that is spelled some other way, or a token it had to refuse outright. It
+    is None when the item is clean, which covers both a canonical label and a
+    finding with no label at all.
+
+    The two are separate on purpose. Counting must not depend on the spelling, so
+    a non-canonical label is still read wherever it can be; the complaint rides
+    alongside it rather than in place of it.
+    """
+    text = item_text.strip()
+    hit = _FINDING_LABEL.match(text)
+    if hit:
+        label = hit.group(1)
+        return label, (None if _CANONICAL_LABEL.match(label) else label)
+    shaped = _LABEL_SHAPED.match(text)
+    return None, (shaped.group(1) if shaped else None)
 
 
 def _resolve_items(section):
@@ -320,7 +375,7 @@ def _resolve_items(section):
     if section is None:
         return None
     items, seen = [], set()
-    for label in (section["headings"] or section["bullets"]):
+    for label, _complaint in (section["headings"] or section["bullets"]):
         if label is not None:
             if label in seen:
                 continue
@@ -329,8 +384,25 @@ def _resolve_items(section):
     return items
 
 
+def _resolve_complaints(section):
+    """The non-canonical label tokens of the items `_resolve_items` counted.
+
+    Resolved through the same headings-win rule, so a complaint is never raised
+    about a bullet the count discarded: the two answers have to describe the same
+    set of items or the warning points at findings nobody is being shown.
+    """
+    if section is None:
+        return []
+    out = []
+    for _label, complaint in (section["headings"] or section["bullets"]):
+        if complaint and complaint not in out:
+            out.append(complaint)
+    return out
+
+
 def review_packets(project_root):
-    """Return [{item, path, open, addressed}] for every memory/*_review_packet.md.
+    """Return [{item, path, open, addressed, labels_noncanonical}] for every
+    memory/*_review_packet.md.
 
     A review packet holds the findings of the review round currently being worked
     through for one backlog item. This reader exists so a session boundary is never
@@ -357,6 +429,13 @@ def review_packets(project_root):
     rendered as a confident "0 open" rather than as a warning. That is the same
     failure the None case above exists to prevent, reached by a different route.
 
+    `labels_noncanonical` holds the raw tokens of any finding whose label is not
+    the one accepted spelling, including one the reader had to refuse outright. It
+    is reported rather than acted on: the counts above are computed from whatever
+    can be read, so a formatting complaint never costs a finding. Its purpose is
+    to make the standard self-enforcing, since a label form that drifts silently
+    is how a round's findings were merged into one item twice.
+
     Degrades to [] on a missing memory directory, and skips a file it cannot read,
     matching the other readers here - a broken packet never breaks the handoff.
     """
@@ -382,16 +461,21 @@ def review_packets(project_root):
                 continue
             sub = _SUB_HEADING.match(line)
             if sub:
-                found[section]["headings"].append(_finding_label(sub.group(1)))
+                found[section]["headings"].append(_read_label(sub.group(1)))
                 continue
             bullet = _TOP_BULLET.match(line)
             if bullet:
-                found[section]["bullets"].append(_finding_label(bullet.group(1)))
+                found[section]["bullets"].append(_read_label(bullet.group(1)))
+        noncanonical = list(_resolve_complaints(found.get("open")))
+        for token in _resolve_complaints(found.get("addressed")):
+            if token not in noncanonical:
+                noncanonical.append(token)
         packets.append({
             "item": path.name[: -len("_review_packet.md")].replace("_", "-"),
             "path": path.relative_to(project_root).as_posix(),
             "open": _resolve_items(found.get("open")),
             "addressed": _resolve_items(found.get("addressed")),
+            "labels_noncanonical": noncanonical,
         })
     return packets
 
@@ -449,22 +533,38 @@ def build_packet(*, timestamp, branch, status, diffstat, commits, dir_logs,
                     f"- **{entry['item']}:** shape not recognised (no section "
                     f"naming what is still open) - read it rather than trusting a "
                     f"count. Packet: `{entry['path']}`")
-                continue
-            labelled = [i for i in entry["open"] if i]
-            total = len(entry["open"])
-            if total == 0:
-                shown = "none"
-            elif len(labelled) == total:
-                shown = ", ".join(labelled)
-            elif labelled:
-                shown = (f"{len(labelled)} labelled: {', '.join(labelled)}; "
-                         f"{total - len(labelled)} unlabelled")
             else:
-                shown = "unlabelled"
-            done = len(entry["addressed"]) if entry["addressed"] is not None else "?"
-            lines.append(
-                f"- **{entry['item']}:** {total} open ({shown}), "
-                f"{done} addressed. Packet: `{entry['path']}`")
+                labelled = [i for i in entry["open"] if i]
+                total = len(entry["open"])
+                if total == 0:
+                    shown = "none"
+                elif len(labelled) == total:
+                    shown = ", ".join(labelled)
+                elif labelled:
+                    shown = (f"{len(labelled)} labelled: {', '.join(labelled)}; "
+                             f"{total - len(labelled)} unlabelled")
+                else:
+                    shown = "unlabelled"
+                done = (len(entry["addressed"])
+                        if entry["addressed"] is not None else "?")
+                lines.append(
+                    f"- **{entry['item']}:** {total} open ({shown}), "
+                    f"{done} addressed. Packet: `{entry['path']}`")
+            # Raised for both branches, because a packet whose open section has
+            # drifted can still carry mislabelled findings in the section that
+            # did parse, and that is exactly the packet worth complaining about.
+            bad = entry.get("labels_noncanonical") or []
+            if bad:
+                tokens = ", ".join(f"`{token}`" for token in bad)
+                lines.append(
+                    f"  - **Non-canonical finding labels: {tokens}.** The "
+                    f"accepted form is `R<round>-<finding>` (`R14-1`), or a bare "
+                    f"`<LETTERS><number>` (`D9`) for an item-scoped running "
+                    f"sequence. Nothing else is a label. Correct them in the "
+                    f"packet and say so to whoever wrote them: a label the reader "
+                    f"cannot take whole is how findings have twice gone missing "
+                    f"from a count, and the count is the thing a handoff exists "
+                    f"to carry.")
     else:
         lines.append("No review packets in memory/ - no round is part-way through.")
     lines.append("")

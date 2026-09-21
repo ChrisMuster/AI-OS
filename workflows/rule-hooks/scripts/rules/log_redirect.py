@@ -9,16 +9,26 @@ an argument is not matched.
 """
 
 import os
+import re
 
 from core import Decision, format_block, shell_write_targets
 
 RULE_ID = "A4"
 
+# The file must BE a log, not merely end in those five letters. `endswith`
+# matched `backlog.md`, `CHANGELOG.md`, `dialog.md` and `prolog.md`, which
+# mattered because `memory/backlog.md` is a live project file and AGENTS.md
+# documents restoring it from `memory/backlog-backups/`: that exact recovery
+# command was blocked, with a message telling the user to use the append-only
+# LOG.md entry format, which is the wrong advice for that file. A separator
+# before the word is what distinguishes `session-log.md` from `backlog.md`.
+_LOG_NAME_RE = re.compile(r"(?:^|[-_.])log\.md$", re.IGNORECASE)
+
 
 def _targets_logmd(command):
     for target in shell_write_targets(command):
         basename = os.path.basename(target.replace("\\", "/"))
-        if basename.lower().endswith("log.md"):
+        if _LOG_NAME_RE.search(basename):
             return basename
     return None
 

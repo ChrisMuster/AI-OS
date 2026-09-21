@@ -1,6 +1,6 @@
 # Handoff
 
-**Last modified:** 2026-08-27
+**Last modified:** 2026-09-18
 
 ## Purpose
 Clean session-to-session transitions for Book Dragon. When the user ends a working
@@ -141,3 +141,29 @@ child #4.
   was lost. Both were gitignored under the design-time-document rule, so nothing
   had been published. The Contents section already described `archived/` as the
   plan's location and needed no change; it was the tree that disagreed with it.
+- 2026-09-18 - The packet's review-findings reader now keeps a round number that
+  is part of a finding's label (`R13-1`, `F3.2`) rather than truncating it to the
+  round. The truncated form gave every finding in a round the round's own label,
+  and the de-duplication that follows collapsed them into one item: a real packet
+  holding twelve addressed findings reported one, and the same shape would have
+  reported nine open findings as "1 open", which reads as almost nothing left to
+  do at the moment a round is outstanding. It was found by reading a count back
+  while preparing a handover, not by any check, and the first response was to work
+  around it by renaming the findings in the packet; the user's call was to fix the
+  reader instead, which is the right level because every future packet inherits
+  it. The rule the reader implements is stated in `memory/review_process.md`,
+  corrected in the same pass so the documented form and the code agree. Tests 50
+  to 54.
+- 2026-09-18 - The same collapse was still reachable through an attached suffix
+  the label pattern could not accept, which made it fall back to a shorter valid
+  label, so `R13-1a` and `R13-2a` both read as `R13` and merged. A label is now
+  taken whole or not at all, which changes the failure direction: a bad label
+  costs the label, never the finding. The user's response to a second defect of
+  the same shape was to remove the variation rather than widen the pattern again,
+  so the packet format now has **one** canonical label form and no other,
+  `R<round>-<finding>` or a bare `<LETTERS><number>`, defined in
+  `memory/review_process.md` and reported against by name in the gather packet
+  when something else appears. The reporting is what makes the standard hold: a
+  convention with no mechanical voice is what drifted twice. It complains without
+  ever changing a count, because a formatting fault must not cost a finding.
+  Tests 54 to 66.

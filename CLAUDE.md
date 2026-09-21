@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-**Last updated:** 2026-06-28
+**Last updated:** 2026-09-05
 
 ## CRITICAL — Rule compliance
 
@@ -58,6 +58,8 @@ These are the Claude Code tools that map to the abstract tool references in AGEN
 - **Create new files:** Write tool
 - **List directory contents:** Glob tool
 - **Run shell commands:** Bash tool (default) or PowerShell tool (see shell rules above)
+
+**This is enforced, not trusted.** Rule A3 in the `rule-hooks` workflow [[workflows/rule-hooks/CONTEXT]] blocks a shell command that reads a file with `cat`, `sed`, `find`, `grep`, `head` or `tail` when the command names a file that actually exists, which is the test that separates reading a file from filtering a command's output: `build | grep pattern` has no dedicated-tool equivalent and stays allowed. A wrapper, a shell keyword, a substitution or a `sh -c` string does not get around it. One allowance: a search whose pattern is a byte or control-character escape (`$'\r'`, `\t`, `\x0d`) is allowed and logged, because the dedicated tools cannot express it and this project's own rules require byte-level checks for line endings and encoding. Rule A9 blocks the matching write: inline interpreter code (after `-c`, or in a heredoc the interpreter opened) that writes a markdown file or `.env`. If either fires, the fix is the tool named in the block message, not a way around it.
 
 ### Permission prompt handling
 
