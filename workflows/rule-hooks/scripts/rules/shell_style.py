@@ -23,6 +23,17 @@ same session the wrong-tool habit put a personal name into a publicly tracked
 file, because the write went through a shell interpreter and so never reached
 the B3 personal-data check that guards the Edit and Write tools.
 
+**That figure of 75 is not verifiable and never will be, recorded 2026-09-21.**
+The suite had been writing into the real fire-log since the store was created,
+and A3's warn rows carried no `command` field until this date, so its 4,533 rows
+at that point could not be attributed to real work or to a fixture by any
+method. The promotion is left standing rather than revisited, because it never
+rested on the count alone: the personal-name incident in the paragraph above is
+a specific event, and A3 has blocked for three weeks since with no false block
+reported. The count is recorded as unusable rather than quietly relied on, and
+the next rule promoted from trial must take its evidence from a store whose rows
+can be read - which the `command` field added on 2026-09-21 now allows.
+
 So the rule now asks a sharper question: **does this command name a file that
 actually exists?** If it does, it is reading a file and a dedicated tool applies.
 If it does not, it is reading standard input and no tool could have done it.

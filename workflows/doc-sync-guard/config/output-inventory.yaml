@@ -237,8 +237,9 @@ rows:
     doc_sync: E11
     provenance: ["sweep-1", "sweep-2", "sweep-3"]
 
-  - path: "workflows/rule-hooks/fire-log.jsonl"
+  - path: "workflows/rule-hooks/fire-log*.jsonl"
     assertion: assert-ignored
+    example: "workflows/rule-hooks/fire-log-archive-2026-01-01.jsonl"
     seed: true
     doc_sync: E11
     provenance: ["sweep-1", "sweep-2", "sweep-3"]

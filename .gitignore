@@ -109,8 +109,11 @@ workflows/reddit-collector/Stop *.bat
 workflows/reddit-collector/.reader_server.pid
 
 # rule-hooks fire-log: runtime, machine-specific record of trial-rule fires and
-# blocks. Infrastructure, not a logged workflow run - never committed.
-workflows/rule-hooks/fire-log.jsonl
+# blocks. Infrastructure, not a logged workflow run - never committed. The glob
+# covers dated archives of the store alongside the live one: the rows record the
+# commands that fired, which carry real filesystem paths, so an archive under a
+# name this line did not reach would be committable.
+workflows/rule-hooks/fire-log*.jsonl
 
 # Design-time documents (plans, handovers, proposals, roadmaps, briefs) are personal
 # working artifacts — never committed. They routinely capture machine-, session-,

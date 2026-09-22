@@ -49,7 +49,16 @@ from rules import rules_for  # noqa: E402
 WORKFLOW_DIR = SCRIPT_DIR.parent
 # Script-relative fallback root: scripts -> rule-hooks -> workflows -> project.
 SCRIPT_RELATIVE_ROOT = SCRIPT_DIR.parent.parent.parent
-FIRE_LOG = WORKFLOW_DIR / "fire-log.jsonl"
+# Overridable so a test that runs this file as a SUBPROCESS can redirect it. An
+# in-process test monkeypatches this constant; a child process has its own
+# memory and re-resolves it from the script's location, so the patch cannot
+# reach it - which is how the suite came to write thousands of fixture rows into
+# the real store and corrupt the evidence base it exists to provide.
+# An environment variable rather than a CLI flag because it is read at import,
+# before any writer can fire: one of the four writers is the crash handler in
+# main(), which can fire before argument parsing has happened.
+FIRE_LOG = Path(os.environ.get("BOOK_DRAGON_FIRE_LOG")
+                or WORKFLOW_DIR / "fire-log.jsonl")
 
 REMINDER = """[Book Dragon - rule reminders re-injected at session start]
 - Permission gate: present your plan and wait for an explicit "go ahead" before
@@ -190,8 +199,13 @@ def run_ai(ai_id, raw_text):
 
     block, warns = evaluate(ctx)
     for warn in warns:
+        # `command` is carried so a warn row can be attributed. Without it the
+        # A3 byte-level allowance could be counted but never inspected, which
+        # made this module's own claim - that the fire-log shows "whether it is
+        # being used as a loophole" - false about its own store.
         fire_log({"event": "warn", "ai": ai_id, "rule": warn.rule,
-                  "tool": ctx.tool_name, "reason": warn.reason})
+                  "tool": ctx.tool_name, "reason": warn.reason,
+                  "command": ctx.command})
     if block is not None:
         fire_log({"event": "block", "ai": ai_id, "rule": block.rule,
                   "tool": ctx.tool_name,

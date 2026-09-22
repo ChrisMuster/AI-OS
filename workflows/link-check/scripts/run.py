@@ -137,11 +137,44 @@ def resolve_link_target(raw: str) -> str | None:
 # ---------------------------------------------------------------------------
 # --link mode
 # ---------------------------------------------------------------------------
-def process_line(line: str) -> tuple[str, list[str]]:
+def own_link_target(context_path: Path) -> str:
+    """The [[link]] target that points at *context_path* itself.
+
+    `workflows/foo/CONTEXT.md` -> `workflows/foo/CONTEXT`.
+    """
+    return rel(context_path)[:-3]  # strip ".md"
+
+
+def strip_self_links(line: str, own_target: str) -> tuple[str, list[str]]:
+    """Remove links pointing at the file the line sits in.
+
+    The inserted form is a single space then the link, so removing both closes
+    the line up exactly as it stood before the insertion; the unspaced form is
+    removed too in case one was written by hand.
+    """
+    token = f"[[{own_target}]]"
+    if token not in line:
+        return line, []
+    count = line.count(token)
+    result = line.replace(" " + token, "").replace(token, "")
+    return result, [f"removed self-link {token}"] * count
+
+
+def process_line(line: str, own_target: str) -> tuple[str, list[str]]:
     """
     Add [[links]] after backtick path references that don't already have one.
     Returns (modified_line, list_of_descriptions).
     Processes right-to-left so inserted text doesn't shift remaining positions.
+
+    A reference resolving to the containing file's own target is skipped. That
+    is not a rare case: `resolve_link_target` sends a non-.md file to its parent
+    directory's CONTEXT.md, and a Contents entry naming a file in its own
+    directory is the commonest shape of a Contents line in this project, so the
+    default outcome was a link from a file to itself. 170 of them had
+    accumulated across 63 of 143 CONTEXT.md files by 2026-09-21, a fifth of
+    every link present. The knowledge-graph indexer already refuses the same
+    edge (`builder.py`, `target == source_id`), so this makes the two components
+    answer one question the same way rather than inventing a rule.
     """
     insertions: list[tuple[int, str]] = []
     descriptions: list[str] = []
@@ -155,6 +188,9 @@ def process_line(line: str) -> tuple[str, list[str]]:
         target = resolve_link_target(raw)
         if target is None:
             continue
+
+        if target == own_target:
+            continue  # a link from a file to itself navigates nowhere
 
         full_link = f"[[{target}]]"
         if full_link in line:
@@ -173,16 +209,31 @@ def process_line(line: str) -> tuple[str, list[str]]:
     return result, descriptions
 
 
-def add_links_to_file(context_path: Path, dry_run: bool) -> list[str]:
+def add_links_to_file(context_path: Path,
+                      dry_run: bool) -> tuple[list[str], list[str]]:
     """
-    Process one CONTEXT.md file, inserting [[links]] where missing.
-    Returns a list of change descriptions (empty = no changes).
+    Process one CONTEXT.md file, inserting [[links]] where missing and removing
+    any that point at the file itself. Returns (insertions, self_links_removed);
+    both empty means the file was left alone.
+
+    **A removal never earns a write on its own, and that is the whole of the
+    cleanup policy.** Stripping every self-link in the project would rewrite 63
+    tracked CONTEXT.md files in one pass, and each of those directories would
+    then owe a Revision History entry and a LOG.md entry or doc-sync-guard fails
+    close-out - a large documentation cost for links the knowledge graph already
+    ignores. So removals ride along only in a file this pass was already going
+    to rewrite for an insertion, where that cost is already being paid. The
+    limitation is real and stated rather than hidden: a file whose only
+    candidate references point at itself will never earn an insertion again, so
+    its existing self-links stay until something else edits it.
     """
+    own_target = own_link_target(context_path)
     content = context_path.read_text(encoding="utf-8")
     lines = content.splitlines(keepends=True)
 
     new_lines: list[str] = []
     all_changes: list[str] = []
+    removals: list[str] = []
     in_code_block = False
     in_revision_history = False
 
@@ -207,15 +258,23 @@ def add_links_to_file(context_path: Path, dry_run: bool) -> list[str]:
             new_lines.append(line)
             continue
 
-        new_line, changes = process_line(line)
+        line, removed = strip_self_links(line, own_target)
+        removals.extend(removed)
+
+        new_line, changes = process_line(line, own_target)
         new_lines.append(new_line)
         all_changes.extend(changes)
 
-    if all_changes and not dry_run:
+    if not all_changes:
+        # Nothing to insert, so nothing is written and any removal computed
+        # above is discarded with the rest of the transformed content.
+        return [], []
+
+    if not dry_run:
         with context_path.open("w", encoding="utf-8", newline="\n") as fh:
             fh.write("".join(new_lines))
 
-    return all_changes
+    return all_changes, removals
 
 
 def run_link_mode(dry_run: bool) -> tuple[str, int, int]:
@@ -225,16 +284,18 @@ def run_link_mode(dry_run: bool) -> tuple[str, int, int]:
     files = collect_context_files()
     files_changed = 0
     links_added = 0
+    links_removed = 0
     sections: list[str] = []
 
     for f in files:
-        changes = add_links_to_file(f, dry_run)
+        changes, removals = add_links_to_file(f, dry_run)
         if changes:
             files_changed += 1
             links_added += len(changes)
+            links_removed += len(removals)
             prefix = "[DRY RUN] " if dry_run else ""
             block = [f"### {rel(f)}"]
-            for c in changes:
+            for c in changes + removals:
                 block.append(f"- {prefix}{c}")
             block.append("")
             sections.append("\n".join(block))
@@ -245,6 +306,10 @@ def run_link_mode(dry_run: bool) -> tuple[str, int, int]:
         if links_added
         else "No links to add — all path references are already linked."
     )
+    if links_removed:
+        removed_verb = "Would remove" if dry_run else "Removed"
+        summary += (f" {removed_verb} {links_removed} self-link(s) from those "
+                    f"files, which are the only files this pass rewrote.")
 
     report_lines = [
         "# Book Dragon — Link Check: Link Mode",

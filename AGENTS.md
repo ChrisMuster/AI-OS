@@ -146,7 +146,7 @@ The CONTEXT.md close-out review covers every `CONTEXT.md` created or modified in
 
 After the CONTEXT.md close-out review:
 
-1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run - it is idempotent and only adds links that are not already present.
+1. Run the link pass (`python workflows/link-check/scripts/run.py --link`) to wire any new directories into the Obsidian knowledge graph. This is always safe to run - it is idempotent, it adds only links that are not already present, and the one thing it removes is a link pointing at the file it sits in, which navigates nowhere and which the knowledge graph already discards. A removal never causes a write on its own, so it only ever tidies a file the pass was already rewriting.
 2. Run the close-out verifier (`python workflows/close-out/scripts/run.py --scope all`). It bundles the structural audit (which also validates the structural knowledge graph, surfacing any broken reference, orphan, or uncontained directory under a `knowledge-graph` label) with the workflow test suites and returns one pass/fail result. Running the audit on its own (`python workflows/audit/scripts/run.py`) is still fine for a quick structural-only check mid-task.
 
 A clean verifier and all other applicable checks are required before the work is ready for staging.

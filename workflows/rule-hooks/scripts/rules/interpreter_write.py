@@ -57,6 +57,7 @@ test. The fail directions are not symmetrical: a wrong block costs one retry
 against a message naming the right tool, and a wrong allow costs what happened
 on 2026-09-02.
 """
+import ast
 import re
 
 from core import (
@@ -290,6 +291,154 @@ _KEYWORD_TARGET_RE = re.compile(r"""^(\w+)\s*=(?!=)\s*(.*)$""", re.DOTALL)
 # destination of `shutil.copy(src, dst=...)`.
 _PATH_KEYWORDS = {"file", "dst", "path", "filename"}
 
+# Python joins adjacent string literals at compile time, so
+# `open('notes.' 'md', 'w')` writes `notes.md` while no `.md` text exists
+# anywhere in the code for the computed-target fallback below to find. The same
+# holds for three or more parts, for a split across a newline, and for `.env`.
+#
+# **The shape is refused rather than joined.** Joining was the alternative and
+# is what the backlog item proposed, but it means lexing the parts exactly as
+# Python does - both quote styles, escapes, the r/b/u prefixes, triple quotes -
+# and every difference between that and the real lexer is a fresh way through
+# the hole being closed. That is the argument that ended the A6 `find -delete`
+# series and settled A10, and it applies here for the same reason: a refusal
+# reads nothing, so it cannot be wrong about what the parts spell.
+#
+# The accepted cost is that a split literal naming a NON-document is refused
+# too. It was measured before being accepted: across 27,278 indexed transcript
+# messages spanning 2026-05-18 to 2026-09-21, every occurrence of this shape in
+# the project's history is the review that reported it, and there is no instance
+# of real use. A measured false block on ordinary work is the signal to revisit
+# it.
+#
+# **Since 2026-09-22 this is the backstop, not the main check.** For code the
+# Python parser accepts, `_hidden_documents` below answers the question
+# definitively and runs first; this regex still catches the whitespace join in
+# code the parser rejects, and in ruby, which also joins adjacent literals.
+_ADJACENT_LITERALS_RE = re.compile(
+    r"""(?<!\w)(?:[rRbBuU]|[rR][bB]|[bB][rR])?(['"])[^'"]*\1"""
+    r"""\s*(?:[rRbBuU]|[rR][bB]|[bB][rR])?(['"])[^'"]*\2""")
+
+
+def _splits_a_literal(text):
+    """True when *text* holds two quoted literals joined by whitespace only.
+
+    Whitespace is the whole test, and that is deliberate. `"%s.md" % "notes"`
+    carries an operator between its literals, is genuinely assembled at
+    runtime, and must keep going to the computed-target fallback that exists
+    for exactly that shape rather than being refused here. An `f` prefix is
+    absent from the prefix set for the same reason it is absent from
+    `_LITERAL_RE`: an f-string is computed, so `f"{x}" "y"` stays a computed
+    target.
+    """
+    return bool(text) and _ADJACENT_LITERALS_RE.search(text) is not None
+
+
+# The part of a string a document test is asked of: the run of filename
+# characters at its end, after the last path separator. Bounded for the same
+# reason `_MD_RE` is.
+_TRAILING_NAME_RE = re.compile(r"[\w.-]{1,200}$")
+
+# One source line with its ending. Python's tokenizer ends a line at `\r\n`,
+# `\r` or `\n` and nowhere else, which is why `str.splitlines` is not used: it
+# also splits at form feeds and several Unicode separators, and would number
+# the lines differently from the parser.
+_SOURCE_LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$")
+
+
+class _SourceText:
+    """A node's own source text, with the line table built once per program.
+
+    `ast.get_source_segment` re-splits the whole program on every call, so a
+    script holding many document-named strings cost quadratic time: measured
+    at 5.08 seconds for 2,000 of them in 65,000 characters, which is past the
+    hook's budget, and a hook that runs out of time has allowed the command.
+    Node columns are UTF-8 byte offsets, so each line is encoded, once, before
+    it is sliced.
+    """
+
+    def __init__(self, code):
+        self.lines = _SOURCE_LINE_RE.findall(code)
+        self.encoded = {}
+
+    def _line(self, index):
+        if index not in self.encoded:
+            self.encoded[index] = self.lines[index].encode("utf-8")
+        return self.encoded[index]
+
+    def of(self, node):
+        """The text *node* was parsed from, or None if it cannot be located."""
+        try:
+            first, last = node.lineno - 1, node.end_lineno - 1
+            if first == last:
+                return self._line(first)[
+                    node.col_offset:node.end_col_offset].decode("utf-8")
+            return (self._line(first)[node.col_offset:].decode("utf-8")
+                    + "".join(self.lines[first + 1:last])
+                    + self._line(last)[:node.end_col_offset].decode("utf-8"))
+        except (AttributeError, IndexError, TypeError, UnicodeDecodeError):
+            return None
+
+
+def _hidden_documents(code):
+    """Document names Python builds in *code* that its source never spells out.
+
+    **Asked of Python's own parser, which is what makes it definitive.** The
+    regex refusal above recognises one join, whitespace, and review found the
+    rest of the family it could not see (PP1, 2026-09-22): a comment between
+    the parts, a backslash continuation, a part holding the other quote
+    character, and single literals with no join at all - `'notes\\x2emd'` and
+    `'notes\\N{FULL STOP}md'` hide the dot behind an escape. Each is a place
+    where a hand-written reading of Python differs from the real one, and
+    listing them would have been the same defect again. The parser has no such
+    difference to exploit: it is the reader that runs the code, so it hands back
+    every string exactly as Python will use it, with the parts joined, comments
+    and continuations dropped and escapes decoded, whatever the spelling.
+
+    It is still a refusal rather than an assembly. Nothing is inferred about
+    what the code writes, which is why this runs before the write shapes are
+    consulted: one of the spellings (a comma inside the comment) stops those
+    shapes recognising the call as a write at all. The cost is that a read
+    spelled the same way is refused too, measured before it was accepted: read
+    as though it were inline code, no tracked Python file spells a document
+    name this way, and the transcript measurement recorded above for the
+    adjacent-literal shape found no real use of it.
+
+    Only the filename at the END of the string is compared, and only against
+    that string's own source text. Comparing the whole string refused
+    `print("\\nwrote notes.md")` and an escaped Windows path, whose filenames
+    are written out in full; the question is whether the document's name is
+    visible to a reader of the text, not whether every character is.
+
+    Returns None when *code* is not something the parser accepts, so the caller
+    keeps the rule's other checks as they were, and a list otherwise.
+    """
+    try:
+        tree = ast.parse(code)
+    except Exception:  # noqa: BLE001 - any failure means "not readable as Python"
+        return None
+    source = _SourceText(code)
+    hidden = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant):
+            continue
+        value = node.value
+        if isinstance(value, bytes):
+            value = value.decode("latin-1")
+        if not isinstance(value, str):
+            continue
+        last = value.replace("\\", "/").rsplit("/", 1)[-1]
+        name = _TRAILING_NAME_RE.search(last)
+        if name is None or not _is_document(name.group(0)):
+            continue
+        name = name.group(0)
+        # Only this string's own text is searched. Searching the whole program
+        # first looked like a cheap shortcut and was the opposite: one pass over
+        # everything per string is quadratic in a script full of paths.
+        if name not in (source.of(node) or code):
+            hidden.append(name)
+    return hidden
+
 
 def _follows_a_dot(code, index):
     """True when the text before *index* ends in a dot, ignoring spaces.
@@ -481,8 +630,18 @@ def _takes_stdin_as_code(argv):
     return _read_interpreter_options(argv)[1]
 
 
-def _inline_code(command, segments, _depth=0):
-    """The interpreter code carried in the command text, or "".
+def _inline_code(command, segments):
+    """The interpreter code carried in the command text, or ""."""
+    return "\n".join(_inline_chunks(command, segments))
+
+
+def _inline_chunks(command, segments, _depth=0):
+    """The interpreter code carried in the command text, one entry per program.
+
+    Kept apart rather than only joined because `_hidden_documents` asks the
+    parser about each program separately: two programs joined with a newline
+    are rarely one valid Python module, and a parse failure there would hide a
+    python chunk behind a node one.
 
     Only the code itself, never the whole command line. Scanning the whole line
     treats anything sitting beside an interpreter as though the interpreter had
@@ -520,10 +679,10 @@ def _inline_code(command, segments, _depth=0):
                 inner = split_segments(carried)
                 if inner is None:
                     continue
-                nested_code = _inline_code(carried, inner, _depth + 1)
-                if nested_code.strip():
-                    chunks.append(nested_code)
-    return "\n".join(chunks)
+                chunks.extend(chunk for chunk in
+                              _inline_chunks(carried, inner, _depth + 1)
+                              if chunk.strip())
+    return chunks
 
 
 def _clean_target(target):
@@ -695,7 +854,14 @@ def _receiver_before(code, end):
 
 
 def _writes(code):
-    """One entry per write call: its literal target, or None if computed.
+    """Return (targets, splits).
+
+    `targets` holds one entry per write call: its literal target, or None if
+    computed. `splits` holds the target text of any write whose target is
+    spelled as adjacent string literals, which A9 refuses rather than
+    assembling - see `_splits_a_literal`. It is collected here rather than by a
+    second scan of the code, because two walks over the same patterns are free
+    to disagree, which is the defect shape this rule's own history is made of.
 
     A write onto a non-file receiver is not a write at all and is left out
     entirely rather than recorded with an unreadable target: recording it sent
@@ -712,6 +878,7 @@ def _writes(code):
         return mode is None or _permits_writing(mode)
 
     found = []
+    splits = []
     for match in _RECEIVER_CALL_RE.finditer(code):
         if not writes_here(match):
             continue
@@ -723,7 +890,10 @@ def _writes(code):
             # A file-first `open`, so what matched as a mode is the PATH. The
             # `open(target, mode)` pattern reads this same call properly.
             continue
-        literal = _LITERAL_RE.match(receiver.strip())
+        receiver_text = receiver.strip()
+        literal = _LITERAL_RE.match(receiver_text)
+        if literal is None and _splits_a_literal(receiver_text):
+            splits.append(receiver_text)
         found.append(literal.group(2) if literal else None)
     for pattern, already_unquoted in _WRITE_CALL_RES:
         for match in pattern.finditer(code):
@@ -751,8 +921,10 @@ def _writes(code):
             elif literal:
                 found.append(literal.group(2))
             else:
+                if _splits_a_literal(raw):
+                    splits.append(raw)
                 found.append(None)
-    return found
+    return found, splits
 
 
 def check(ctx):
@@ -766,13 +938,48 @@ def check(ctx):
     if not interpreters:
         return None
 
-    code = _inline_code(ctx.command, segments)
+    chunks = _inline_chunks(ctx.command, segments)
+    code = "\n".join(chunks)
     if not code.strip():
         return None
 
-    writes = _writes(code)
+    for chunk in chunks:
+        # Asked before the write shapes, because it does not depend on them:
+        # see `_hidden_documents` for why a spelling that hides the name can
+        # also hide the write.
+        hidden = _hidden_documents(chunk)
+        if hidden:
+            return Decision.block(A9_ID, format_block(
+                f"inline {posix_basename(interpreters[0][0])} code that builds "
+                f"the document name {hidden[0]} without writing it out",
+                "Python assembles this string from pieces, escapes or "
+                "comments, so the command's text never spells the name it "
+                "produces. A name no reader of the command can see is refused "
+                "whether it is written or read, because a spelling that hides "
+                "the name can also hide the write.",
+                "write the filename as a single literal, spelled out in full. "
+                "If it names a project document, use the Edit tool on it "
+                "instead."))
+
+    writes, splits = _writes(code)
     if not writes:
         return None
+
+    if splits:
+        # Refused before the literal/computed branch below, because a split
+        # target reaches that branch as "computed" and the fallback then looks
+        # for contiguous `.md` text this spelling never produces, which is the
+        # bypass itself.
+        return Decision.block(A9_ID, format_block(
+            f"inline {posix_basename(interpreters[0][0])} code whose write "
+            f"target is split across adjacent string literals: {splits[0]}",
+            "Python joins adjacent string literals at compile time, so a "
+            "filename spelled this way names a file that no text in the "
+            "command contains. The shape is refused rather than assembled, "
+            "because assembling it means matching Python's own lexer exactly "
+            "and any difference between the two is a way through.",
+            "write the filename as a single literal. If it names a project "
+            "document, use the Edit tool on it instead."))
 
     if all(target is not None for target in writes):
         # Every write names its target literally, so the question can be asked

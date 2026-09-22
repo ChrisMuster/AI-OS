@@ -43,6 +43,52 @@ import run as run_mod  # noqa: E402
 from adapters import claude as claude_adapter  # noqa: E402
 from adapters import codex as codex_adapter  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Fire-log containment. This block must sit above every test in the file.
+# ---------------------------------------------------------------------------
+# The suite must never append to the real fire-log. That store is read as
+# evidence for decisions such as promoting a trial rule to blocking, and a
+# fixture row is indistinguishable from a genuine fire, so contaminating it
+# corrupts the evidence rather than merely adding noise. Measured on 2026-09-21,
+# before this containment existed: 15,827 rows, of which 2,096 were the A6
+# fixture `rm -rf x` and 1,092 the A7 fixture `cp secrets.txt .env`.
+#
+# TWO channels have to be closed, and closing one looks exactly like closing
+# both, which is why this went unnoticed for three months:
+#   * in-process - a test calls evaluate / run_ai / main / _precommit_doc_sync,
+#     so the module constant is repointed here;
+#   * subprocess - a test launches run.py as its own program, which re-resolves
+#     that constant in its own memory, so a monkeypatch cannot reach it. run.py
+#     reads BOOK_DRAGON_FIRE_LOG at import, and setting it in os.environ means
+#     every child inherits it (including the one place that builds its own env,
+#     which spreads os.environ).
+#
+# Done once at module level rather than per test, deliberately: a per-test
+# redirect is a rule every future test author has to remember, and the test that
+# forgets is the test that writes.
+REAL_FIRE_LOG = SCRIPTS.parent / "fire-log.jsonl"
+FIRE_LOG_SINK = Path(tempfile.mkdtemp(prefix="rule-hooks-fire-log-")) / "fire-log.jsonl"
+run_mod.FIRE_LOG = FIRE_LOG_SINK
+os.environ["BOOK_DRAGON_FIRE_LOG"] = str(FIRE_LOG_SINK)
+
+# Recorded before any test runs so tearDownModule can prove the real store did
+# not move. This is the runtime half of the guarantee and it observes what the
+# source-level check cannot: the source check proves the redirects are written,
+# this proves they worked.
+_REAL_FIRE_LOG_SIZE_AT_IMPORT = (
+    REAL_FIRE_LOG.stat().st_size if REAL_FIRE_LOG.exists() else None)
+
+
+def tearDownModule():
+    """Fail the run if anything in it appended to the real fire-log."""
+    after = REAL_FIRE_LOG.stat().st_size if REAL_FIRE_LOG.exists() else None
+    if after != _REAL_FIRE_LOG_SIZE_AT_IMPORT:
+        raise AssertionError(
+            "the suite wrote to the real fire-log at {}: {} -> {} bytes. Both "
+            "redirect channels must be in place - see the fire-log containment "
+            "block at the top of this file.".format(
+                REAL_FIRE_LOG, _REAL_FIRE_LOG_SIZE_AT_IMPORT, after))
+
 
 def shell_ctx(command, ai="claude"):
     return Context(ai_id=ai, category="shell", tool_name="Bash",
@@ -63,6 +109,12 @@ def a9_permits(mode):
     """A9's write-mode predicate, reached without importing the rule by path."""
     from rules.interpreter_write import _permits_writing
     return _permits_writing(mode)
+
+
+def a9_splits_a_literal(text):
+    """A9's adjacent-string-literal predicate, reached the same way."""
+    from rules.interpreter_write import _splits_a_literal
+    return _splits_a_literal(text)
 
 
 def local_module_for(source_dir, name):
@@ -1977,6 +2029,289 @@ class TestWrapperOptions(unittest.TestCase):
                 self.assertIsNone(block, command)
 
 
+class TestA9AdjacentStringLiterals(unittest.TestCase):
+    """R14-5: Python glues adjacent string literals at compile time, so
+    `open('notes.' 'md', 'w')` writes notes.md while no `.md` text exists in the
+    command for the computed-target fallback to find.
+
+    The shape is REFUSED rather than assembled, at the user's decision on
+    2026-09-21 under the triage rule in memory/review_process.md. The
+    measurement that settled it: across 27,278 indexed transcript messages
+    spanning 2026-05-18, every occurrence of this shape in the project's history
+    is the review that reported it, so nothing has ever written one. Assembling
+    the parts instead would mean matching Python's own lexer exactly, and every
+    difference is a fresh way through - the argument that ended the A6
+    `find -delete` series and settled A10.
+
+    Half the class is controls, for the usual reason: the fix widens what A9
+    blocks, and a false block is what gets a hook routed around. The controls
+    carry the boundary of a refusal that never reads what it refuses, so what
+    holds it to its intended width is the set of shapes that must NOT be read as
+    a split."""
+
+    SPLIT_MD = "python -c \"open('notes.' 'md', 'w').write('x')\""
+    SPLIT_WRITE_TEXT = ("python -c \"from pathlib import Path; "
+                        "Path('notes.' 'md').write_text('x')\"")
+    SPLIT_ENV = "python -c \"open('.' 'env', 'w').write('X=1')\""
+    SPLIT_THREE = "python -c \"open('notes' '.' 'md', 'w').write('x')\""
+    SPLIT_NEWLINE = "python -c \"open('notes.'\n'md', 'w').write('x')\""
+
+    def test_split_literals_are_refused(self):
+        for command, label in (
+                (self.SPLIT_MD, "builtin open"),
+                (self.SPLIT_WRITE_TEXT, "Path.write_text receiver"),
+                (self.SPLIT_ENV, "the .env spelling"),
+                (self.SPLIT_THREE, "three parts rather than two"),
+                (self.SPLIT_NEWLINE, "split across a newline")):
+            with self.subTest(label=label):
+                block, _ = decision_for(shell_ctx(command))
+                self.assertIsNotNone(block, label)
+                self.assertEqual(block.rule, "A9", label)
+
+    def test_the_block_message_names_the_single_literal_remedy(self):
+        """A refusal has to carry the manual path, or it is a dead end. The
+        remedy for this shape is not the Edit tool alone: the caller has to
+        respell the filename before any advice about tools applies."""
+        block, _ = decision_for(shell_ctx(self.SPLIT_MD))
+        self.assertIn("single literal", block.reason)
+
+    def test_accepted_cost_a_split_non_document_is_refused_too(self):
+        """Pinned as a decided trade rather than left to be rediscovered as a
+        defect. The refusal never reads what the parts spell, so it cannot tell
+        `.txt` from `.md`; that is the whole reason it cannot be wrong about a
+        meaning. Recorded in the owning workflow's Known Issues."""
+        block, _ = decision_for(shell_ctx(
+            "python -c \"open('notes.' 'txt', 'w').write('x')\""))
+        self.assertIsNotNone(block)
+        self.assertEqual(block.rule, "A9")
+
+    def test_control_contiguous_targets_still_block(self):
+        """The ordinary spellings must not move. A refusal added in front of the
+        literal/computed branch could shadow it."""
+        for command in (
+                "python -c \"open('notes.md', 'w').write('x')\"",
+                "python -c \"open('.env', 'w').write('X=1')\""):
+            with self.subTest(command=command):
+                block, _ = decision_for(shell_ctx(command))
+                self.assertIsNotNone(block, command)
+                self.assertEqual(block.rule, "A9", command)
+
+    def test_the_backstop_asks_the_mode_before_the_split_question(self):
+        """The regex refusal is consulted only for a call already judged a
+        write, so a read carrying the split spelling does not reach it.
+
+        **Changed on 2026-09-22, and the change is the point.** This was a
+        control asserting that the read is allowed. Since PP1 the parser-based
+        check refuses a hidden document name whether it is written or read, as
+        a decided cost, so for code Python can parse the read now blocks, which
+        `TestA9HiddenDocumentNames` pins. What stays true is the backstop's own
+        ordering, and that is only observable in code the parser rejects: the
+        trailing `)` below makes it a syntax error, so the regex is the only
+        check left, and it must still let a read through."""
+        block, _ = decision_for(shell_ctx(
+            "python -c \"print(open('notes.' 'md', 'r').read()))\""))
+        self.assertIsNone(block)
+        block, _ = decision_for(shell_ctx(
+            "python -c \"print(open('notes.' 'md', 'r').read())\""))
+        self.assertIsNotNone(block)
+        self.assertIn("without writing it out", block.reason)
+
+    def test_control_adjacent_literals_outside_a_target_are_allowed(self):
+        """Two literals side by side are ordinary Python - a regex built in
+        parts, for instance. Only a write call's TARGET is refused.
+
+        The specimen carries a real write beside the adjacent literals, and that
+        is the whole point of it. The obvious version, code with no write at all,
+        cannot fail: `check` returns on `if not writes` before the refusal is
+        ever consulted, so it passes whether the scope is the target or the whole
+        code. The mutation pass caught that - a scope-widening mutant fired
+        nothing - which is the control-that-proves-nothing trap this file already
+        records, met again while writing a control against it. The `.json` target
+        keeps the write out of A9's document set, so only a widened scope can
+        block this."""
+        block, _ = decision_for(shell_ctx(
+            "python -c \"import re; s = re.sub(r'a' r'b', 'c', 'd'); "
+            "open('out.json', 'w').write(s)\""))
+        self.assertIsNone(block)
+        # The no-write case is still worth stating, as the boundary it is: A9
+        # does not fire on inline code that writes nothing.
+        block, _ = decision_for(shell_ctx(
+            "python -c \"import re; print(re.sub(r'a' r'b', 'c', 'd'))\""))
+        self.assertIsNone(block)
+
+    def test_control_a_computed_target_is_still_computed(self):
+        """An operator between the parts means the target really is assembled at
+        runtime, which is what the fallback exists for. Reading it as a split
+        would refuse a shape the rule already handles correctly, and would do it
+        by a path that reports the wrong reason."""
+        self.assertFalse(a9_splits_a_literal("'%s.md' % 'notes'"))
+        self.assertFalse(a9_splits_a_literal("'notes.' + 'md'"))
+        block, _ = decision_for(shell_ctx(
+            "python -c \"import sys; open('notes.' + sys.argv[1], 'w')"
+            ".write('x')\""))
+        self.assertIsNone(block)
+
+    def test_the_predicate_itself_separates_the_two_classes(self):
+        """The pipeline cannot tell "refused as a split" from "blocked by the
+        fallback", because both end in an A9 block, so the predicate is asserted
+        directly. This is the control that stops the refusal quietly widening
+        into every target that is not one bare literal."""
+        for text in ("'notes.' 'md'", "'notes.''md'", "'notes' '.' 'md'",
+                     "'notes.'\n'md'", '"notes." "md"', "r'notes.' r'md'",
+                     "Path('notes.' 'md')"):
+            with self.subTest(text=text):
+                self.assertTrue(a9_splits_a_literal(text), text)
+        for text in ("'notes.md'", "'%s.md' % 'notes'", "'notes.' + 'md'",
+                     "f'{x}' 'md'", "os.path.join('a', 'md')", ""):
+            with self.subTest(text=text):
+                self.assertFalse(a9_splits_a_literal(text), text)
+
+
+def a9_hidden_documents(code):
+    """A9's parser-based hidden-name check, reached the same way."""
+    from rules.interpreter_write import _hidden_documents
+    return _hidden_documents(code)
+
+
+class TestA9HiddenDocumentNames(unittest.TestCase):
+    """PP1, 2026-09-22: a document name Python builds but the text never spells.
+
+    The regex refusal above recognised one join, whitespace, and Codex found
+    `open('notes.' #c` newline `'md', 'w')` going through, Python ignoring a
+    comment between adjacent literals. Measuring the family before fixing it
+    found nine spellings through, not one, and two of them join nothing: a
+    single literal hides the dot behind `\\x2e` or `\\N{FULL STOP}`. Widening
+    the regex's separator would have closed four of the nine, because the rest
+    fail on the regex's reading of the literal itself or on the write shapes
+    missing the call.
+
+    **So the question moved to Python's own parser**, which is the reader that
+    runs the code and therefore has no difference from it to exploit. It is
+    still a refusal: nothing about the write is inferred, and a read spelled the
+    same way is refused too, as a decided cost.
+
+    Every specimen goes through a quoted heredoc, so the Python source the rule
+    reads is exactly the text written here, with no shell unquoting between."""
+
+    @staticmethod
+    def heredoc(code):
+        return "python - <<'PY'\n" + code + "\nPY"
+
+    HIDDEN = (
+        ("open('notes.' #c\n 'md', 'w')", "PP1: a comment between the parts"),
+        ("open('notes.' # it's\n 'md', 'w')", "a comment holding a quote"),
+        ("open('notes.' # a, b\n 'md', 'w')",
+         "a comment holding a comma, which also hides the write shape"),
+        ("open('notes.' \\\n'md', 'w')", "a backslash continuation"),
+        ("open(\"a'b.\" \"md\", 'w')", "a part holding the other quote"),
+        ("open('notes\\x2emd', 'w')", "a hex escape in ONE literal"),
+        ("open('notes\\N{FULL STOP}md', 'w')", "a named escape in ONE literal"),
+        ("open(f'notes.' 'md', 'w')", "an f-string whose parts are constant"),
+        ("from pathlib import Path\nPath('notes.' #c\n 'md').write_text('x')",
+         "a Path receiver"),
+        ("open('.' #c\n 'env', 'w')", "the .env spelling"),
+        # Armed against comparing with the whole program rather than with the
+        # string's own text: the name appears in full, but in a comment, and
+        # the comma in the second comment keeps the write shapes from seeing
+        # the call, so nothing else in the rule would catch it.
+        ("# notes.md\nopen('notes.' # a, b\n 'md', 'w')",
+         "the name written out elsewhere, in a comment"),
+    )
+
+    def test_hidden_names_are_refused(self):
+        """Each was ALLOW before this fix, measured against the hook. The
+        reason is asserted as well as the rule, because the whitespace backstop
+        and the computed-target fallback also end in an A9 block, and only the
+        reason shows which check caught it."""
+        for code, label in self.HIDDEN:
+            with self.subTest(label=label):
+                block, _ = decision_for(shell_ctx(self.heredoc(code)))
+                self.assertIsNotNone(block, label)
+                self.assertEqual(block.rule, "A9", label)
+                self.assertIn("without writing it out", block.reason, label)
+
+    def test_a_dash_c_string_is_read_too(self):
+        """The heredoc and `-c` routes reach the rule by different code, so
+        each is shown to arrive. Inside double quotes the shell leaves `\\x`
+        alone, so Python receives the escape."""
+        block, _ = decision_for(shell_ctx(
+            "python -c \"open('notes\\x2emd', 'w').write('x')\""))
+        self.assertIsNotNone(block)
+        self.assertIn("without writing it out", block.reason)
+
+    def test_the_block_message_names_the_remedy(self):
+        block, _ = decision_for(shell_ctx(self.heredoc(self.HIDDEN[0][0])))
+        self.assertIn("single literal", block.reason)
+        self.assertIn("notes.md", block.reason)
+
+    def test_accepted_cost_a_hidden_read_is_refused(self):
+        """Pinned as a decided trade. The check runs before the write shapes
+        because one of the spellings hides the write from them, so it cannot
+        ask whether the call writes. Measured before it was accepted: no
+        tracked Python file, read as though it were inline code, spells a
+        document name this way."""
+        block, _ = decision_for(shell_ctx(self.heredoc(
+            "print(open('notes\\x2emd').read())")))
+        self.assertIsNotNone(block)
+        self.assertEqual(block.rule, "A9")
+
+    def test_control_names_written_out_in_full_are_not_hidden(self):
+        """The width of the refusal, asked of the predicate directly. Only the
+        filename at the END of a string is compared, against that string's own
+        text: comparing the whole string refused the first two, whose names are
+        written out in full beside an escape. An f-string placeholder stays a
+        computed target, since its constant part `.md` is visible text."""
+        for code in ("print('\\nwrote notes.md')",
+                     "open('C:\\\\docs\\\\notes.md').read()",
+                     "import re\nre.compile(r'\\.md$')",
+                     "open('notes.md', 'w')",
+                     "open('out.json', 'w')",
+                     "name = 'notes.' + 'md'",
+                     "open(f'{name}.md', 'w')"):
+            with self.subTest(code=code):
+                self.assertEqual(a9_hidden_documents(code), [], code)
+
+    def test_control_an_escape_beside_a_non_document_write_is_allowed(self):
+        """The same width end to end: a program printing an escaped message
+        that names a document, while writing only a `.json`, is ordinary work
+        and must not move."""
+        block, _ = decision_for(shell_ctx(self.heredoc(
+            "print('\\nwrote notes.md')\nopen('out.json', 'w').write('{}')")))
+        self.assertIsNone(block)
+
+    def test_control_unparseable_code_keeps_the_backstop(self):
+        """Code the parser rejects returns None rather than a verdict, and the
+        whitespace refusal still stands behind it. The stray `)` is what makes
+        this a syntax error, so this is the only specimen that reaches the
+        backstop on its own."""
+        code = "open('notes.' 'md', 'w'))"
+        self.assertIsNone(a9_hidden_documents(code))
+        block, _ = decision_for(shell_ctx(self.heredoc(code)))
+        self.assertIsNotNone(block)
+        self.assertIn("adjacent string literals", block.reason)
+
+    def test_each_program_is_parsed_on_its_own(self):
+        """Two programs joined are rarely one valid module, so parsing the
+        joined text would let a node segment hide a python one behind a syntax
+        error. The node code here is not valid Python."""
+        block, _ = decision_for(shell_ctx(
+            "node -e \"const x = 1;\" && " + self.heredoc(self.HIDDEN[5][0])))
+        self.assertIsNotNone(block)
+        self.assertIn("without writing it out", block.reason)
+
+    def test_the_hidden_name_check_is_linear_in_the_size_of_the_code(self):
+        """An order-of-magnitude canary, like the other per-rule cost tests:
+        the first implementation took 5.08 seconds on 2,000 document-named
+        strings, past the hook's five-second budget, and a hook that runs out
+        of time has allowed the command. Correct code measured 0.27 seconds on
+        the 8,000 used here, so 3.0 sits an order of magnitude from both."""
+        import time
+        code ="\n".join(f"paths.append('docs/file{i}.md')" for i in range(8000))
+        start = time.perf_counter()
+        a9_hidden_documents(code)
+        self.assertLess(time.perf_counter() - start, 3.0)
+
+
 class TestRoundFour(unittest.TestCase):
     def test_an_unquoted_heredoc_body_is_expanded(self):
         """`<<'EOF'` is literal text; `<<EOF` is not - the shell runs any
@@ -2636,44 +2971,56 @@ class TestPrecommitDocSyncRecording(unittest.TestCase):
                                      "- 2026-07-06 - Purpose clarified."))
         git("add", "workflows/foo/CONTEXT.md")
 
-    def test_no_test_writes_to_the_real_fire_log(self):
-        # The suite must never append to the real fire-log: it is the store the
-        # recording-mode observation period counts, and a junk row with
-        # degraded=0 would be indistinguishable from a genuine sample reporting
-        # no findings. This was live rather than theoretical - adding the write
-        # to _precommit_doc_sync turned three previously side-effect-free tests
-        # in TestPrecommitDocSyncSeverity into producers, and nine junk rows
-        # reached the real store before it was noticed.
+    def test_fire_log_containment_is_intact(self):
+        # FOUR functions in run.py append to the fire-log: evaluate (a rule
+        # crash), run_ai (warns, blocks and four error events), main (a fatal),
+        # and _precommit_doc_sync (the recording row).
         #
-        # Checked at the source rather than at runtime, because a runtime check
-        # only catches the test that happens to run.
-        source = Path(__file__).read_text(encoding="utf-8")
-        tree = ast.parse(source)
+        # This test used to scan for test functions mentioning
+        # _precommit_doc_sync or run_precommit and require each to redirect
+        # FIRE_LOG. That covered ONE writer of the four and skipped every other
+        # test in the file, while its name and comment promised the general
+        # guarantee - so the guarantee was never held. Measured on 2026-09-21:
+        # 15,827 rows in the real store, 2,096 of them the A6 fixture
+        # `rm -rf x` and 1,092 the A7 fixture `cp secrets.txt .env`.
+        #
+        # The approach changed rather than the filter widening. Enumerating
+        # callers of `evaluate` would put a redirect in nearly every test in this
+        # file, and the test that forgets is the test that writes. Containment is
+        # now done once at module level, which covers all four writers by
+        # construction, and this asserts it is intact. The runtime proof that it
+        # WORKED, rather than merely being written, is tearDownModule.
+        self.assertNotEqual(
+            Path(run_mod.FIRE_LOG).resolve(), REAL_FIRE_LOG.resolve(),
+            "the in-process channel is not redirected")
+        self.assertNotEqual(
+            Path(os.environ["BOOK_DRAGON_FIRE_LOG"]).resolve(),
+            REAL_FIRE_LOG.resolve(),
+            "the subprocess channel is not redirected")
+
+        # Source-level clause for the subprocess channel: a test that launches
+        # run.py while building its own env would hand the child an environment
+        # with no override in it and silently reopen the channel. The override
+        # travels by inheritance, so any such call must derive its env from
+        # os.environ. Checked per enclosing function, because the env is
+        # normally built into a local and passed as `env=env`.
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
         offenders = []
-        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-            setup_redirects = any(
-                "FIRE_LOG" in ast.dump(fn)
-                for fn in cls.body
-                if isinstance(fn, ast.FunctionDef) and fn.name == "setUp"
-            )
-            for fn in cls.body:
-                if not isinstance(fn, ast.FunctionDef):
-                    continue
-                dumped = ast.dump(fn)
-                if "_precommit_doc_sync" not in dumped and "run_precommit" not in dumped:
-                    continue
-                if "FIRE_LOG" in dumped or setup_redirects:
-                    continue
-                offenders.append(f"{cls.name}.{fn.name}")
-        # Allow only the two that mock _precommit_doc_sync itself, so the real
-        # function - and therefore the write - is never entered.
-        allowed = {
-            "TestPrecommitDocSync.test_personal_data_block_skips_doc_sync",
-            "TestPrecommitDocSync.test_clean_personal_data_runs_doc_sync_and_allows",
-        }
+        for fn in [n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef)]:
+            dumped = ast.dump(fn)
+            if "RUN_PY" not in dumped:
+                continue
+            builds_env = any(
+                kw.arg == "env"
+                for call in ast.walk(fn) if isinstance(call, ast.Call)
+                for kw in call.keywords)
+            if builds_env and "environ" not in dumped:
+                offenders.append(fn.name)
         self.assertEqual(
-            sorted(set(offenders) - allowed), [],
-            "these tests reach the fire-log write without redirecting FIRE_LOG")
+            sorted(offenders), [],
+            "these launch run.py with an env that does not derive from "
+            "os.environ, so BOOK_DRAGON_FIRE_LOG never reaches the child")
 
     @staticmethod
     def _snapshot(repo):

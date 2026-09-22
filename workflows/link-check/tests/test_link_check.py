@@ -74,8 +74,32 @@ def link_file(text):
     """Run add_links_to_file over ``text``. Returns (changes, resulting_text)."""
     with tempfile.TemporaryDirectory() as td:
         path = write_fixture(td, text)
-        changes = run.add_links_to_file(path, dry_run=False)
+        changes, _removed = run.add_links_to_file(path, dry_run=False)
         return changes, path.read_text(encoding="utf-8")
+
+
+def link_file_owning(text, own_target):
+    """Run add_links_to_file with the file's own link target forced.
+
+    Fixtures live in a temp directory, so their real own-target is an absolute
+    path that no resolved reference can ever equal, and the self-link behaviour
+    would be untestable end to end. Forcing the own-target is what lets a
+    fixture citing a real project directory be treated as citing itself.
+
+    Returns (insertions, removals, resulting_text, was_written).
+    """
+    with tempfile.TemporaryDirectory() as td:
+        path = write_fixture(td, text)
+        before = path.read_bytes()
+        original = run.own_link_target
+        run.own_link_target = lambda _p: own_target
+        try:
+            insertions, removals = run.add_links_to_file(path, dry_run=False)
+        finally:
+            run.own_link_target = original
+        after = path.read_bytes()
+        return (insertions, removals, path.read_text(encoding="utf-8"),
+                after != before)
 
 
 def line_starting(text, prefix):
@@ -243,8 +267,9 @@ class ExistingBehaviourTests(unittest.TestCase):
                 f"- 2026-08-04 - Touched `{TARGET_PATH}`.\n",
             )
             before = path.read_bytes()
-            changes = run.add_links_to_file(path, dry_run=False)
+            changes, removed = run.add_links_to_file(path, dry_run=False)
             self.assertEqual(changes, [])
+            self.assertEqual(removed, [])
             self.assertEqual(path.read_bytes(), before)
 
     def test_dry_run_reports_without_writing(self):
@@ -259,9 +284,141 @@ class ExistingBehaviourTests(unittest.TestCase):
                 f"- `{TARGET_PATH}` - the audit workflow.\n",
             )
             before = path.read_bytes()
-            changes = run.add_links_to_file(path, dry_run=True)
+            changes, _removed = run.add_links_to_file(path, dry_run=True)
             self.assertEqual(len(changes), 1)
             self.assertEqual(path.read_bytes(), before)
+
+
+class SelfLinkSkipTests(unittest.TestCase):
+    """A reference resolving to the containing file's own target is not linked.
+
+    The subject is the same as the suite's other class: a backtick path
+    reference that resolves to a real project target. The three controls are
+    stated against it:
+
+    - **Positive control** - a legal instance: a reference resolving to a
+      DIFFERENT target, which must still be linked. This catches a skip written
+      too wide, which would stop the tool doing its job at all.
+    - **Rejection control** - an illegal instance: a reference resolving to the
+      file's own target, which must be refused.
+    - **Negative control** - not an instance: a file whose own target nothing
+      resolves to, so a clean result is known not to be the skip over-matching.
+    """
+
+    OTHER = "workflows/close-out/CONTEXT"
+
+    def test_rejection_control_a_reference_to_its_own_file_is_not_linked(self):
+        line, changes = run.process_line(
+            f"- `{TARGET_PATH}` - the audit workflow.\n",
+            own_target="workflows/audit/CONTEXT")
+        self.assertEqual(changes, [])
+        self.assertNotIn(TARGET_LINK, line)
+
+    def test_positive_control_a_reference_to_another_file_is_linked(self):
+        line, changes = run.process_line(
+            f"- `{TARGET_PATH}` - the audit workflow.\n",
+            own_target=self.OTHER)
+        self.assertEqual(len(changes), 1)
+        self.assertIn(TARGET_LINK, line)
+
+    def test_negative_control_an_unrelated_own_target_changes_nothing(self):
+        # The own-target plays no part unless something resolves to it, so this
+        # is the same line as the positive control with a third target: a clean
+        # insertion here proves the skip is keyed on equality rather than on the
+        # mere presence of an own-target.
+        line, changes = run.process_line(
+            f"- `{TARGET_PATH}` - the audit workflow.\n",
+            own_target="workflows/link-check/tests/CONTEXT")
+        self.assertEqual(len(changes), 1)
+        self.assertIn(TARGET_LINK, line)
+
+
+class SelfLinkRemovalTests(unittest.TestCase):
+    """An existing self-link is removed, but only from a file already being
+    rewritten for an insertion. That scoping IS the cleanup policy: stripping
+    project-wide would rewrite 63 tracked CONTEXT.md files and owe a Revision
+    History and LOG.md entry for each."""
+
+    OWN = "workflows/audit/CONTEXT"
+    OTHER_PATH = "workflows/close-out/"
+    OTHER_LINK = "[[workflows/close-out/CONTEXT]]"
+
+    def test_the_helper_removes_the_link_and_the_space_before_it(self):
+        line, removed = run.strip_self_links(
+            f"- `{TARGET_PATH}` {TARGET_LINK} - the audit workflow.\n", self.OWN)
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(line, f"- `{TARGET_PATH}` - the audit workflow.\n")
+
+    def test_the_helper_leaves_a_link_to_another_file_alone(self):
+        original = f"- `{self.OTHER_PATH}` {self.OTHER_LINK} - close-out.\n"
+        line, removed = run.strip_self_links(original, self.OWN)
+        self.assertEqual(removed, [])
+        self.assertEqual(line, original)
+
+    def test_positive_control_a_self_link_goes_when_the_file_is_rewritten(self):
+        insertions, removals, text, written = link_file_owning(
+            "# Demo\n"
+            "\n"
+            "## Contents\n"
+            f"- `{TARGET_PATH}` {TARGET_LINK} - names itself.\n"
+            f"- `{self.OTHER_PATH}` - earns the insertion.\n",
+            self.OWN)
+        self.assertTrue(written)
+        self.assertEqual(len(insertions), 1)
+        self.assertEqual(len(removals), 1)
+        self.assertNotIn(TARGET_LINK, text)
+        self.assertIn(self.OTHER_LINK, text)
+
+    def test_rejection_control_a_removal_alone_never_earns_a_write(self):
+        # The file carries a self-link and nothing to insert. It must be left
+        # byte-identical: a write here would make every close-out link pass a
+        # 63-file sweep with the documentation cost that implies.
+        insertions, removals, text, written = link_file_owning(
+            "# Demo\n"
+            "\n"
+            "## Contents\n"
+            f"- `{TARGET_PATH}` {TARGET_LINK} - names itself.\n",
+            self.OWN)
+        self.assertFalse(written)
+        self.assertEqual(insertions, [])
+        self.assertEqual(removals, [])
+        self.assertIn(TARGET_LINK, text)
+
+    def test_negative_control_a_rewrite_with_no_self_link_removes_nothing(self):
+        insertions, removals, text, written = link_file_owning(
+            "# Demo\n"
+            "\n"
+            "## Contents\n"
+            f"- `{self.OTHER_PATH}` - earns the insertion.\n",
+            self.OWN)
+        self.assertTrue(written)
+        self.assertEqual(len(insertions), 1)
+        self.assertEqual(removals, [])
+        self.assertIn(self.OTHER_LINK, text)
+
+    def test_a_self_link_inside_revision_history_is_left_alone(self):
+        # The region guards apply to the removal as well as the insertion,
+        # because the strip runs inside the same walk. History is a dated
+        # record; a link in it is part of what was written that day.
+        insertions, removals, text, written = link_file_owning(
+            "# Demo\n"
+            "\n"
+            "## Contents\n"
+            f"- `{self.OTHER_PATH}` - earns the insertion.\n"
+            "\n"
+            "## Revision History\n"
+            f"- 2026-08-04 - Touched `{TARGET_PATH}` {TARGET_LINK}.\n",
+            self.OWN)
+        self.assertTrue(written)
+        self.assertEqual(removals, [])
+        self.assertIn(TARGET_LINK, text)
+
+
+class OwnLinkTargetTests(unittest.TestCase):
+    def test_a_context_path_maps_to_its_own_link_target(self):
+        target = run.own_link_target(
+            run.PROJECT_ROOT / "workflows" / "audit" / "CONTEXT.md")
+        self.assertEqual(target, "workflows/audit/CONTEXT")
 
 
 if __name__ == "__main__":
