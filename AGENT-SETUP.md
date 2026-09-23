@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-06-25 (MCP-first startup verification)
+**Last updated:** 2026-09-23 (Python floor raised to 3.13)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -22,7 +22,7 @@ Every AI runs `verify.py` automatically during session startup (step 6 of the st
 
 The script checks:
 - `AGENTS.md` exists at the project root
-- Python 3.9+ is available
+- Python 3.13+ is available, warning if the running version is newer than the floor
 - The AI's wrapper file exists (if one is needed)
 - `SOUL.md` and `USER.md` exist (USER.md is created during first-run init)
 - `.env` exists (optional — extends web research functionality)
@@ -30,7 +30,7 @@ The script checks:
 - Shared PDF extraction is installed in the project `.venv`
 - AI-specific configuration files exist
 - The selected AI's native MCP configuration is present and contains biblio-tools
-- The `mcp` Python package is installed (MCP-capable AIs with Python 3.10+ only)
+- The `mcp` Python package is installed (MCP-capable AIs)
 - The exact configured command starts successfully, completes an MCP handshake, exposes all ten expected tools, calls `get_timestamp`, rejects an invalid month, blocks path traversal, and verifies the knowledge-graph query tool without forcing a full graph rebuild during setup
 
 This proves the checked-in configuration and assembled MCP server work together without requiring the AI application to be installed. It does not prove that an unavailable client application discovers its project-scoped config; confirm that once when the client is first installed using its native MCP status command or interface.
@@ -41,7 +41,7 @@ These apply to every AI:
 
 | Requirement | Status | Notes |
 |---|---|---|
-| Python 3.9+ | Required | Install from [python.org](https://python.org). All project scripts depend on it. |
+| Python 3.13+ | Required | Install from [python.org](https://python.org). All project scripts depend on it. |
 | `AGENTS.md` | Required | Must exist at project root. Contains all universal rules. Ships with the repository. |
 | `SOUL.md` | Required | Defines the assistant persona. Ships with the repository. |
 | `USER.md` | Created on first run | The AI creates this during first-run initialisation. |
@@ -55,7 +55,6 @@ The biblio-tools MCP server exposes project scripts as typed tools. For any AI s
 
 | Requirement | Notes |
 |---|---|
-| Python 3.10+ | The MCP SDK requires 3.10+. If running 3.9, MCP is unavailable but everything else works. |
 | `mcp` package | Install in the project `.venv`; commands are shown below. |
 | `.mcp.json` | Must exist at project root with biblio-tools registered. Ships with the repository. |
 
@@ -78,7 +77,7 @@ At startup, an AI with biblio-tools exposed should verify live tool availability
 | `get_timestamp` | Get the current ISO 8601 timestamp with timezone offset. |
 | `append_log` | Append a formatted entry to a directory's LOG.md. |
 
-The two knowledge-graph tools require this MCP server (Python 3.10+). On Python 3.9 they are unavailable, but the underlying CLI works directly: `python workflows/knowledge-graph/scripts/run.py <command>`.
+The two knowledge-graph tools wrap the knowledge-graph CLI, which can also be run directly: `python workflows/knowledge-graph/scripts/run.py <command>`.
 
 Canonical project setup on every operating system:
 
@@ -135,7 +134,7 @@ The scheduler is PID-file-guarded - only one instance runs at a time. It auto-te
 | AI identity | `Claude Code` or `Claude Cowork` (auto-detected by product) |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Run the canonical project setup command.
 3. Open the project in Claude Code or Claude Cowork. Both read `CLAUDE.md` and `AGENTS.md` automatically.
 4. The first session triggers first-run initialisation (creates `USER.md`, `LOG.md` files, etc.).
@@ -161,7 +160,7 @@ The scheduler is PID-file-guarded - only one instance runs at a time. It auto-te
 | AI identity | `Gemini CLI` |
 
 **Setup steps (Gemini CLI):**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Run the canonical project setup command.
 3. Install and configure Gemini CLI per Google's documentation.
 4. Open the project. Gemini reads `GEMINI.md` which imports `AGENTS.md` via `@AGENTS.md`.
@@ -169,7 +168,7 @@ The scheduler is PID-file-guarded - only one instance runs at a time. It auto-te
 6. The first session triggers first-run initialisation.
 
 **Setup steps (Antigravity CLI):**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Install Antigravity CLI from [antigravity.google](https://antigravity.google).
 3. Open the project. Antigravity CLI reads `GEMINI.md` and `AGENTS.md` automatically.
 4. MCP setup: pending — `.agents/mcp_config.json` config file needs to be created. See transition notice above.
@@ -191,7 +190,7 @@ Running `verify.py --ai "Antigravity CLI"` currently returns a deliberate failur
 | AI identity | `GitHub Copilot` |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Run the canonical project setup command.
 3. Install the GitHub Copilot extension in VS Code or JetBrains (requires a Copilot subscription).
 4. Open the project. Copilot reads `.github/copilot-instructions.md` and `AGENTS.md` automatically.
@@ -236,7 +235,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AI identity | `Cursor` |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Open the project in Cursor. It reads `.cursor/rules/project.mdc` and `AGENTS.md` automatically.
 3. For MCP: configure the biblio-tools server in Cursor's MCP settings (see Cursor documentation for MCP server registration).
 
@@ -255,7 +254,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AI identity | `Windsurf` or `Devin Desktop` (depending on which product is running) |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Open the project. The AI reads its rule file and `AGENTS.md` automatically.
 3. For MCP: configure in the product's MCP settings.
 
@@ -274,7 +273,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AI identity | `Cline` |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Install the Cline extension in VS Code.
 3. Open the project. Cline reads `.clinerules/00-project.md` which instructs it to read `AGENTS.md`.
 4. For MCP: configure in Cline's MCP settings.
@@ -294,7 +293,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AI identity | `Aider` |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Run the canonical project setup command.
 3. Install Aider per its documentation.
 4. Open the project. Aider reads `.aider.conf.yml` which loads `AGENTS.md` into context.
@@ -315,7 +314,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AI identity | `Codex CLI` or `Codex Desktop` |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Run the canonical project setup command.
 3. Install the tool per OpenAI's documentation.
 4. Open the project. Codex reads `AGENTS.md` automatically - no wrapper file needed.
@@ -337,7 +336,7 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 | AI identity | `OpenCode` |
 
 **Setup steps:**
-1. Ensure Python 3.9+ is installed.
+1. Ensure Python 3.13+ is installed.
 2. Run the canonical project setup command.
 3. Install OpenCode per its documentation.
 4. Open the project. OpenCode reads `AGENTS.md` automatically — no wrapper file needed.

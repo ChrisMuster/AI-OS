@@ -38,7 +38,7 @@ Three additional sources become available with API keys. Each has a free or low-
 
 ## Prerequisites
 
-**Python 3.9 or later** must be installed. See `REQUIREMENTS.md` if not yet set up.
+**Python 3.13 or later** must be installed. See `REQUIREMENTS.md` if not yet set up.
 
 Install the web-research Python packages once before using the workflow. Run this from the project root:
 

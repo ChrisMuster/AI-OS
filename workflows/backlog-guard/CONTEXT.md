@@ -1,6 +1,6 @@
 # Backlog Guard
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-23
 
 ## Purpose
 Protect `memory/backlog.md` from accidental data loss by taking local snapshots before edits and checking after edits that required sections, item counts, and backlog-item size limits still look sane.
@@ -31,7 +31,7 @@ Protect `memory/backlog.md` from accidental data loss by taking local snapshots 
 - `AGENTS.md` [[AGENTS]] - requires the snapshot/check procedure around backlog edits.
 - `memory/backlog.md` [[memory/CONTEXT]] - the protected document.
 - `memory/backlog-backups/` [[memory/backlog-backups/CONTEXT]] - the private local backup store.
-- Python 3.9 or later.
+- Python 3.13 or later.
 
 ## Known Issues
 - The guard counts top-level Markdown bullets that begin with bold text under `## Active` and `## Build Only When Needed`. If the backlog format changes, the parser must change with it.
@@ -41,3 +41,4 @@ Protect `memory/backlog.md` from accidental data loss by taking local snapshots 
 ## Revision History
 - 2026-08-04 - Initial creation.
 - 2026-08-04 - Snapshot and restore actions now append the backup store's own LOG.md as well as the workflow LOG.md.
+- 2026-09-23 - Dependencies line says Python 3.13 or later, following the project floor raised from 3.9 to 3.13. No behaviour change.

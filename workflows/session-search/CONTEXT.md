@@ -1,6 +1,6 @@
 # Session Search
 
-**Last modified:** 2026-08-12
+**Last modified:** 2026-09-23
 
 ## Purpose
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
@@ -49,7 +49,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - `scheduled-tasks` MCP - Claude-only hourly scheduled task runs `index.py` while the Claude desktop app is open.
 - `scripts/scheduler.py` - Python background scheduler for non-Claude AIs. Started at session startup (AGENTS.md step 6e), PID-guarded, auto-terminates after 4 hours of inactivity. Primary archive-and-index mechanism for AIs without hooks (GitHub Copilot, OpenCode, Aider).
 - `CLAUDE.md` [[CLAUDE]] - Claude-specific session maintenance checks for and creates the hourly `index.py` scheduled task on any machine where it is missing. First-run step 6 also creates it on a fresh clone.
-- Python 3.9+ with standard library only (sqlite3 with FTS5 is included in CPython builds on Windows).
+- Python 3.13+ with standard library only (sqlite3 with FTS5 is included in CPython builds on Windows).
 - `templates/` [[templates/CONTEXT]] — Standard CONTEXT.md and LOG.md templates used during scaffolding.
 
 ## Known Issues
@@ -70,3 +70,4 @@ Earlier history archived to LOG.md on 2026-06-30.
 - 2026-06-30 - Removed Continue.dev support: deleted its adapter and registry entry and dropped it from Inputs and the scheduler dependency note. Continue.dev is sunsetting (repo read-only). Session-search now covers 8 adapter sources.
 - 2026-08-12 - Guard-coverage stage 3c: `data/scheduler.pid` added to Outputs. This was the one path of the stage's five that appeared nowhere in its workflow's CONTEXT.md, not in Contents, Steps or Known Issues: the scheduler itself was documented but the file it writes to hold its single-instance lock was not. The path was confirmed against `scripts/scheduler.py` rather than taken from the plan, and it is covered by the tracked inventory's `workflows/session-search/data/*` row.
 - 2026-08-12 - Known Issues gained the scheduler's idle-timeout behaviour, at the user's request and prompted by observing it live during the entry above: the four-hour auto-terminate can fire mid-session during a long break, so an open, actively used session can have no scheduler running behind it. Recorded rather than changed, because the behaviour is deliberate and correct; what makes it worth writing down is that the resulting failure is silent and the natural assumption runs the other way.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13; the scripts, adapters and tests CONTEXT files follow. No behaviour change.

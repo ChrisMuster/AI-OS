@@ -302,10 +302,10 @@ def _run_check():
     print('Python:')
     major, minor, micro = sys.version_info[:3]
     version_str = f'{major}.{minor}.{micro}'
-    if (major, minor) >= (3, 9):
+    if (major, minor) >= (3, 13):
         print(f'  [OK]      Python {version_str}')
     else:
-        print(f'  [FAIL]    Python {version_str} — 3.9 or later required')
+        print(f'  [FAIL]    Python {version_str} - 3.13 or later required')
         all_ok = False
 
     # ── Required packages ─────────────────────────────────────────────────

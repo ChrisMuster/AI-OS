@@ -1,6 +1,6 @@
 # Link Check - Tests
 
-**Last modified:** 2026-09-22
+**Last modified:** 2026-09-23
 
 ## Purpose
 Tests for link-check's `--link` mode, and specifically for the regions it must not rewrite. The suite exists because `add_links_to_file` mutates CONTEXT.md files in place and had no test coverage at all, which is how it went on inserting links into dated Revision History entries across three live files before anyone noticed.
@@ -31,7 +31,7 @@ The boundary tests sit outside the three controls on purpose. The skipped sectio
 
 ## Dependencies
 - `workflows/link-check/scripts/run.py` [[workflows/link-check/scripts/CONTEXT]] - the module under test, loaded by `importlib` from a file path.
-- Python 3.9+ standard library only (`unittest`, `tempfile`, `importlib`, `sys`).
+- Python 3.13+ standard library only (`unittest`, `tempfile`, `importlib`, `sys`).
 - `workflows/close-out/` [[workflows/close-out/CONTEXT]] discovers and runs this suite as part of the close-out verifier, by globbing `tests/test_*.py`.
 - `workflows/audit/` [[workflows/audit/CONTEXT]] - not imported, but its section-parser boundary is the definition these tests pin. If the audit changes where it thinks Revision History ends, the two tools stop agreeing and these tests will not notice.
 
@@ -46,3 +46,4 @@ The boundary tests sit outside the three controls on purpose. The skipped sectio
 - 2026-08-11 - Initial creation as stage 4a of the guard-coverage plan. 9 tests across three classes, with a positive, rejection, and negative control for the Revision History skip plus the boundary and pre-existing-behaviour cases. Written and run against the unfixed script first, where 4 of the 9 failed and the positive and negative controls passed, so the suite was shown to fail for the stated reason before the fix made it pass.
 - 2026-09-05 - An Obsidian link inserted by the link pass, run as the close-out step of unrelated rule-hooks work. Recorded because the file changed rather than because the change is interesting. Worth one note here specifically, since this is the link-check workflow's own test directory: the pass modifying CONTEXT.md files in directories nobody touched is what turns a routine close-out step into documentation obligations elsewhere, which is the same family as the open backlog item about `--link` inserting a link to the file it is already in.
 - 2026-09-22 - Added `SelfLinkSkipTests`, `SelfLinkRemovalTests` and `OwnLinkTargetTests` (9 to 19 tests) for that backlog item, now closed. Both new behaviours carry the three controls this directory requires of any change to what `--link` walks or skips, and the two self-links this file itself carried were removed in the same pass, which is the cleanup policy applied to the file documenting it. The suite was shown to fail for the stated reason before it passed: with the skip disabled, three tests fail, matching the standard set when this directory was created. The mutation pass ran seven mutants over module attributes with no file in the tree edited, and each fired exactly what it should - the pre-fix state fires the skip's rejection control and two removal tests, an always-skip mutant fires eleven including both positive controls and the pre-existing behaviour tests, a strip that removes every link fires only the leaves-another-alone case, a mutant letting a removal earn a write fires only the control pinning the lazy policy, a no-op strip fires the two helper cases, a wrong own-target mapping fires its own class, and the no-op rebuild fires nothing.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.

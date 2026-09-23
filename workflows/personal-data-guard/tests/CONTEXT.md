@@ -1,6 +1,6 @@
 # Tests
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-09-23
 
 ## Purpose
 Unit tests for the personal-data guard. They exercise the pure detection, allowlist, and marker-derivation helpers with in-memory fixtures that use invented names, so the tests never touch the real project tree. A dedicated test asserts the guard's own `run.py` source carries no real personal markers (every email and path literal in it is a placeholder its allowlist accepts), guaranteeing the guard can never flag itself. Trigger strings in the fixtures are assembled from fragments so the personal-looking literals never appear verbatim in this tracked source - the same self-exemption trick encoding-guard uses for its corruption signatures.
@@ -24,10 +24,11 @@ python workflows/personal-data-guard/tests/run_tests.py
 
 ## Dependencies
 - `workflows/personal-data-guard/scripts/run.py` [[workflows/personal-data-guard/scripts/CONTEXT]] - The module under test, imported directly.
-- Python 3.9+ standard library (unittest).
+- Python 3.13+ standard library (unittest).
 
 ## Known Issues
 None.
 
 ## Revision History
 - 2026-06-25 - Initial creation. Covers detectors, allowlists, marker derivation, severities, and the pure-source guarantee; fixtures assemble trigger strings from fragments so the suite never self-flags.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.

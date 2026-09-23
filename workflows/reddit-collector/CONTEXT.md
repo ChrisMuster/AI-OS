@@ -1,6 +1,6 @@
 # Reddit Collector
 
-**Last modified:** 2026-08-12
+**Last modified:** 2026-09-23
 
 ## Purpose
 General-purpose Reddit post collector. Downloads posts from configured subreddits, saves them as Markdown files with YAML frontmatter, detects multi-part series, and groups them with navigable indexes. Supports full historical backfill, incremental daily collection, and local browser reading.
@@ -70,3 +70,4 @@ General-purpose Reddit post collector. Downloads posts from configured subreddit
 - 2026-06-19 — Multi-level chapter+part merging (Book of the Chosen → one 40-part series), date-interleaving of unnumbered parts (interludes now sort to their true position), and a manual curation override mechanism. New optional input `collections/<sub>/_overrides.json` lets hand-curated series definitions force canonical membership/order where auto-detection cannot; the reader hides excluded junk posts and renders related-works cross-links. First override: "The Soldier Becomes a Cultivator". Tests 92→105.
 - 2026-06-19 — Reader full-dataset search: new `/api/search` endpoint queries every series, group, and standalone post in memory, so author/title searches reach all ~83k standalones instead of only the 100 on the current index page. Fixes the search gap blocking Phase 4 manual review.
 - 2026-08-12 - Guard-coverage stage 3c: `state/` and `config/feeds.json` added to Outputs. Both were already described elsewhere in this file, `state/` in Contents and Steps and `feeds.json` in Inputs and Steps, so this is a documentation gap rather than a privacy finding; both paths are gitignored and both already carry tracked inventory rows. `feeds.json` is the judgement the stage was required to settle rather than assume: it is created once by the collector from `feeds.example.json` and read on every run thereafter, and it is now listed in both Inputs and Outputs, because those describe two different moments in its life and because stage 3b's unregistered-output detection reads Outputs rather than prose, so a written path absent from Outputs is invisible to it.
+- 2026-09-23 - `SETUP.md` now states Python 3.13+, following the project floor raised from 3.9 to 3.13.

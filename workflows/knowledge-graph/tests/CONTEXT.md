@@ -1,6 +1,6 @@
 # Knowledge Graph — Tests
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-23
 
 ## Purpose
 Standalone unit tests for the knowledge-graph indexer. Verifies that the parser tolerates malformed input without raising, that relationships are extracted and resolved correctly, that broken references are detected and classified, that the validation checks fire on the right conditions, that graph traversal (neighbours, impact, shortest path, subtree) is correct and cycle-safe, that the index is written atomically and reloads intact, that the opt-in content layers (memory, wiki, journal, and conversation) add nodes/edges only when their flags are on while leaving the structural graph unchanged, and that the read-only `sessions` cross-reference derives its search terms correctly and degrades to an empty result on any session-search failure.
@@ -31,7 +31,7 @@ None. Tests build their own temporary fixtures or small hand-built graphs.
 
 ## Dependencies
 - `workflows/knowledge-graph/scripts/` [[workflows/knowledge-graph/scripts/CONTEXT]] — The modules under test (parser, builder, graph, validate, report, run, content_layer, memory, wiki, journal, conversation).
-- Python 3.9+ standard library only (unittest, tempfile, pathlib).
+- Python 3.13+ standard library only (unittest, tempfile, pathlib).
 
 ## Known Issues
 - Tests build temporary trees that are not git repositories, so the optimised walk takes its non-Git fast path (no git spawned, nothing pruned by gitignore) and the gitignore branch of the broken-reference classifier falls back to WARN. This is intentional; the gitignore pruning and the gitignore→INFO branch are covered against the real repo and via mocked-worktree unit tests in `test_collect_dirs.py`, not in temp trees.
@@ -47,3 +47,4 @@ None. Tests build their own temporary fixtures or small hand-built graphs.
 - 2026-06-24 — Session-search cross-reference: added test_sessions.py (20 tests) covering `session_query_terms`, `run_session_search` graceful-skip and argv threading, and `cmd_sessions` payload/exit behaviour. 150 KG tests total.
 - 2026-06-24 - Rebuild speed optimisation: added test_collect_dirs.py (8 tests) covering the non-Git fast path, batched per-level gitignore pruning, no-recurse handling, and sorted output. 158 KG tests total; suite wall time dropped from ~410s to ~60s as temp fixtures no longer spawn git.
 - 2026-08-04 - The eight fixture writes across `test_builder.py`, `test_conversation.py`, `test_journal.py`, `test_memory.py`, `test_query.py` (3), `test_validate.py` and `test_wiki.py` converted from `Path.write_text(..., encoding="utf-8")` to `write_bytes`, so they stop writing CRLF fixtures on Windows and stop breaking the newline half of the AGENTS.md text-I/O rule. These fixtures are CONTEXT.md bodies the parser reads line by line, so CRLF endings were feeding it a different input here than it sees in the real tree. `write_bytes` rather than `Path.write_text(newline=...)`, which is a 3.10 API against the stated 3.9 floor. Part of the pass clearing the last 50 sites project-wide; `encoding` became a close-out blocking label in the same change, so the next one fails a gate instead of being reported and ignored. Test count unchanged at 158; no assertion touched.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.

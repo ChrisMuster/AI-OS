@@ -97,13 +97,7 @@ def _robust_rmtree(path, attempts=5, delay=0.5):
 
     for attempt in range(attempts):
         try:
-            if sys.version_info >= (3, 12):
-                shutil.rmtree(path, onexc=_clear_readonly)
-            else:  # pragma: no cover - legacy interpreters
-                shutil.rmtree(
-                    path,
-                    onerror=lambda f, p, info: _clear_readonly(f, p, info[1]),
-                )
+            shutil.rmtree(path, onexc=_clear_readonly)
             return
         except OSError:
             if attempt == attempts - 1:

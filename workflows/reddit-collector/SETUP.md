@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python 3.9+ (same as the rest of Book Dragon)
+- Python 3.13+ (same as the rest of Book Dragon)
 - `requests`, `python-dotenv`, and `truststore` (installed by the project's shared environment)
 
 No Reddit API key or OAuth registration is needed. The collector uses Reddit's RSS feed for incremental collection and the Arctic Shift community archive for historical backfill. If OAuth credentials are added later, the collector automatically switches to the full JSON API for richer metadata.

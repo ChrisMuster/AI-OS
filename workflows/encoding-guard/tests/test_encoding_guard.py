@@ -313,15 +313,10 @@ class TestNewlineCheck(unittest.TestCase):
     # -- negative controls: none may fire --------------------------------------
     def test_compliant_writes_are_clean(self):
         for src in (
-            # NOT a recommendation of this spelling: Path.write_text accepts
-            # newline only on Python 3.10+, and AGENTS.md tells authors to use
-            # open(..., newline="\\n") or write_bytes to stay inside the stated
-            # 3.9 floor. It is kept because it is the negative control for the
-            # .write_text shape, and because the guard's answer is correct for
-            # the question the guard asks: the newline argument is passed. The
-            # version question belongs to the "Test the stated Python floor"
-            # backlog item, and building it in here would make this guard
-            # answer two rules at once.
+            # The negative control for the .write_text shape: the newline
+            # argument is passed, so the guard must stay silent. Path.write_text
+            # accepts newline from Python 3.10, inside the project's 3.13 floor,
+            # so this spelling is also an acceptable one to write.
             'Path("x.md").write_text("a", encoding="utf-8", newline="\\n")\n',
             'open(path, "w", encoding="utf-8", newline="\\n")\n',
             # csv wants newline="" - it is the second member of the allowed set,

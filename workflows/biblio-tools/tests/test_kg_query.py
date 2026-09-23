@@ -6,8 +6,8 @@ assembles the run.py argv for query_knowledge_graph. It performs no I/O, so the
 matrix and argv construction are tested directly here without spawning a
 subprocess or starting the MCP server.
 
-Importing server.py requires the `mcp` package (Python 3.10+); on 3.9 these
-tests are skipped, consistent with the rest of the MCP layer.
+Importing server.py requires the `mcp` package, which is a required project
+dependency, so a missing package fails this file rather than skipping it.
 """
 
 import sys
@@ -16,14 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-try:
-    import server  # noqa: E402
-    _HAVE_SERVER = True
-except Exception:  # pragma: no cover - exercised only on 3.9 / missing mcp
-    _HAVE_SERVER = False
+import server  # noqa: E402
 
 
-@unittest.skipUnless(_HAVE_SERVER, "server.py requires the mcp package (Python 3.10+)")
 class TestBuildKgQueryArgv(unittest.TestCase):
     def _argv(self, command, **kwargs):
         argv, error = server.build_kg_query_argv(command, **kwargs)

@@ -1,6 +1,6 @@
 # Personal Data Guard
 
-**Last modified:** 2026-06-25
+**Last modified:** 2026-09-23
 
 ## Purpose
 Catches personal data before it can be committed. It is a deterministic, read-only checker that scans only committable files (everything git tracks plus new files git would add, so all gitignored personal content is excluded automatically) for personal markers: real email addresses, personal absolute home paths carrying a real username (for example `C:\Users\<name>`), the user's own name and OS username, and an optional denylist of personal nouns. It mirrors the encoding-guard pattern: a standalone CLI that the full audit also consumes as an additive, advisory hook, so a personal-data leak is caught mechanically at close-out rather than by eye. It enforces the personal-data isolation rules in `AGENTS.md` [[AGENTS]] that previously relied entirely on reviewer discipline. There is deliberately no fix mode, because a leak cannot be safely auto-redacted.
@@ -32,7 +32,7 @@ Catches personal data before it can be committed. It is a deterministic, read-on
 - `AGENTS.md` [[AGENTS]] (root) - Defines the personal-data isolation rules this guard enforces mechanically.
 - `USER.md` [[USER]] and `.env` (root, gitignored) - Canonical local sources for the user's name and email markers, read at runtime.
 - `workflows/audit/` [[workflows/audit/CONTEXT]] - The full audit shells out to this guard's `--check --json` and merges its WARN/FAIL findings under a `personal-data` label.
-- Python 3.9+ standard library only; the `git` CLI for file discovery.
+- Python 3.13+ standard library only; the `git` CLI for file discovery.
 
 ## Known Issues
 - File discovery depends on git. Outside a git checkout, or if git is unavailable, the guard scans nothing and emits a single INFO note - by design, since the gitignore-based scope is the whole point.
@@ -42,3 +42,4 @@ Catches personal data before it can be committed. It is a deterministic, read-on
 
 ## Revision History
 - 2026-06-25 - Initial creation. Read-only check script with git-scoped discovery, runtime marker derivation from USER.md/.env, email/home-path/name/username detectors with placeholder allowlists, an optional gitignored denylist (WARN), audit-hook integration, and unit tests. First live run flagged the user's name in two AGENTS.md isolation-rule examples; those examples were reworded to a bracketed placeholder.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13; the scripts and tests CONTEXT files follow. No behaviour change.

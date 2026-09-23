@@ -6,7 +6,7 @@ Book Dragon is AI-agnostic — it works with any AI that reads `AGENTS.md`. See 
 
 ## System requirements
 
-**Python 3.9 or later** is the only current system-level requirement. Install it from [python.org](https://python.org), or ask an AI assistant to walk you through installation for your operating system.
+**Python 3.13 or later** is the only current system-level requirement. Install it from [python.org](https://python.org), or ask an AI assistant to walk you through installation for your operating system.
 
 ## Python packages by workflow
 
@@ -26,10 +26,12 @@ The setup script installs the root `requirements.txt`, which includes every work
 | weather | None — standard library only | — |
 | journal | None — standard library only | — |
 | web-research | See workflow requirements | Included by root `requirements.txt` |
-| biblio-tools | mcp >= 1.0.0 (Python 3.10+) | Included by root `requirements.txt`; skipped on Python 3.9 |
+| biblio-tools | mcp >= 1.0.0 | Included by root `requirements.txt` |
 | check-for-updates | PyYAML (config) | Included by root `requirements.txt` |
 
-The Create Wiki dependency provides shared PDF extraction for every supported AI. The biblio-tools MCP server requires Python 3.10+ (the MCP SDK requirement); on Python 3.9 the root manifest skips MCP, while direct workflow scripts remain available.
+The Create Wiki dependency provides shared PDF extraction for every supported AI.
+
+The Python floor is the version the project runs, so every ordinary test run tests it. When the development machine moves to a newer Python, raise the floor with it, or test the stated floor separately; the setup verification check warns when the running Python is newer than the floor.
 
 ## API keys
 

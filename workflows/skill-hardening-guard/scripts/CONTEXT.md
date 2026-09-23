@@ -1,6 +1,6 @@
 # Skill-Hardening Guard - Scripts
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-23
 
 ## Purpose
 Holds the skill-hardening guard's single entry point. `run.py` is the read-only checker that verifies every SKILL.md carries the two required load-bearing sections: a complete `## Hardening` section (all five required fields non-empty) and a non-empty `## Verification` section. It reports WARN findings the full audit and close-out verifier consume.
@@ -25,7 +25,7 @@ Holds the skill-hardening guard's single entry point. `run.py` is the read-only 
 ## Dependencies
 - `AGENTS.md` [[AGENTS]] (root) - Defines the SKILL.md schema and the required Hardening section (five fields) and Verification section this script enforces.
 - `templates/SKILL.md.template` [[templates/CONTEXT]] - The canonical Hardening field labels the checker keys on; if the template's labels change, `REQUIRED_FIELDS` here must change with them.
-- Python 3.9+ standard library only (no third-party packages, so no `.venv` bootstrap is needed).
+- Python 3.13+ standard library only (no third-party packages, so no `.venv` bootstrap is needed).
 - Consumers: `workflows/audit/` [[workflows/audit/CONTEXT]] runs it as an advisory hook (WARN gaps and DEGRADED unreadable-file findings under a `skill-hardening` label, no change to the audit's exit code); `workflows/close-out/` [[workflows/close-out/CONTEXT]] hard-fails on a `skill-hardening` WARN only, with DEGRADED surfaced but non-blocking (the deterministic gate).
 
 ## Known Issues
@@ -41,3 +41,4 @@ Holds the skill-hardening guard's single entry point. `run.py` is the read-only 
 - 2026-07-10 - Codex review follow-up (child #7): brought the CLI wording in step with the behaviour - the module docstring's "Reports" block and the argparse `description` now name the `## Verification` section alongside Hardening (they previously described Hardening only). No logic change.
 - 2026-08-04 - Docstring correction in `run.py`, no behaviour change: the module docstring's opening line said every SKILL.md must carry a complete Hardening section, omitting the Verification section the same docstring documents ten lines further down and the code enforces. The opening line now names both.
 - 2026-08-04 - Consumers entry corrected to match the severity contract Outputs above already stated: it described the audit hook as merging WARN findings and close-out as hard-failing on any WARN, with no mention of the DEGRADED unreadable-file finding that is surfaced but never blocks. One file, two sections, two different answers about the same severities. No code or test change.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.

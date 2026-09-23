@@ -360,9 +360,6 @@ async def build_knowledge_graph(
     nodes with their outbound links). The flags combine; all four layers are
     opt-in and purely additive, and their output stays in the gitignored index.
 
-    Note: requires Python 3.10+ for this MCP server. If running 3.9, call the
-    underlying CLI directly: python workflows/knowledge-graph/scripts/run.py build
-
     Args:
         dry_run: Report what would be written without modifying files or logs.
         include_memory: Also index the opt-in memory layer (--layer memory).
@@ -437,9 +434,6 @@ async def query_knowledge_graph(
 
     Unknown node ids return success=False with the CLI's stderr, which includes
     closest-match suggestions.
-
-    Note: requires Python 3.10+ for this MCP server. If running 3.9, call the
-    underlying CLI directly: python workflows/knowledge-graph/scripts/run.py <command>
 
     Args:
         command: Which read-only graph command to run.

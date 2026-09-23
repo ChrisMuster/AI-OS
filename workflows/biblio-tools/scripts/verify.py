@@ -11,7 +11,8 @@ Usage:
   python workflows/biblio-tools/scripts/verify.py --list
   python workflows/biblio-tools/scripts/verify.py --ai "Cursor" --dry-run
 
-Works on Python 3.9+ (standard library only — no MCP dependency).
+Standard library only (no MCP dependency), so it runs before the project
+environment exists. The project's Python floor is PYTHON_FLOOR below.
 """
 
 import argparse
@@ -28,6 +29,11 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
+
+# The project's Python floor. It is the version the project runs, so every
+# ordinary test run tests it; check_python_version warns when that stops being
+# true. setup.py and web-research's run.py state the same floor.
+PYTHON_FLOOR = (3, 13)
 
 # ---------------------------------------------------------------------------
 # AI requirements mapping
@@ -149,20 +155,33 @@ def check_agents_md() -> dict:
     return {"check": "AGENTS.md exists", "status": "FAIL", "detail": "AGENTS.md not found at project root."}
 
 
+def floor_result(check: str, version: tuple, subject: str = "Python") -> dict:
+    """Judge a (major, minor, micro) version against the project floor.
+
+    Below the floor is a FAIL. Above it is a WARN, not a PASS: the floor is only
+    tested because it is the version the project runs, so a newer interpreter
+    means the stated floor is no longer being exercised by ordinary test runs.
+    That WARN carries "surface": True, because session startup is otherwise
+    silent on WARN-only results and this one exists to be seen.
+    """
+    version_str = ".".join(str(part) for part in version[:3])
+    floor_str = f"{PYTHON_FLOOR[0]}.{PYTHON_FLOOR[1]}"
+    running = tuple(version[:2])
+    if running < PYTHON_FLOOR:
+        return {"check": check, "status": "FAIL",
+                "detail": f"{subject} {version_str} - {floor_str} or later required."}
+    if running > PYTHON_FLOOR:
+        return {"check": check, "status": "WARN", "surface": True,
+                "detail": f"{subject} {version_str} is newer than the stated floor {floor_str}, "
+                          "so the floor is no longer tested by ordinary runs. Raise the floor "
+                          "to this version, or test the floor version separately."}
+    return {"check": check, "status": "PASS", "detail": f"{subject} {version_str}"}
+
+
 def check_python_version() -> dict:
-    """Check that Python 3.9+ is available."""
-    version = sys.version_info
-    version_str = f"{version.major}.{version.minor}.{version.micro}"
-    if version >= (3, 10):
-        return {"check": "Python 3.9+", "status": "PASS", "detail": f"Python {version_str}"}
-    if version >= (3, 9):
-        return {
-            "check": "Python 3.9+",
-            "status": "WARN",
-            "detail": f"Python {version_str} — meets minimum requirement but 3.10+ recommended "
-                      "for MCP support. Consider updating to the latest stable release.",
-        }
-    return {"check": "Python 3.9+", "status": "FAIL", "detail": f"Python {version_str} — 3.9 or later required."}
+    """Check the Python running this script against the project floor."""
+    return floor_result(f"Python {PYTHON_FLOOR[0]}.{PYTHON_FLOOR[1]}+",
+                        tuple(sys.version_info[:3]))
 
 
 def check_wrapper_file(ai_name: str, wrapper_path: str | None) -> dict:
@@ -391,14 +410,7 @@ def check_codex_mcp_registry() -> dict:
 
 
 def check_mcp_package() -> dict:
-    """Check that the mcp Python package is installed (requires Python 3.10+)."""
-    if sys.version_info < (3, 10):
-        return {
-            "check": "MCP package",
-            "status": "WARN",
-            "detail": f"Python {sys.version_info.major}.{sys.version_info.minor} — MCP SDK requires 3.10+. "
-                      "MCP tools unavailable; scripts still work via direct shell commands.",
-        }
+    """Check that the mcp Python package is installed."""
     spec = importlib.util.find_spec("mcp")
     if spec is not None:
         return {"check": "MCP package", "status": "PASS", "detail": "mcp package installed."}
@@ -519,8 +531,8 @@ def check_project_runtime() -> dict:
     }
 
 
-def _mcp_python() -> Path | None:
-    """Return an interpreter capable of importing the MCP SDK."""
+def _venv_python() -> Path | None:
+    """Return the project .venv interpreter, or None when there is no .venv."""
     candidates = [
         PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
         PROJECT_ROOT / ".venv" / "bin" / "python",
@@ -528,6 +540,54 @@ def _mcp_python() -> Path | None:
     for python in candidates:
         if python.exists():
             return python
+    return None
+
+
+def _venv_python_version(python: Path) -> tuple:
+    """Return the (major, minor, micro) version of the given interpreter."""
+    result = subprocess.run(
+        [str(python), "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=45,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "version probe failed")
+    return tuple(int(part) for part in result.stdout.strip().split("."))
+
+
+def check_runtime_python_version() -> dict:
+    """Check the project .venv interpreter against the floor.
+
+    This is the interpreter ensure_project_runtime() hands workflows to, so it
+    is the one the floor has to hold for. It can differ from the Python running
+    this script: the MCP server runs verify.py inside .venv, while the script
+    fallback runs it under whatever `python` resolves to.
+    """
+    check = "Project runtime Python version"
+    python = _venv_python()
+    if python is None:
+        return {"check": check, "status": "FAIL",
+                "detail": "No project .venv to check. Run: python workflows/biblio-tools/scripts/setup.py"}
+    try:
+        version = _venv_python_version(python)
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        return {"check": check, "status": "FAIL",
+                "detail": f"Could not read the .venv Python version: {exc}"}
+    result = floor_result(check, version, subject=".venv Python")
+    if result["status"] == "FAIL":
+        result["detail"] += (" The .venv must be rebuilt: delete it and rerun "
+                             "python workflows/biblio-tools/scripts/setup.py")
+    return result
+
+
+def _mcp_python() -> Path | None:
+    """Return an interpreter capable of importing the MCP SDK."""
+    python = _venv_python()
+    if python is not None:
+        return python
     if importlib.util.find_spec("mcp") is not None:
         return Path(sys.executable)
     return None
@@ -668,12 +728,13 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     if dry_run:
         checks = [
             "AGENTS.md exists",
-            "Python 3.9+",
+            f"Python {PYTHON_FLOOR[0]}.{PYTHON_FLOOR[1]}+",
             f"Wrapper file ({reqs['wrapper'] or 'none needed'})",
             "SOUL.md exists",
             "USER.md exists",
             ".env file",
             "Project Python runtime",
+            "Project runtime Python version",
             "PDF extraction",
             "Git pre-commit hook",
         ]
@@ -695,6 +756,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     results.append(check_user_md())
     results.append(check_env_file())
     results.append(check_project_runtime())
+    results.append(check_runtime_python_version())
     results.append(check_pdf_extraction())
     results.append(check_git_precommit_hook())
     results.extend(check_config_files(reqs["config_files"]))
@@ -717,16 +779,30 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     return results
 
 
+def summarise(results: list) -> dict:
+    """Count results by status. `surface` counts results that must be shown
+    to the user even when nothing failed (see floor_result)."""
+    return {
+        "pass": sum(1 for r in results if r["status"] == "PASS"),
+        "warn": sum(1 for r in results if r["status"] == "WARN"),
+        "fail": sum(1 for r in results if r["status"] == "FAIL"),
+        "surface": sum(1 for r in results if r.get("surface")),
+    }
+
+
 def format_results(results: list) -> str:
     """Format results as human-readable text."""
     lines = []
-    fail_count = sum(1 for r in results if r["status"] == "FAIL")
-    warn_count = sum(1 for r in results if r["status"] == "WARN")
-    pass_count = sum(1 for r in results if r["status"] == "PASS")
+    counts = summarise(results)
+    fail_count = counts["fail"]
+    warn_count = counts["warn"]
+    pass_count = counts["pass"]
     dry_run_count = sum(1 for r in results if r["status"] == "DRY RUN")
 
     for r in results:
         icon = {"PASS": "[PASS]", "FAIL": "[FAIL]", "WARN": "[WARN]", "DRY RUN": "[DRY RUN]"}.get(r["status"], "[????]")
+        if r.get("surface"):
+            icon += " [SURFACE]"
         lines.append(f"  {icon} {r['check']} — {r['detail']}")
 
     if dry_run_count:
@@ -740,6 +816,8 @@ def format_results(results: list) -> str:
         summary += " No failures — warnings are non-blocking."
     else:
         summary += " Fix failures before proceeding. See AGENT-SETUP.md for remediation."
+    if counts["surface"]:
+        summary += f" {counts['surface']} result(s) marked [SURFACE] must be shown to the user."
 
     lines.append(summary)
     return "\n".join(lines)
@@ -750,6 +828,7 @@ def format_results(results: list) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Book Dragon setup verification",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -799,11 +878,7 @@ def main() -> None:
         output = {
             "ai": args.ai,
             "checks": results,
-            "summary": {
-                "pass": sum(1 for r in results if r["status"] == "PASS"),
-                "warn": sum(1 for r in results if r["status"] == "WARN"),
-                "fail": sum(1 for r in results if r["status"] == "FAIL"),
-            },
+            "summary": summarise(results),
         }
         print(json.dumps(output, indent=2))
     else:

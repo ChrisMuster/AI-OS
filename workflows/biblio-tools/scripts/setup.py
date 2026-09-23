@@ -13,10 +13,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 VENV_DIR = PROJECT_ROOT / ".venv"
 ROOT_REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 
+# The project's Python floor. verify.py (PYTHON_FLOOR) and web-research's
+# run.py state the same floor; the three move together.
+PYTHON_FLOOR = (3, 13)
+FLOOR_STR = f"{PYTHON_FLOOR[0]}.{PYTHON_FLOOR[1]}"
+
 PACKAGE_IMPORTS = {
     "beautifulsoup4": "bs4",
     "feedparser": "feedparser",
     "lxml": "lxml",
+    "mcp": "mcp",
     "pypdf": "pypdf",
     "python-dotenv": "dotenv",
     "pyyaml": "yaml",
@@ -34,17 +40,21 @@ def venv_python() -> Path:
     return VENV_DIR / "bin" / "python"
 
 
-def package_status(python: Path) -> dict:
-    """Return package availability inside the project environment."""
+def runtime_probe(python: Path) -> dict:
+    """Return the environment's Python version and package availability.
+
+    One probe inside the project environment, so the version checked is the
+    interpreter that ensure_project_runtime() hands workflows to, not the one
+    running this script.
+    """
     imports = dict(PACKAGE_IMPORTS)
-    if sys.version_info >= (3, 10):
-        imports["mcp"] = "mcp"
 
     code = (
-        "import importlib.util,json;"
+        "import importlib.util,json,sys;"
         f"mods={json.dumps(imports)};"
-        "print(json.dumps({name: importlib.util.find_spec(module) is not None "
-        "for name,module in mods.items()}))"
+        "print(json.dumps({'version': list(sys.version_info[:3]), "
+        "'packages': {name: importlib.util.find_spec(module) is not None "
+        "for name,module in mods.items()}}))"
     )
     result = subprocess.run(
         [str(python), "-c", code],
@@ -59,6 +69,14 @@ def package_status(python: Path) -> dict:
     return json.loads(result.stdout)
 
 
+def below_floor_advice() -> str:
+    """How to replace a .venv built on an interpreter below the floor."""
+    return (
+        f"delete .venv, then rerun this script with Python {FLOOR_STR} or later "
+        "(python workflows/biblio-tools/scripts/setup.py)."
+    )
+
+
 def check() -> int:
     """Print runtime health and return a process exit code."""
     python = venv_python()
@@ -67,9 +85,15 @@ def check() -> int:
         print("Run: python workflows/biblio-tools/scripts/setup.py")
         return 1
 
-    status = package_status(python)
+    probe = runtime_probe(python)
+    version = tuple(probe["version"])
+    status = probe["packages"]
     missing = sorted(name for name, available in status.items() if not available)
     print(f"Project runtime: {python.relative_to(PROJECT_ROOT)}")
+    print(f"Runtime Python: {'.'.join(str(part) for part in version)}")
+    if version[:2] < PYTHON_FLOOR:
+        print(f"Below the Python {FLOOR_STR} floor: {below_floor_advice()}")
+        return 1
     print(f"Packages checked: {len(status)}")
     if missing:
         print(f"Missing: {', '.join(missing)}")
@@ -80,12 +104,23 @@ def check() -> int:
 
 def setup(dry_run: bool) -> int:
     """Create the environment if needed and install the root manifest."""
-    if sys.version_info < (3, 9):
-        raise RuntimeError("Python 3.9 or later is required.")
+    if sys.version_info[:2] < PYTHON_FLOOR:
+        raise RuntimeError(f"Python {FLOOR_STR} or later is required.")
     if not ROOT_REQUIREMENTS.is_file():
         raise RuntimeError("Root requirements.txt is missing.")
 
     python = venv_python()
+    if python.is_file():
+        # Repairing installs into the existing interpreter, so an environment
+        # built below the floor must be replaced, never patched. Deleting it is
+        # left to the user.
+        existing = tuple(runtime_probe(python)["version"])
+        if existing[:2] < PYTHON_FLOOR:
+            found = ".".join(str(part) for part in existing)
+            raise RuntimeError(
+                f"The existing .venv uses Python {found}, below the {FLOOR_STR} "
+                f"floor, so it cannot be repaired in place: {below_floor_advice()}"
+            )
     if dry_run:
         action = "repair" if python.is_file() else "create"
         print(f"[DRY RUN] Would {action} .venv.")

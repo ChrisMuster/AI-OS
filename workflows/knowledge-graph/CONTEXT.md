@@ -1,6 +1,6 @@
 # Knowledge Graph
 
-**Last modified:** 2026-08-23
+**Last modified:** 2026-09-23
 
 ## Purpose
 Deterministic, script-driven indexer that parses the project's `CONTEXT.md` files and approved root files into a rebuildable node/edge graph, then validates and traverses it. It turns existing project structure and relationships - directory hierarchy, Contents references, Dependencies, and Obsidian `[[links]]` - into queryable indexes for traversal, impact analysis, orphan detection, duplicate detection, and broken-reference validation. The default build covers tracked structural content. Opt-in content layers can be added with repeatable `--layer` flags for memory, wiki, journal, and conversation content. The build and read-only query commands are also exposed to MCP-capable AI clients through the Biblio Tools `build_knowledge_graph` and `query_knowledge_graph` tools; the CLI remains the contract.
@@ -41,7 +41,7 @@ Deterministic, script-driven indexer that parses the project's `CONTEXT.md` file
 - `templates/` [[templates/CONTEXT]] - Standard CONTEXT.md and LOG.md templates used to scaffold this workflow.
 - `workflows/session-search/` [[workflows/session-search/CONTEXT]] - Runtime dependency of the `sessions` command only; absent or unreadable indexes degrade to an empty result.
 - `workflows/biblio-tools/` [[workflows/biblio-tools/CONTEXT]] - Exposes the build and query commands as MCP tools.
-- Python 3.9+ standard library.
+- Python 3.13+ standard library.
 - `git` (optional) - Used for gitignore-aware directory pruning; the workflow falls back if Git is unavailable.
 
 ## Known Issues
@@ -65,3 +65,4 @@ Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-24 - Rebuild speed optimised: `collect_dirs` walks breadth-first with one batched `git check-ignore` per depth level and skips git outside a worktree; the directory walk dropped from ~9s to ~1s and the KG test suite from ~410s to ~60s with byte-for-byte identical graph output. Planning/handover/roadmap docs are now treated as personal (gitignored), so ROADMAP.md and the archived plans are no longer tracked or listed in Contents.
 - 2026-08-12 - Guard-coverage stage 3c: `last-report.md` added to Outputs. It is written by `validate --save` and was described in Contents and Known Issues but not in the section a reader consults for what the workflow writes. Documentation gap rather than a privacy finding, since the path is gitignored and already carries a tracked inventory row. It matters because stage 3b's unregistered-output detection reads Outputs rather than prose.
 - 2026-08-23 - Documented the saved index as an optional cache rather than the graph, in Outputs and Known Issues, after its two-month-old `meta.json` was read as evidence that the graph itself had gone stale. It had not: every command rebuilds in memory from the current files, `--from-index` is opt-in and accepted only by `stats`, and the full audit's graph findings therefore come from a fresh build every run. The saved figures were 185 nodes and 571 edges against a live 317 and 1288, a gap wide enough to look like a fault, which is why the misreading is recorded as a Known Issue rather than only corrected in Outputs. The index was rebuilt in the same pass so the saved files match the current project. No behavioural change.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13; the scripts and tests CONTEXT files follow. No behaviour change.

@@ -1,6 +1,6 @@
 # Session Search — Tests
 
-**Last modified:** 2026-06-24
+**Last modified:** 2026-09-23
 
 ## Purpose
 Standalone unit tests for the session-search scripts. Currently covers `search.py`'s `--json` output mode — the machine-readable contract consumed by the knowledge-graph `sessions` cross-reference command — verifying that it emits a bare JSON list on stdout, never leaks the human-readable banner, returns an empty list for a non-matching query regardless of whether a session index is present, and that each result dict carries the documented `search()` fields when matches exist.
@@ -20,10 +20,11 @@ None. The tests invoke `search.py` as a subprocess with a deliberately non-match
 
 ## Dependencies
 - `workflows/session-search/scripts/search.py` [[workflows/session-search/scripts/CONTEXT]] — The script under test (provides the `--json` mode).
-- Python 3.9+ standard library only (json, subprocess, unittest, pathlib).
+- Python 3.13+ standard library only (json, subprocess, unittest, pathlib).
 
 ## Known Issues
 - `test_result_shape_when_present` depends on machine state: on a machine with no session index (or no matches for the broad query), it skips cleanly rather than failing. The other three tests are deterministic everywhere.
 
 ## Revision History
 - 2026-06-24 — Initial creation. Added test_json_output.py covering search.py's new `--json` mode (the knowledge-graph session-search cross-reference contract).
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.

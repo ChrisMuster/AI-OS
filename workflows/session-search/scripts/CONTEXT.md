@@ -1,6 +1,6 @@
 # Session Search — Scripts
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-23
 
 ## Purpose
 Python scripts that implement the session-search workflow: archiving conversation transcripts, building the SQLite FTS5 search index, querying it, scaffolding adapters for new AI sources, and running the background archive scheduler.
@@ -36,7 +36,7 @@ Python scripts that implement the session-search workflow: archiving conversatio
 N/A. Scripts are invoked individually; see each script's module docstring for usage.
 
 ## Dependencies
-- Python 3.9+ standard library (json, sqlite3, pathlib, socket, argparse, subprocess)
+- Python 3.13+ standard library (json, sqlite3, pathlib, socket, argparse, subprocess)
 - `scripts/adapters/` - archive.py delegates AI-specific parsing to adapter modules
 - `.claude/settings.json` - hooks defined there invoke archive.py at session events
 
@@ -58,3 +58,4 @@ N/A. Scripts are invoked individually; see each script's module docstring for us
 - 2026-06-24 - Updated scheduler.py to run index.py hourly instead of archive.py only, keeping non-Claude session archives searchable without a separate manual index run.
 - 2026-06-30 - Removed the Continue.dev adapter and its registry entry (discover.py KNOWN_SOURCES and the adapters Contents count); adapters now cover 8 AI sources. Continue.dev support dropped (project sunsetting).
 - 2026-08-04 - Line endings pinned on all five text writes across `archive.py`, `index.py`, `discover.py` and `scheduler.py` (the two state files, the archived-session JSONL, a generated adapter, and the PID file), which now use an explicit `open(..., newline="\n")` rather than `Path.write_text`. Part of the project-wide pass closing this defect class at all 48 write sites.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.

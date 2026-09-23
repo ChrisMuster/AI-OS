@@ -1,6 +1,6 @@
 # Skill-Hardening Guard - Tests
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-23
 
 ## Purpose
 Hermetic tests for the skill-hardening guard: unit tests for the pure parser and checker (both required SKILL.md sections - Hardening and Verification), and integration tests for skill discovery over a throwaway temporary tree. No git, no network, and no dependence on the real project's SKILL.md files, so the suite is deterministic and safe to run anywhere.
@@ -21,7 +21,7 @@ Hermetic tests for the skill-hardening guard: unit tests for the pure parser and
 
 ## Dependencies
 - `workflows/skill-hardening-guard/scripts/run.py` [[workflows/skill-hardening-guard/scripts/CONTEXT]] - the module under test.
-- Python 3.9+ standard library only (`unittest`, `tempfile`, `importlib`, `subprocess`, `json`, `re`).
+- Python 3.13+ standard library only (`unittest`, `tempfile`, `importlib`, `subprocess`, `json`, `re`).
 - `templates/SKILL.md.template` [[templates/CONTEXT]] - read by the drift test to confirm the guard's `REQUIRED_FIELDS` still matches the template's Hardening labels.
 - `workflows/close-out/` [[workflows/close-out/CONTEXT]] discovers and runs this suite as part of the close-out verifier.
 
@@ -35,3 +35,4 @@ Hermetic tests for the skill-hardening guard: unit tests for the pure parser and
 - 2026-07-10 - Grew to 28 tests for the `## Verification` section enforcement (child #7): added a `VerificationSectionTests` class (complete/missing/empty/placeholder, and the Hardening `Verification / escape hatch` field not satisfying the section check), and updated several Hardening-focused fixtures to include a `## Verification` section so each stays single-concern.
 - 2026-07-10 - Codex review follow-up (child #7): tightened `test_run_check_over_tree` to assert the exact two missing-section findings for the bad fixture (was a loose "some finding points at the bad file"), and added `test_template_has_verification_section` to the drift guard so a template that lost its `## Verification` section fails a test. Suite 28 -> 29.
 - 2026-08-04 - The one fixture write in `test_run.py` converted from `Path.write_text(..., encoding="utf-8")` to `write_bytes`, so it stops writing a CRLF fixture on Windows and stops breaking the newline half of the AGENTS.md text-I/O rule. These fixtures are SKILL.md bodies parsed section by section, so CRLF endings were feeding the parser a different input here than it sees in the real tree. `write_bytes` rather than `Path.write_text(newline=...)`, which is a 3.10 API against the stated 3.9 floor. Part of the pass clearing the last 50 sites project-wide; `encoding` became a close-out blocking label in the same change. Suite unchanged at 29; no assertion touched.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.

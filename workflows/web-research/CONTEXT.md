@@ -1,6 +1,6 @@
 # Web Research (Workflow)
 
-**Last modified:** 2026-06-12
+**Last modified:** 2026-09-23
 
 ## Purpose
 User-facing CLI workflow for researching a topic and saving a research package ready for Biblio to turn into a report. Thin wrapper around the shared `skills/web-research/` [[skills/web-research/CONTEXT]] engine — all source logic lives in the skill; this workflow provides the command-line interface, output management, and report brief.
@@ -61,7 +61,7 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 - `workflows/biblio-tools/scripts/runtime.py` [[workflows/biblio-tools/scripts/CONTEXT]] — Automatically runs the workflow inside the canonical project `.venv`.
 - `skills/web-research/config/rss_feeds.yaml` [[skills/web-research/config/CONTEXT]] — RSS feed list used by the rss source.
 - `skills/image-prompt/` [[skills/image-prompt/CONTEXT]] — Image prompt skill; invoked when `--image-prompt` flag is passed.
-- Python 3.9+ on the host machine (project minimum; see `REQUIREMENTS.md`).
+- Python 3.13+ on the host machine (project minimum; see `REQUIREMENTS.md`).
 
 ## Known Issues
 - Some sources (Semantic Scholar, Stack Exchange) have rate limits on unauthenticated requests. Exclude them if you hit 429 errors.
@@ -77,3 +77,4 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 - 2026-06-11 — Standardised execution on Book Dragon's canonical `.venv`; direct workflow commands now work consistently across AI clients.
 - 2026-06-11 — Updated run logging to record started and completed or failed entries for every research execution.
 - 2026-06-12 — Corrected the static pre-flight check to inspect the canonical project runtime when it exists.
+- 2026-09-23 - Python floor raised from 3.9 to 3.13: the Dependencies line and `SETUP.md` now say 3.13+, and `scripts/run.py`'s `--check` gate requires 3.13.

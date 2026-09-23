@@ -1,6 +1,6 @@
 # Session Search — Adapters
 
-**Last modified:** 2026-06-30
+**Last modified:** 2026-09-23
 
 ## Purpose
 Session transcript adapters for each AI source supported by session-search. Each adapter reads transcripts from an AI tool's specific cache format and yields normalised records in the Book Dragon archive format. Adapters are used by archive.py for both ongoing archiving (--all mode iterates all registered adapters) and historical imports.
@@ -37,7 +37,7 @@ N/A. Adapters are called programmatically by archive.py (both --all and --hook m
 
 ## Dependencies
 - `_base.py` — all adapters inherit from TranscriptAdapter defined here
-- Python 3.9+ standard library only (json, socket, pathlib, sqlite3, hashlib, os)
+- Python 3.13+ standard library only (json, socket, pathlib, sqlite3, hashlib, os)
 
 ## Known Issues
 - Cowork does not support real-time hooks (GitHub Issue #40495). The cowork adapter is used for one-time import and periodic scheduled-task runs only. Claude Code is recommended for reliable real-time archiving.
@@ -51,3 +51,4 @@ N/A. Adapters are called programmatically by archive.py (both --all and --hook m
 - 2026-06-11 — Updated gemini_cli.py to also discover Antigravity CLI sessions at `~/.gemini/antigravity/brain/`. Gemini CLI is sunsetting June 18 2026; Antigravity CLI is the replacement.
 - 2026-06-12 — Normalised the Last modified field to the required date-only format.
 - 2026-06-30 - Removed the Continue.dev adapter (continue_dev.py) and its registry entry. Continue.dev support dropped from Book Dragon (project sunsetting, repo read-only). Adapters now cover 8 AI sources.
+- 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.
