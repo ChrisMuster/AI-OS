@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-09-23 (Python floor raised to 3.13)
+**Last updated:** 2026-09-23 (Python floor raised to 3.13; Codex hook approval check)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -31,6 +31,7 @@ The script checks:
 - AI-specific configuration files exist
 - The selected AI's native MCP configuration is present and contains biblio-tools
 - The `mcp` Python package is installed (MCP-capable AIs)
+- Codex, if installed, will actually run the project's Codex hooks (checked for every AI; see "Codex hook approval" under Codex CLI / Codex Desktop)
 - The exact configured command starts successfully, completes an MCP handshake, exposes all ten expected tools, calls `get_timestamp`, rejects an invalid month, blocks path traversal, and verifies the knowledge-graph query tool without forcing a full graph rebuild during setup
 
 This proves the checked-in configuration and assembled MCP server work together without requiring the AI application to be installed. It does not prove that an unavailable client application discovers its project-scoped config; confirm that once when the client is first installed using its native MCP status command or interface.
@@ -322,6 +323,17 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 6. At the start of each Codex CLI or Codex IDE extension session, Biblio must confirm that the live `mcp__biblio_tools` namespace is exposed by calling `verify_setup` with `ai_name="Codex CLI"` and then `get_timestamp`. If that namespace or either tool is missing, Biblio must report `BIBLIO_TOOLS_NOT_AVAILABLE` before using shell/script fallbacks to diagnose the issue.
 
 **Note:** Codex exposes local Biblio MCP tools through the project-local `biblio-tools` Codex plugin in `.codex/plugins/`, which registers the plugin-backed MCP server as `biblio_tools` and appears to agents as `mcp__biblio_tools`. The older raw `[mcp_servers.biblio-tools]` entry in `.codex/config.toml` is intentionally disabled because Codex could list that server while not exposing it reliably to agents. Setup verification checks both the standalone protocol smoke test and Codex's enabled `biblio_tools` registry entry. The live session check confirms the final tool palette that the agent can actually call. If a running Codex session still does not show Biblio Tools after install or update, start a fresh session so Codex rebuilds its tool palette.
+
+**Codex hook approval.** Codex runs a project's hooks only after the user approves them, and it stores a fingerprint of each approval. If a hook in `.codex/config.toml` is edited, its fingerprint no longer matches and Codex silently stops running it until it is approved again. Setup verification's "Codex hook trust" check asks Codex about this at every session start and fails if any project hook would not run. To fix it:
+
+1. Open a terminal in the project folder and start Codex's terminal interface. If `codex` is not on your command path, run the `codex.exe` from the Codex desktop app's install folder.
+2. Type `/hooks` and press Enter. Make the terminal tall enough to show every event, including Stop at the bottom.
+3. For each event with hooks needing review, press Enter, highlight each **project** hook and press `t` to approve that one hook. Avoid "trust all": it also approves plugin hooks, which are a separate decision.
+4. Close Codex with `/quit` without sending a message, then rerun setup verification.
+
+Codex records approval against the project path as spelled, and on Windows the same folder can arrive as `C:\...` or `c:\...`. The check tests both spellings and names the one still unapproved; approve again from a Codex started with that spelling.
+
+The check also compares Codex's list with the hooks `.codex/config.toml` defines. If it says Codex "does not list" a hook, approving will not help, because Codex has not loaded that hook at all: confirm that Codex trusts the project folder itself and that `/hooks` shows the hook, and if it does not, check `.codex/config.toml` for an error.
 
 ### OpenCode
 

@@ -19,9 +19,13 @@ import argparse
 import importlib.util
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
+import threading
+import time
+from collections import Counter
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -409,6 +413,261 @@ def check_codex_mcp_registry() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Codex hook trust
+# ---------------------------------------------------------------------------
+# Codex runs a project hook only while its stored approval fingerprint matches
+# the hook as written. Editing a hook's command silently switches it off until
+# the user approves it again, which is how Codex ran unhooked from 2026-07-31 to
+# 2026-09-23 with nothing reporting it. So this check asks Codex itself, through
+# its app-server's hooks/list request, rather than re-deriving the fingerprint.
+
+CODEX_HOOK_CHECK = "Codex hook trust"
+CODEX_HOOK_TIMEOUT = 20
+
+
+def _codex_binary() -> Path | None:
+    """Find an installed Codex executable.
+
+    Searched in order, taking the newest file in the first place that has one:
+    `codex` on PATH, the Codex desktop app, then the VS Code Codex extension.
+    """
+    found = shutil.which("codex")
+    if found:
+        return Path(found)
+    exe = "codex.exe" if os.name == "nt" else "codex"
+    groups: list[list[Path]] = []
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        groups.append(list((Path(local) / "OpenAI" / "Codex" / "bin").glob(f"*/{exe}")))
+    try:
+        home = Path.home()
+    except RuntimeError:
+        home = None
+    if home is not None:
+        groups.append(list((home / ".vscode" / "extensions").glob(f"openai.chatgpt-*/bin/*/{exe}")))
+    for group in groups:
+        files = [path for path in group if path.is_file()]
+        if files:
+            return max(files, key=lambda path: path.stat().st_mtime)
+    return None
+
+
+def _project_root_spellings() -> list[str]:
+    """The project root as Codex may key it. Codex records approval against the
+    path as spelled, and on Windows the same folder arrives as `C:` or `c:`
+    depending on what opened it, so both spellings are checked."""
+    root = str(PROJECT_ROOT)
+    if os.name == "nt" and len(root) > 1 and root[1] == ":":
+        return [root[0].upper() + root[1:], root[0].lower() + root[1:]]
+    return [root]
+
+
+def _project_codex_hooks() -> list[tuple[str, str | None]]:
+    """The project hooks .codex/config.toml defines, as (event, matcher) pairs.
+
+    One pair per command, because hooks/list reports one entry per command
+    (its keys end `:<event>:<group>:<command>`), so the two lists compare
+    directly. Empty when the file is absent or defines no hooks.
+    """
+    path = PROJECT_ROOT / ".codex" / "config.toml"
+    if not path.is_file():
+        return []
+    # Imported here so verify.py still loads, and reports the floor FAIL, on a
+    # Python too old to have tomllib.
+    try:
+        import tomllib
+    except ImportError as exc:
+        raise RuntimeError("Python 3.11+ is required to read .codex/config.toml") from exc
+
+    hooks = tomllib.loads(path.read_text(encoding="utf-8")).get("hooks", {})
+    if not isinstance(hooks, dict):
+        return []
+    defined = []
+    for event, groups in hooks.items():
+        if event == "state" or not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            commands = group.get("hooks")
+            count = len(commands) if isinstance(commands, list) else 0
+            defined.extend([(event, group.get("matcher"))] * count)
+    return defined
+
+
+def _hook_identity(event: str, matcher: str | None) -> tuple[str, str | None]:
+    """A hook as both sides can name it: the config spells events `PreToolUse`
+    and hooks/list spells them `preToolUse`."""
+    return event.replace("_", "").lower(), matcher or None
+
+
+def _hook_label(event: str, matcher: str | None) -> str:
+    return event + (f" {matcher}" if matcher else "")
+
+
+def _query_codex_hooks(command: list[str], cwds: list[str], timeout: float = CODEX_HOOK_TIMEOUT) -> list:
+    """Ask a Codex app-server for its hooks list and return the `data` entries.
+
+    Speaks the app-server's line-delimited JSON-RPC over stdio: initialize, the
+    initialized notification, then hooks/list. No model is called.
+    """
+    env, _ = _codex_cli_env()
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    lines: queue.Queue = queue.Queue()
+
+    def read_lines() -> None:
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    reader = threading.Thread(target=read_lines, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + timeout
+
+    def send(message: dict) -> None:
+        proc.stdin.write(json.dumps(message) + "\n")
+        proc.stdin.flush()
+
+    def wait_for(request_id: str):
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"no answer within {timeout:g} seconds")
+            try:
+                line = lines.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError(f"no answer within {timeout:g} seconds") from None
+            if line is None:
+                raise RuntimeError("Codex closed the connection before answering")
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict) and message.get("id") == request_id:
+                if "error" in message:
+                    error = message["error"]
+                    raise RuntimeError(error.get("message", str(error)) if isinstance(error, dict) else str(error))
+                return message.get("result")
+
+    try:
+        send({"id": "bd-init", "method": "initialize", "params": {
+            "clientInfo": {"name": "book_dragon_verify", "title": "Book Dragon setup verification",
+                           "version": "1"},
+            "capabilities": {"experimentalApi": True},
+        }})
+        wait_for("bd-init")
+        send({"method": "initialized"})
+        send({"id": "bd-hooks", "method": "hooks/list", "params": {"cwds": cwds}})
+        result = wait_for("bd-hooks")
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            proc.kill()
+        # The reader sees end-of-file once the process has gone; close its pipe
+        # after it finishes so no file handle outlives the check.
+        reader.join(timeout=2)
+        if not reader.is_alive():
+            proc.stdout.close()
+    if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+        raise ValueError("hooks/list answer had no data list")
+    return result["data"]
+
+
+def judge_codex_hooks(entries: list, defined: list, cwds: list) -> dict:
+    """Turn a hooks/list answer into a check result.
+
+    `defined` is what .codex/config.toml declares (see _project_codex_hooks)
+    and `cwds` the path spellings asked about. Only the project's own hooks are
+    judged; plugin hooks are the user's choice and are ignored. A defined hook
+    Codex did not list will not run either, so it is a surfaced FAIL like an
+    unapproved one, including when Codex lists none at all. A spelling Codex
+    gave no answer for cannot be judged, so it is a surfaced WARN.
+    """
+    expected = Counter(_hook_identity(event, matcher) for event, matcher in defined)
+    labels = {_hook_identity(event, matcher): _hook_label(event, matcher) for event, matcher in defined}
+    blocked, missing, errors, answered = [], [], [], set()
+    for entry in entries:
+        cwd = entry.get("cwd", "?")
+        answered.add(cwd)
+        errors.extend(str(err.get("message", err)) if isinstance(err, dict) else str(err)
+                      for err in entry.get("errors") or [])
+        project = [hook for hook in entry.get("hooks") or [] if hook.get("source") == "project"]
+        listed = Counter(_hook_identity(hook.get("eventName", "?"), hook.get("matcher"))
+                         for hook in project)
+        for identity, count in (expected - listed).items():
+            missing.append(f"{labels[identity]}{f' x{count}' if count > 1 else ''} under {cwd}")
+        for hook in project:
+            status = hook.get("trustStatus")
+            if status in ("trusted", "managed") and hook.get("enabled", True):
+                continue
+            name = _hook_label(hook.get("eventName", "?"), hook.get("matcher"))
+            state = status if hook.get("enabled", True) else "disabled"
+            blocked.append(f"{name} ({state}) under {cwd}")
+
+    failures = []
+    if blocked:
+        failures.append(f"Codex will not run {len(blocked)} project hook(s): {'; '.join(blocked)}. "
+                        "Fix: open Codex in this project, run /hooks, and approve each project "
+                        "hook individually with t. Avoid 'trust all', which also approves plugin "
+                        "hooks. See AGENT-SETUP.md, Codex hook approval.")
+    if missing:
+        failures.append(f"Codex does not list {len(missing)} project hook(s) that "
+                        f".codex/config.toml defines, so will not run them: {'; '.join(missing)}. "
+                        "Check that Codex trusts this project and is loading its config.")
+    if failures:
+        return {"check": CODEX_HOOK_CHECK, "status": "FAIL", "surface": True,
+                "detail": " ".join(failures)}
+    if errors:
+        return {"check": CODEX_HOOK_CHECK, "status": "WARN", "surface": True,
+                "detail": f"Codex reported errors reading its hooks: {'; '.join(errors)}"}
+    unanswered = [cwd for cwd in cwds if cwd not in answered]
+    if unanswered:
+        return {"check": CODEX_HOOK_CHECK, "status": "WARN", "surface": True,
+                "detail": f"Codex gave no hooks answer for {', '.join(unanswered)}."}
+    return {"check": CODEX_HOOK_CHECK, "status": "PASS",
+            "detail": (f"Codex will run all {len(defined)} project hooks "
+                       f"(checked under {len(cwds)} path spelling(s)).")}
+
+
+def check_codex_hooks() -> dict:
+    """Ask the installed Codex whether it will run this project's hooks."""
+    try:
+        defined = _project_codex_hooks()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"check": CODEX_HOOK_CHECK, "status": "WARN", "surface": True,
+                "detail": f"Could not read .codex/config.toml: {exc}"}
+    if not defined:
+        return {"check": CODEX_HOOK_CHECK, "status": "PASS",
+                "detail": "No Codex hooks are defined in .codex/config.toml."}
+    codex = _codex_binary()
+    if codex is None:
+        return {"check": CODEX_HOOK_CHECK, "status": "WARN",
+                "detail": "Codex is not installed here, so its hook approvals were not checked."}
+    cwds = _project_root_spellings()
+    try:
+        entries = _query_codex_hooks([str(codex), "app-server", "--listen", "stdio://"], cwds)
+    except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
+        return {"check": CODEX_HOOK_CHECK, "status": "WARN", "surface": True,
+                "detail": f"Could not ask Codex ({codex}) whether it will run the project hooks: {exc}"}
+    return judge_codex_hooks(entries, defined, cwds)
+
+
 def check_mcp_package() -> dict:
     """Check that the mcp Python package is installed."""
     spec = importlib.util.find_spec("mcp")
@@ -737,6 +996,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
             "Project runtime Python version",
             "PDF extraction",
             "Git pre-commit hook",
+            CODEX_HOOK_CHECK,
         ]
         for cf in reqs["config_files"]:
             checks.append(f"Config: {cf}")
@@ -759,6 +1019,9 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     results.append(check_runtime_python_version())
     results.append(check_pdf_extraction())
     results.append(check_git_precommit_hook())
+    # Every AI runs this, not only Codex: an unhooked Codex has to be noticed by
+    # whichever session starts next, and that is rarely a Codex one.
+    results.append(check_codex_hooks())
     results.extend(check_config_files(reqs["config_files"]))
 
     if reqs.get("readiness_blocker"):
