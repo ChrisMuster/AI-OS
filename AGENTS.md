@@ -47,6 +47,8 @@ At the start of every new session, before doing anything else:
 
 Do not skip step 0 or steps 1 to 13. Do not summarise what you have read back to the user unless they ask. After finishing steps 1 to 13, greet the user by name (from `USER.md`), choosing the salutation that matches the current local time (from `get_timestamp` or `date`): use **Good morning** before 12:00, **Good afternoon** from 12:00 to 17:59, and **Good evening** from 18:00 onward. Then ask what they want to work on today - or, if a handoff was surfaced in step 12, offer to resume it.
 
+**Orchestrated sessions are the one exception.** A session that a review-orchestration run starts for an automated writer/reviewer loop skips steps 0 to 14 and the greeting when its first prompt line begins, verbatim, `Orchestrated session: skip the AGENTS.md session-startup sequence.` Startup acknowledges the handoff and memory-diff watermarks and writes logs, so an automated session running it would consume state the user's own next session relies on. The marker lives only in the prompt of the sessions the orchestrator starts, never in a file or setting, so nothing is left switched on if a run crashes. Everything else still applies: every hook, step 15, and every other rule in this file. The user starting the run is the permission for the work its brief describes, and nothing outside that brief.
+
 Once the task is known and context is read (steps 14 and 15), confirm your understanding and proposed approach to the user before executing anything. See the "Explicit permission required" rule.
 
 ## Directory structure
