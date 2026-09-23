@@ -147,6 +147,8 @@ def extract(source: Path, destination: Path, digest: str) -> dict:
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     ensure_project_runtime()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

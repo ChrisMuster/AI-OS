@@ -14,6 +14,7 @@ Usage:
 
 import json
 import os
+import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -232,6 +233,8 @@ class {class_name}(TranscriptAdapter):
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     import argparse
     parser = argparse.ArgumentParser(
         description='Discover the data footprint of a new AI tool',

@@ -42,6 +42,8 @@ def _append_log(action, note):
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Check whether project Python packages and AI CLI tools have newer versions available.",
     )

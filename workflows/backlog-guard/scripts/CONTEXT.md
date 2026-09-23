@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-23
 
 ## Purpose
 Command-line implementation for the backlog-guard workflow.
@@ -37,3 +37,4 @@ Command-line implementation for the backlog-guard workflow.
 ## Revision History
 - 2026-08-04 - Initial creation.
 - 2026-08-04 - Snapshot and restore actions now append the backup store's own LOG.md as well as the workflow LOG.md.
+- 2026-09-23 - `run.py`'s `main()` now reconfigures stdout to UTF-8 as its first statement, as the project encoding rule requires of any script printing a report, so backlog section names and check messages print correctly on a Windows console or pipe. The call is guarded by `hasattr` so an in-process caller that has swapped `sys.stdout` for a plain stream is unaffected. Part of the report-scripts stdout sweep.

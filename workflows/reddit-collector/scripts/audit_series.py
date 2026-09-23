@@ -2,15 +2,11 @@
 Audit script for HFY series directories.
 Finds systematic bugs in series detection and indexing.
 """
-import io
 import os
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-
-# Force stdout to UTF-8 to handle Unicode series names on Windows
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -87,6 +83,9 @@ def parse_table_rows(text):
 # ---------------------------------------------------------------------------
 
 def main():
+    # UTF-8 stdout so Unicode series names print on Windows.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     series_dirs = sorted(d for d in SERIES_ROOT.iterdir() if d.is_dir()) \
         if SERIES_ROOT.exists() else []
 

@@ -29,6 +29,7 @@ Examples:
 
 import argparse
 import calendar
+import sys
 from pathlib import Path
 from datetime import datetime, date
 
@@ -91,6 +92,8 @@ def generate_month_content(year: int, month: int) -> str:
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Create the journal entry file for next month (or a specified month).",
         formatter_class=argparse.RawDescriptionHelpFormatter,

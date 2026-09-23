@@ -296,6 +296,8 @@ def archive_from_hook(dry_run: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(
         description='Book Dragon session archive writer',
         formatter_class=argparse.RawDescriptionHelpFormatter,

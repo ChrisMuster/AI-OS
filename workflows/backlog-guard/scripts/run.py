@@ -343,6 +343,8 @@ def build_parser():
 
 
 def main(argv=None):
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = build_parser()
     args = parser.parse_args(argv)
     backlog_path, backup_dir, log_path = _resolve_paths()

@@ -31,6 +31,7 @@ import json
 import py_compile
 import re
 import subprocess
+import sys
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -520,6 +521,8 @@ def format_report(findings: list[Finding], stats: dict, verbose: bool) -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(
         description='Validate settings coverage, script health, and path safety.',
         formatter_class=argparse.RawDescriptionHelpFormatter,

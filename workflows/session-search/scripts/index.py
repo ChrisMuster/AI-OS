@@ -279,6 +279,8 @@ def run_index(dry_run: bool = False, rebuild: bool = False) -> None:
 
 
 def main() -> None:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(
         description='Book Dragon session search indexer',
         formatter_class=argparse.RawDescriptionHelpFormatter,

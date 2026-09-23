@@ -23,6 +23,8 @@ sys.path.insert(0, str(_SKILL_SCRIPTS))
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(
         description='Research a topic and save a package ready for Biblio to turn into a report.',
         formatter_class=argparse.RawDescriptionHelpFormatter,

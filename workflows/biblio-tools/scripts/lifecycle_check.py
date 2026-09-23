@@ -124,6 +124,8 @@ def check_reader_stale_pid_safety() -> tuple[bool, str]:
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()
 

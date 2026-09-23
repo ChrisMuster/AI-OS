@@ -395,6 +395,8 @@ def scaffold_wiki(wiki_name: str, wiki_topic: str, dry_run: bool) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Scaffold a new wiki directory in wikis/.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -215,6 +215,8 @@ def run(interval: int = DEFAULT_INTERVAL, timeout: int = DEFAULT_TIMEOUT) -> Non
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Background session archive scheduler",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-24
 
 ## Purpose
 Contains the helper scripts for the journal. Currently one script: new-month.py, which creates the pre-filled entry file for the next (or a specified) month.
@@ -38,3 +38,4 @@ python journal/scripts/new-month.py [--month YYYY-MM] [--dry-run] [--force]
 - 2026-06-09 — Added `--force` flag and date gate logic. Next month's file is now blocked by the script itself if today is not within the last 7 days of the current month.
 - 2026-07-08 - Replaced the em dash with a hyphen in new-month.py's generated month H1 ("# Journal - Month YYYY"), so newly-created journal files no longer seed an ai-style-guard em-dash warning. Stdout-only strings left unchanged.
 - 2026-08-04 - Line endings pinned on both text writes in `new-month.py` (the LOG.md append and the generated month file), which now pass `newline="\n"` explicitly. On Windows a text-mode write translates every `\n` to `\r\n`, so a journal month file created here was CRLF from birth against the repository's declared `eol=lf` policy. Part of the project-wide pass that closed this defect class at all 48 write sites; encoding-guard now detects the result at check time rather than only repairing it under `--fix`.
+- 2026-09-24 - `new-month.py`'s `main()` now reconfigures stdout to UTF-8 as its first statement, guarded by `hasattr`, as the project encoding rule requires of any script printing a report. Its date-gate message prints a dash that a Windows cp1252 stream could not carry. Completes the report-scripts stdout sweep, whose automated run could not reach `journal/`.

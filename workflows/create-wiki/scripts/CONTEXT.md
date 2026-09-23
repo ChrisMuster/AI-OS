@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-23
 
 ## Purpose
 Contains deterministic wiki scaffolding and PDF extraction scripts.
@@ -69,3 +69,4 @@ Both outputs are keyed to the PDF's content digest and cached, so re-running is 
 - 2026-07-24 - Added a `--text` flag to extract_pdf.py that writes a page-delimited plain-text rendering beside the extraction JSON. Removes the need to hand-write a throwaway flatten script in the session scratchpad on every PDF ingest, which had been the practice because the extractor stopped at JSON. Additive and backward compatible: without the flag the behaviour and output are unchanged.
 - 2026-07-25 - Converted the two em dashes in the Contents entries to hyphens; ai-style-guard flagged the extract_pdf.py line (edited on 2026-07-24), and the run.py line was converted too for consistency. Style-only, no behavioural change.
 - 2026-08-04 - Line endings pinned on every text write in `run.py` and `extract_pdf.py` (the LOG.md append, each scaffolded wiki file, the `wikis/CONTEXT.md` [[wikis/CONTEXT]] rewrite, and the extracted-PDF cache), which now pass `newline="\n"` explicitly. This directory scaffolds new files, so a translated newline here seeded CRLF into every wiki it created. Part of the project-wide pass closing this defect class at all 48 write sites.
+- 2026-09-23 - `run.py` and `extract_pdf.py` now reconfigure stdout to UTF-8 as the first statement of `main()` (guarded by `hasattr`), as the project encoding rule requires of any script printing a report. `extract_pdf.py` prints its summary with `ensure_ascii=False`, so a PDF path with non-ASCII characters could raise `UnicodeEncodeError` on a cp1252 Windows stream. Part of the report-scripts stdout sweep.
