@@ -2,7 +2,6 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 trafilatura>=1.6.0
 feedparser>=6.0.0
-textstat>=0.7.3
 pyyaml>=6.0.0
 python-dotenv>=1.0.0
 lxml>=4.9.0

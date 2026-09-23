@@ -34,3 +34,4 @@ N/A. This is a scripts container, not a workflow itself.
 - 2026-06-12 — Made `--check` inspect the canonical project runtime when available while retaining host-Python diagnostics before initial setup.
 - 2026-08-04 - Line endings pinned on both text writes in `run.py` (the research package JSON and the LOG.md append), which now pass `newline="\n"` explicitly. The 52 CRLF files in `outputs/` were all written through the first of these. Part of the project-wide pass closing this defect class at all 48 write sites.
 - 2026-09-23 - `run.py --check` now requires Python 3.13 rather than 3.9, following the project floor.
+- 2026-09-23 - Removed the `--readability-check` stub from `run.py` (the argument and the `readability_check` keyword passed to `research()`, which only copied it into package metadata) and dropped `textstat` from the `--check` required-packages list. No readability scoring was ever implemented.

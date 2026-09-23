@@ -1,6 +1,6 @@
 # Web Research — scripts/
 
-**Last modified:** 2026-06-12
+**Last modified:** 2026-09-23
 
 ## Purpose
 Python scripts that implement the web research skill. `research.py` is the main importable entry point; `compile.py` assembles raw results into a research package; the `sources/` subdirectory contains one adapter per data source.
@@ -34,3 +34,4 @@ N/A. This is a scripts container, not a workflow itself.
 - 2026-06-06 — research.py updated: loads SUBSCRIBED_DOMAINS from .env; passes subscribed_domains to scraper; separates paywalled_subscribed entries from raw results; adds paywalled_urls list to the research package.
 - 2026-06-11 — Package installation moved to the canonical root setup command.
 - 2026-06-12 — Corrected context metadata after canonical runtime documentation maintenance.
+- 2026-09-23 - Removed `textstat` from `requirements.txt`. Nothing imported it; it was reserved for a readability check that was never built, and syllable counting would have needed the CMU Pronouncing Dictionary through an NLTK download that fails behind SSL interception.

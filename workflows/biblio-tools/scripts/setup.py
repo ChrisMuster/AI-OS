@@ -28,7 +28,6 @@ PACKAGE_IMPORTS = {
     "pyyaml": "yaml",
     "requests": "requests",
     "tavily-python": "tavily",
-    "textstat": "textstat",
     "trafilatura": "trafilatura",
 }
 

@@ -32,7 +32,6 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 **Quality flags:**
 - `--citations` (default: inline) — inline, endnotes, none.
 - `--confidence-markers` — Include confidence markers on claims.
-- `--readability-check` — Run readability scoring post-generation.
 - `--virality` — Optimise for engagement and shareability.
 
 **Image prompt flags:**
@@ -78,3 +77,4 @@ All inputs are passed as CLI flags. Only `--topic` is required; everything else 
 - 2026-06-11 — Updated run logging to record started and completed or failed entries for every research execution.
 - 2026-06-12 — Corrected the static pre-flight check to inspect the canonical project runtime when it exists.
 - 2026-09-23 - Python floor raised from 3.9 to 3.13: the Dependencies line and `SETUP.md` now say 3.13+, and `scripts/run.py`'s `--check` gate requires 3.13.
+- 2026-09-23 - Removed the `--readability-check` flag from the Quality flags list, following its removal from `scripts/run.py`. It was a stub: nothing ever scored readability, so the flag only recorded itself in the package metadata. The unused `textstat` dependency went with it.

@@ -75,8 +75,6 @@ Examples:
                         help='Citation format (default: inline)')
     parser.add_argument('--confidence-markers', action='store_true',
                         help='Ask Biblio to mark each claim with a confidence indicator')
-    parser.add_argument('--readability-check', action='store_true',
-                        help='Run readability scoring on the research package')
     parser.add_argument('--virality', action='store_true',
                         help='Ask Biblio to optimise the report for engagement and shareability')
 
@@ -171,7 +169,6 @@ Examples:
             style=args.style,
             citations=args.citations,
             confidence_markers=args.confidence_markers,
-            readability_check=args.readability_check,
             virality=args.virality,
         )
 
@@ -315,7 +312,6 @@ def _run_check():
         ('beautifulsoup4','bs4'),
         ('trafilatura',   'trafilatura'),
         ('feedparser',    'feedparser'),
-        ('textstat',      'textstat'),
         ('pyyaml',        'yaml'),
         ('python-dotenv', 'dotenv'),
         ('lxml',          'lxml'),
