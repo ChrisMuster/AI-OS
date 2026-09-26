@@ -197,6 +197,13 @@ rows:
     doc_sync: E11
     provenance: ["sweep-1", "sweep-2", "sweep-3"]
 
+  - path: "workflows/review-orchestration/runs/"
+    assertion: assert-ignored
+    example: "workflows/review-orchestration/runs/20260101-000000-abcd/state.json"
+    seed: true
+    doc_sync: E10
+    provenance: ["sweep-1"]
+
   - path: "workflows/reddit-collector/collections/"
     assertion: assert-ignored
     example: "workflows/reddit-collector/collections/example/posts/example.md"

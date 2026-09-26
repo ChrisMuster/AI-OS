@@ -100,6 +100,11 @@ workflows/handoff/state.json
 # Memory-diff - local content watermark (the last memory/LOG.md entry surfaced at startup)
 workflows/memory-diff/state.json
 
+# Review orchestration - run records (brief, state, round diffs, transcripts). They
+# quote project files and session output, so they are local only; the personal
+# repository captures them.
+workflows/review-orchestration/runs/
+
 # Reddit collector — downloaded posts and state are personal/machine-specific content
 workflows/reddit-collector/collections/
 workflows/reddit-collector/config/feeds.json
