@@ -1,0 +1,21 @@
+# Verification commands an orchestrated builder may run (plan section 10.4).
+#
+# One Python regular expression per line. A shell command is allowed only when the
+# whole command, trimmed, matches one line. Blank lines and lines starting with #
+# are ignored. The starting set is the B2 rerun's list, which ran on 2026-09-23.
+#
+# No line may accept a flag the line does not name: a free argument never starts
+# with `-`, written `(?!-)`. The audit's `--save` and close-out's `--repair` both
+# write outside any edit path, and an argument class that allows `-` lets them in
+# (review finding R2-2, 2026-09-26). The test-runner line takes test names and an
+# optional `-v`; a `--help` there exits 0 without running a test (R3-1).
+#
+# Whatever a line allows, the approver still refuses a command with a `..` path
+# component, a command naming `.env`, and anything spanning more than one line.
+python -m py_compile( (?!-)[\w./\-]+)+
+python (workflows|skills)/[\w./\-]+/tests/[\w./\-]+\.py( (?!-)[\w.]+)*( -v)?
+python workflows/audit/scripts/run\.py --context( (?!-)[\w./\-]+)+( --no-graph)?
+python workflows/close-out/scripts/run\.py( --scope (?!-)[\w\-]+)?( --json)?
+python (workflows|skills)/[\w./\-]+/scripts/run\.py --check
+python workflows/encoding-guard/scripts/run\.py --check
+python workflows/doc-sync-guard/scripts/run\.py( --check)?

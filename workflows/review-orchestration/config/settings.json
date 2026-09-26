@@ -1,3 +1,25 @@
 {
-  "usage_ceiling_percent": 80
+  "usage_ceiling_percent": 80,
+  "roles": {
+    "builder": "claude",
+    "reviewer": "codex"
+  },
+  "round_caps": {
+    "build_review": 3,
+    "plan_review": 2
+  },
+  "models": {
+    "claude": {
+      "builder": {"model": "claude-opus-5-5", "effort": "medium"},
+      "planner": {"model": "claude-opus-5-5", "effort": "medium"},
+      "plan_reviewer": {"model": "claude-opus-5-5", "effort": "high"},
+      "intent_checker": {"model": "claude-opus-5-5", "effort": "medium"}
+    },
+    "codex": {
+      "planner": {"model": "gpt-6-astra", "effort": "medium"},
+      "plan_reviewer": {"model": "gpt-6-sol", "effort": "high"},
+      "reviewer": {"model": "gpt-6-sol", "effort": "high"},
+      "intent_checker": {"model": "gpt-6-sol", "effort": "medium"}
+    }
+  }
 }

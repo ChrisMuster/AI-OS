@@ -488,7 +488,8 @@ class SettingsTests(unittest.TestCase):
 
     def test_positive_other_keys_are_kept(self):
         loaded = settings.load_settings(self.write('{"usage_ceiling_percent": 60, "x": 1}'))
-        self.assertEqual(loaded, {"usage_ceiling_percent": 60, "x": 1})
+        self.assertEqual(loaded["usage_ceiling_percent"], 60)
+        self.assertEqual(loaded["x"], 1)
 
     def test_negative_a_fraction_of_a_percent_is_a_number(self):
         loaded = settings.load_settings(self.write('{"usage_ceiling_percent": 79.5}'))
@@ -528,7 +529,105 @@ class SettingsTests(unittest.TestCase):
     def test_positive_the_shipped_file_is_plain_json(self):
         raw = (WORKFLOW / "config" / "settings.json").read_bytes()
         self.assertNotIn(b"\r", raw)
-        self.assertEqual(json.loads(raw), {"usage_ceiling_percent": 80})
+        self.assertEqual(json.loads(raw)["usage_ceiling_percent"], 80)
+
+
+class RoleSettingsTests(unittest.TestCase):
+    """Roles, round caps and models (plan section 11)."""
+
+    def write(self, data):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "settings.json"
+        path.write_bytes(json.dumps(data).encode("utf-8"))
+        return path
+
+    def load(self, data):
+        return settings.load_settings(self.write(data))
+
+    def test_positive_the_shipped_file_holds_the_plan_defaults(self):
+        loaded = settings.load_settings()
+        self.assertEqual(loaded["roles"], {"builder": "claude", "reviewer": "codex"})
+        self.assertEqual(loaded["round_caps"], {"build_review": 3, "plan_review": 2})
+        self.assertEqual(loaded["models"], settings.DEFAULT_MODELS)
+        self.assertEqual(settings.model_for(loaded, "codex", "reviewer"),
+                         {"model": "gpt-6-sol", "effort": "high"})
+        self.assertEqual(settings.model_for(loaded, "claude", "builder"),
+                         {"model": "claude-opus-5-5", "effort": "medium"})
+
+    def test_positive_an_empty_file_takes_every_default(self):
+        loaded = self.load({})
+        self.assertEqual(loaded["roles"], settings.DEFAULT_ROLES)
+        self.assertEqual(loaded["round_caps"], settings.DEFAULT_ROUND_CAPS)
+        self.assertEqual(loaded["models"], settings.DEFAULT_MODELS)
+
+    def test_positive_one_entry_overrides_only_itself(self):
+        loaded = self.load({"models": {"codex": {"reviewer": {"model": "gpt-7",
+                                                              "effort": "xhigh"}}}})
+        self.assertEqual(loaded["models"]["codex"]["reviewer"],
+                         {"model": "gpt-7", "effort": "xhigh"})
+        self.assertEqual(loaded["models"]["codex"]["planner"],
+                         settings.DEFAULT_MODELS["codex"]["planner"])
+        self.assertEqual(settings.DEFAULT_MODELS["codex"]["reviewer"]["model"], "gpt-6-sol",
+                         "the defaults must not be changed by an override")
+
+    def test_positive_swapped_roles_load_once_the_new_pairs_have_models(self):
+        loaded = self.load({
+            "roles": {"builder": "codex", "reviewer": "claude"},
+            "models": {"codex": {"builder": {"model": "gpt-6-sol", "effort": "high"}},
+                       "claude": {"reviewer": {"model": "claude-opus-5-5",
+                                               "effort": "high"}}}})
+        self.assertEqual(loaded["roles"], {"builder": "codex", "reviewer": "claude"})
+
+    def test_rejection_swapped_roles_without_the_new_pairs(self):
+        with self.assertRaisesRegex(settings.SettingsError,
+                                    r"models\.codex\.builder is required when codex builds"):
+            self.load({"roles": {"builder": "codex", "reviewer": "claude"}})
+        with self.assertRaisesRegex(settings.SettingsError,
+                                    r"models\.claude\.reviewer is required"):
+            self.load({"roles": {"builder": "codex", "reviewer": "claude"},
+                       "models": {"codex": {"builder": {"model": "m", "effort": "high"}}}})
+
+    def test_rejection_one_provider_in_both_roles(self):
+        with self.assertRaisesRegex(settings.SettingsError, "must be different providers"):
+            self.load({"roles": {"builder": "codex"}})
+
+    def test_rejection_bad_roles_caps_and_models(self):
+        good = {"model": "m", "effort": "high"}
+        cases = [
+            ({"roles": {"builder": "gemini"}}, r"roles\.builder must be one of"),
+            ({"roles": {"writer": "claude"}}, r"roles has unknown key\(s\): writer"),
+            ({"roles": []}, "roles must be a JSON object"),
+            ({"round_caps": {"build_review": 0}}, r"round_caps\.build_review must be"),
+            ({"round_caps": {"build_review": True}}, r"round_caps\.build_review must be"),
+            ({"round_caps": {"build_review": 2.5}}, r"round_caps\.build_review must be"),
+            ({"round_caps": {"review": 2}}, r"round_caps has unknown key"),
+            ({"models": {"gemini": {}}}, r"models has unknown key\(s\): gemini"),
+            ({"models": {"codex": {"synthesiser": good}}},
+             r"models\.codex has unknown key\(s\): synthesiser"),
+            ({"models": {"codex": {"reviewer": {"model": "", "effort": "high"}}}},
+             r"models\.codex\.reviewer\.model must be a model name"),
+            ({"models": {"codex": {"reviewer": {"model": "m"}}}},
+             r"models\.codex\.reviewer\.effort must be one of"),
+            ({"models": {"claude": {"builder": {"model": "m", "effort": "ultra"}}}},
+             r"models\.claude\.builder\.effort must be one of: low, medium, high, xhigh, max"),
+            ({"models": {"codex": {"reviewer": {**good, "temperature": 1}}}},
+             r"models\.codex\.reviewer has unknown key\(s\): temperature"),
+        ]
+        for data, reason in cases:
+            with self.subTest(data=data):
+                with self.assertRaisesRegex(settings.SettingsError, reason):
+                    self.load(data)
+
+    def test_negative_an_effort_valid_for_one_provider_only(self):
+        # ultra is a Codex effort, not a Claude one: the same word is judged per provider.
+        loaded = self.load({"models": {"codex": {"reviewer": {"model": "m",
+                                                              "effort": "ultra"}}}})
+        self.assertEqual(loaded["models"]["codex"]["reviewer"]["effort"], "ultra")
+
+    def test_rejection_model_for_an_unset_pair(self):
+        with self.assertRaisesRegex(settings.SettingsError, r"models\.codex\.builder is not set"):
+            settings.model_for(self.load({}), "codex", "builder")
 
 
 if __name__ == "__main__":
