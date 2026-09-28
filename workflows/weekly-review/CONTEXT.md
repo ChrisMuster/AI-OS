@@ -1,6 +1,6 @@
 # Weekly Review
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-09-26
 
 ## Purpose
 The cron + memory flywheel for Book Dragon: a weekly retrospective that reads the
@@ -86,3 +86,5 @@ AGENTS-reading AI, with no per-AI scheduling adapter.
   as its own entry because at the own-directory level any real change to a file
   earns one, reordering included; leaving a corrected file with no record of the
   correction is the drift the check exists to catch.
+- 2026-09-26 - Corrected the W39 coverage watermark to 25 September after the
+  user directed that all 26 September activity belongs to the next review.

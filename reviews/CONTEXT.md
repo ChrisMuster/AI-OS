@@ -1,6 +1,6 @@
 # Reviews
 
-**Last modified:** 2026-09-19
+**Last modified:** 2026-09-26
 
 ## Purpose
 Store for the weekly-review flywheel. Holds the dated review files that the
@@ -82,3 +82,7 @@ writes it lives in `workflows/weekly-review/` [[workflows/weekly-review/CONTEXT]
   days rather than seven, and for once that is not a cadence break: the window
   opens on the day the previous review deferred as its own run day, so the extra
   day is the carry-forward the workflow creates by design rather than a slip.
+- 2026-09-26 - Recorded the 2026-W39 review landing in the store. Contents remains
+  a naming convention rather than a list of personal review files.
+- 2026-09-26 - Corrected W39 to exclude all activity on its run day, following
+  the user's direction that the whole date belongs in the next review.
