@@ -937,5 +937,189 @@ class ContextOnlyOwnerTest(unittest.TestCase):
         self.assertEqual(self.repo.check(), [])
 
 
+# ---------------------------------------------------------------------------
+# Re-measure: archive-plus-append at the Revision History cap
+# ---------------------------------------------------------------------------
+# The committed state every shape below starts from: a Revision History at its
+# cap as the project writes it, meaning an "Earlier history archived" line plus
+# 14 dated entries (15 lines in all), with same-day duplicates and long prose
+# entries, the way real CONTEXT.md files carry them.
+CAPPED_ENTRIES = (
+    ("2026-07-07", "Third-review behaviour fix: tightened the archive branch."),
+    ("2026-07-07", "Adversarial-review fixes: closed two more silent misses."),
+    ("2026-07-07", "Documented the working-tree-scope trade-off in Known Issues."),
+    ("2026-07-07", "Codex review fixes for the maintenance-reliability review."),
+    ("2026-07-10", "Task 3 hygiene sweep: archived the completed plan."),
+    ("2026-08-02", "Named-path output test. Two new subdirectories."),
+    ("2026-08-03", "Codex code-review fixes. (1) DEGRADED rather than WARN."),
+    ("2026-08-03", "Documentation follow-up to the entry above."),
+    ("2026-08-04", "Codex adversarial-review fix: the inventory probe."),
+    ("2026-08-10", "Contents entry for `archived/` rewritten by category."),
+    ("2026-08-11", "Guard-coverage stage 14: the CONTEXT-self-record check."),
+    ("2026-08-12", "Guard-coverage stage 14b: same-day re-archive closed."),
+    ("2026-09-05", "An Obsidian link inserted by the link pass."),
+    ("2026-09-23", "Dependencies line says Python 3.13+."),
+)
+CAPPED_ARCHIVED_ON = "2026-09-23"
+NEW_ENTRY = ("2026-09-29", "Archive-plus-append re-measure controls added.")
+
+
+def make_capped_context(entries, archived_on, last_modified, purpose="Foo."):
+    """A CONTEXT.md whose Revision History is an archive line plus *entries*."""
+    body = "\n".join(f"- {d} - {text}" for d, text in entries)
+    return CONTEXT_TEMPLATE.format(
+        last_modified=last_modified, purpose=purpose,
+        archive=f"Earlier history archived to LOG.md on {archived_on}.\n",
+        entries=body)
+
+
+def _rh_line_count(text):
+    """Revision History lines the cap counts: entries plus the archive line."""
+    return (len(context_parse.revision_history_entry_lines(text))
+            + len(context_parse.archive_reference_lines(text)))
+
+
+class ArchiveAtCapRemeasureTest(unittest.TestCase):
+    """Re-measure of the backlog item "archive-plus-append goes unrecognised".
+
+    The item recorded that at the 15-line cap the guard stops recognising an
+    archive-plus-append and warns that no entry was gained. Measured here with
+    the tests written before any guard code was read for change:
+
+      * Shape 1, archive the oldest entry and append one (the shape the item
+        was widened to on 2026-09-18): the guard reports the entry as gained,
+        at parser level and end to end. The widened claim does not reproduce.
+      * Shape 2, every committed entry archived and one new entry appended (the
+        2026-09-13 measurement on a file where 0 of 14 committed entries
+        survived): the guard warns. This is decided behaviour, not a defect:
+        with nothing retained there is no old entry an append can follow, so
+        the shape cannot be told apart from an in-place rewrite plus a bogus
+        archive line, and it biases to a loud warning on purpose.
+      * Shape 3, the newest committed entry extended in place instead of a new
+        entry written: the guard warns, correctly, because no entry was added.
+
+    Each shape is asserted at parser level (`gained_rh_entry`) and through a
+    real `run_check` against a throwaway repository, where the committed state
+    is the capped file and the working tree carries the change.
+    """
+
+    def setUp(self):
+        self.old = make_capped_context(CAPPED_ENTRIES, CAPPED_ARCHIVED_ON,
+                                       last_modified="2026-09-23")
+
+    def test_fixture_is_at_the_cap(self):
+        # The controls only mean something if the starting file really sits at
+        # the cap: 14 entries plus the archive line.
+        self.assertEqual(_rh_line_count(self.old), 15)
+
+    # --- shape 1: archive the oldest, append one (positive control) ---
+    def _archive_one_append_one(self, archived_on="2026-09-29"):
+        return make_capped_context(CAPPED_ENTRIES[1:] + (NEW_ENTRY,), archived_on,
+                                   last_modified=NEW_ENTRY[0], purpose="Foo v2.")
+
+    def test_shape1_archive_one_append_one_is_a_gain(self):
+        new = self._archive_one_append_one()
+        self.assertEqual(_rh_line_count(new), 15, "still at the cap afterwards")
+        self.assertTrue(context_parse.gained_rh_entry(self.old, new))
+
+    def test_shape1_with_archive_date_unchanged_is_a_gain(self):
+        # The same shape where the archive line already carried today's date
+        # from an earlier archive, so the line is identical before and after.
+        old = make_capped_context(CAPPED_ENTRIES, NEW_ENTRY[0],
+                                  last_modified="2026-09-23")
+        new = self._archive_one_append_one(archived_on=NEW_ENTRY[0])
+        self.assertTrue(context_parse.gained_rh_entry(old, new))
+
+    def test_shape1_archive_two_append_two_is_a_gain(self):
+        # Two archive-plus-append cycles between commits, as happens when
+        # several tasks land before the file is committed.
+        second = ("2026-09-29", "A second entry written the same day.")
+        new = make_capped_context(CAPPED_ENTRIES[2:] + (NEW_ENTRY, second),
+                                  "2026-09-29", last_modified="2026-09-29")
+        self.assertTrue(context_parse.gained_rh_entry(self.old, new))
+
+    # --- shape 2: every committed entry archived (decided: warns) ---
+    def _all_archived_one_appended(self):
+        return make_capped_context((NEW_ENTRY,), "2026-09-29",
+                                   last_modified=NEW_ENTRY[0], purpose="Foo v2.")
+
+    def test_shape2_every_committed_entry_archived_is_not_a_gain(self):
+        new = self._all_archived_one_appended()
+        self.assertFalse(context_parse.gained_rh_entry(self.old, new))
+
+    # --- shape 3: newest entry extended in place (warns) ---
+    def _newest_extended_in_place(self):
+        date, text = CAPPED_ENTRIES[-1]
+        extended = CAPPED_ENTRIES[:-1] + ((date, text + " Also extended later."),)
+        return make_capped_context(extended, CAPPED_ARCHIVED_ON,
+                                   last_modified="2026-09-23", purpose="Foo v2.")
+
+    def test_shape3_newest_entry_extended_in_place_is_not_a_gain(self):
+        new = self._newest_extended_in_place()
+        self.assertFalse(context_parse.gained_rh_entry(self.old, new))
+
+    # --- end to end, through the guard ---
+    @staticmethod
+    def _archive_log_entry(removed, epoch):
+        """The LOG.md `archived` entry AGENTS.md prescribes for *removed*:
+        every removed entry numbered and preserved in full in one Note."""
+        kept = " ".join(f"({i}) {d} - {text}"
+                        for i, (d, text) in enumerate(removed, start=1))
+        return (f"[{_iso(epoch)}] | Actor: Biblio | Action: archived | "
+                f"Note: Revision History entries archived from CONTEXT.md: "
+                f"{kept}\n")
+
+    def _guard_messages(self, new_text, archived=()):
+        """Commit the capped file, apply *new_text* with a real content change
+        and a current LOG, and return the guard's findings as one string.
+
+        *archived* is the Revision History entries the change removed. They are
+        written to LOG.md as an `archived` entry before the change's own entry,
+        the way the project archives at the cap, and the test asserts each one
+        is preserved there in full before the guard runs.
+        """
+        repo = RepoFixture()
+        self.addCleanup(repo.cleanup)
+        now = time.time()
+        repo.write("workflows/foo/CONTEXT.md", self.old)
+        _git(repo.dir, "add", "-A")
+        _git(repo.dir, "commit", "-q", "-m", "capped history", "--no-verify")
+        repo.write("workflows/foo/run.py", "print('v2')\n")
+        repo.write("workflows/foo/CONTEXT.md", new_text)
+        repo.set_mtime("workflows/foo/run.py", now)
+        repo.set_mtime("workflows/foo/CONTEXT.md", now)
+        log = repo.dir / "workflows/foo/LOG.md"
+        if archived:
+            with log.open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(self._archive_log_entry(archived, now + 4))
+        repo.append_log("workflows/foo/LOG.md", now + 5)
+        log_text = log.read_text(encoding="utf-8")
+        for d, text in archived:
+            self.assertIn(f"{d} - {text}", log_text,
+                          "an archived entry must be preserved in LOG.md")
+            self.assertNotIn(f"- {d} - {text}", new_text,
+                             "an archived entry must have left CONTEXT.md")
+        findings = repo.check()
+        return findings, " || ".join(m for _, _, m in findings)
+
+    def test_shape1_guard_reports_the_entry_as_gained(self):
+        findings, msgs = self._guard_messages(self._archive_one_append_one(),
+                                              archived=CAPPED_ENTRIES[:1])
+        self.assertNotIn("gained no entry", msgs)
+        self.assertEqual(findings, [])
+
+    def test_shape2_guard_warns_no_entry_gained(self):
+        findings, msgs = self._guard_messages(self._all_archived_one_appended(),
+                                              archived=CAPPED_ENTRIES)
+        self.assertIn("Revision History gained no entry", msgs)
+        self.assertNotIn("Last modified", msgs)
+        self.assertTrue(all(f[0] == "WARN" for f in findings), msgs)
+
+    def test_shape3_guard_warns_no_entry_gained(self):
+        findings, msgs = self._guard_messages(self._newest_extended_in_place())
+        self.assertIn("Revision History gained no entry", msgs)
+        self.assertNotIn("Last modified", msgs)
+
+
 if __name__ == "__main__":
     unittest.main()
