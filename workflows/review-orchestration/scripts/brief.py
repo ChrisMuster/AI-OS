@@ -594,6 +594,42 @@ def check_text(text, root):
     return [reason for _, reason in heading_problems], section_problems
 
 
+def read_brief(arg, root=PROJECT_ROOT):
+    """Read a brief that passes the check, for a run to act on.
+
+    Returns ``{"text": ..., "sections": {heading: [line, ...]}, "edit_paths": [...],
+    "acceptance": [...]}``: each section's content lines in order (comments,
+    placeholders and blank lines dropped), the edit paths without their measuring
+    commands, and the acceptance commands. Raises ``ValueError`` carrying the checker's
+    FAIL lines if the brief does not pass, so a run never acts on a brief the checker
+    would refuse.
+    """
+    lines, code = check_brief(arg, root)
+    if code != 0:
+        raise ValueError("the brief does not pass the check:\n" + "\n".join(lines))
+    text, _problems = _read(arg, root)
+    sections = {title: [] for title in HEADINGS}
+    current = None
+    for line in scan(text):
+        if line.kind == "h2" and not line.setext:
+            current = line.text if line.text in sections else None
+            continue
+        if current is not None and line.kind == "text":
+            content = line.text.strip()
+            if not _is_placeholder(content):
+                sections[current].append(content)
+
+    def bullet(content):
+        match = _BULLET.match(content)
+        return (match.group(1) or "").strip() if match else content
+
+    edit_paths = [_MEASURE_SPLIT.split(bullet(item), maxsplit=1)[0].strip()
+                  for item in sections[_EDIT]]
+    acceptance = [bullet(item) for item in sections[_ACCEPTANCE]]
+    return {"text": text, "sections": sections, "edit_paths": edit_paths,
+            "acceptance": acceptance}
+
+
 def check_brief(arg, root=PROJECT_ROOT):
     """Check the brief at a project-relative path. Returns the output lines and a code."""
     text, brief_problems = _read(arg, root)

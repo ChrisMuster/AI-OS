@@ -36,6 +36,7 @@
             "Bash(python *workflows/sync-architecture/scripts/allowlist.py*)",
             "Bash(python *workflows/sync-architecture/tests/test_allowlist.py*)",
             "Bash(python *workflows/doc-sync-guard/tests/run_tests.py*)",
+            "Bash(python *workflows/review-orchestration/scripts/run.py*)",
             "Bash(python workflows/handoff/scripts/run.py --status)",
             "Bash(python workflows/handoff/scripts/run.py --seen)",
             "Bash(python workflows/handoff/scripts/run.py --gather)",

@@ -44,6 +44,9 @@ AWAITING_USER = "awaiting-user"
 PAUSES = (AWAITING_PLAN_APPROVAL, AWAITING_USER)
 
 CLEAN = "clean"
+# A run made before the intent check exists (sub-stage A4) with nothing left to fix.
+# It never ends ``clean``, since nothing has checked it for intent; A4 retires this.
+REVIEWED_CLEAN = "reviewed-clean"
 INTENT_FAILED = "intent-failed"
 NO_CHANGE_MADE = "no-change-made"
 MAX_ROUNDS = "max-rounds"
@@ -53,8 +56,8 @@ DISAGREEMENT = "disagreement"
 USAGE_LIMIT = "usage-limit"
 STOPPED_BY_USER = "stopped-by-user"
 ERROR = "error"
-STOP_REASONS = (CLEAN, INTENT_FAILED, NO_CHANGE_MADE, MAX_ROUNDS, REOPENED,
-                OUT_OF_SCOPE, DISAGREEMENT, USAGE_LIMIT, STOPPED_BY_USER, ERROR)
+STOP_REASONS = (CLEAN, REVIEWED_CLEAN, INTENT_FAILED, NO_CHANGE_MADE, MAX_ROUNDS,
+                REOPENED, OUT_OF_SCOPE, DISAGREEMENT, USAGE_LIMIT, STOPPED_BY_USER, ERROR)
 
 # The only ended runs --resume may continue (plan section 10.5).
 RESUMABLE = (MAX_ROUNDS, USAGE_LIMIT, ERROR)
@@ -312,7 +315,8 @@ def after_first_pass(diff_is_empty):
 def after_review(round_no, cap, new_findings):
     """After a review round: ``max-rounds`` when the cap is reached with findings
     still coming, else None. No findings at all is not decided here: ``clean`` also
-    needs the final intent check (plan section 10.6)."""
+    needs the final intent check (plan section 10.6), and until that exists the loop
+    ends such a run ``reviewed-clean``."""
     if new_findings and round_no >= cap:
         return MAX_ROUNDS, {"round": round_no, "cap": cap,
                             "open": [f["label"] for f in new_findings]}

@@ -407,8 +407,11 @@ class StateTests(unittest.TestCase):
 
     def test_positive_the_vocabulary_matches_the_plan_tables(self):
         self.assertEqual(set(sr.STOP_REASONS), {
-            "clean", "intent-failed", "no-change-made", "max-rounds", "reopened",
-            "out-of-scope", "disagreement", "usage-limit", "stopped-by-user", "error"})
+            "clean", "reviewed-clean", "intent-failed", "no-change-made", "max-rounds",
+            "reopened", "out-of-scope", "disagreement", "usage-limit", "stopped-by-user",
+            "error"})
+        # reviewed-clean is a finished run, not one to continue.
+        self.assertNotIn("reviewed-clean", sr.RESUMABLE)
         self.assertEqual(set(sr.PAUSES), {"awaiting-plan-approval", "awaiting-user"})
         self.assertEqual(set(sr.RESUMABLE), {"max-rounds", "usage-limit", "error"})
         self.assertEqual(set(sr.ACTIONS), {"fixed", "declined-scope", "declined-merits"})
