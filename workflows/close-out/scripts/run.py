@@ -293,17 +293,31 @@ def run_test_file(path: Path):
     try:
         result = subprocess.run(
             [sys.executable, str(path)],
-            capture_output=True, encoding="utf-8",
+            # errors="replace" so one undecodable byte cannot discard the output.
+            capture_output=True, encoding="utf-8", errors="replace",
             timeout=TEST_TIMEOUT, cwd=str(PROJECT_ROOT),
         )
         ok = result.returncode == 0
         tail = ""
+        output = None
         if not ok:
-            combined = (result.stdout + result.stderr).strip().splitlines()
-            tail = "\n        ".join(combined[-4:])
-        return ok, tail
+            output = result.stdout + result.stderr
+            tail = "\n        ".join(output.strip().splitlines()[-4:])
+        return ok, tail, output
+    except subprocess.TimeoutExpired as exc:
+        reason = f"could not run: {exc}"
+        # TimeoutExpired may carry bytes even when subprocess.run used encoding.
+        def as_text(value):
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value or ""
+
+        captured = as_text(exc.stdout) + as_text(exc.stderr)
+        separator = "\n" if captured and not captured.endswith("\n") else ""
+        return False, reason, f"{captured}{separator}{reason}"
     except Exception as exc:
-        return False, f"could not run: {exc}"
+        reason = f"could not run: {exc}"
+        return False, reason, reason
 
 
 def gate_tests(selected):
@@ -313,12 +327,15 @@ def gate_tests(selected):
     for owner_rel, files in selected:
         for test_file in files:
             file_count += 1
-            ok, tail = run_test_file(test_file)
+            ok, tail, output = run_test_file(test_file)
             try:
                 rel = test_file.relative_to(PROJECT_ROOT).as_posix()
             except ValueError:
                 rel = test_file.as_posix()
-            file_results.append({"file": rel, "passed": ok, "tail": tail})
+            file_result = {"file": rel, "passed": ok, "tail": tail}
+            if not ok:
+                file_result["output"] = output
+            file_results.append(file_result)
             if not ok:
                 passed_all = False
     return {
@@ -379,7 +396,7 @@ def run_repair():
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
-def build_report(scope_label, gates, repair_note=None):
+def build_report(scope_label, gates, repair_note=None, result_saved=True):
     lines = [
         "Book Dragon - Close-out Verifier",
         f"Scope: {scope_label}",
@@ -396,6 +413,8 @@ def build_report(scope_label, gates, repair_note=None):
                 lines.append(f"    [FAIL] {fr['file']}")
                 if fr["tail"]:
                     lines.append(f"        {fr['tail']}")
+                if result_saved:
+                    lines.append("        Full output: workflows/close-out/last-result.json")
     degraded = collect_degraded(gates)
     if degraded:
         lines.append("-" * 60)
@@ -483,16 +502,17 @@ def main():
         "repair_note": repair_note,
         "gates": gates,
     }
+    result_saved = True
     try:
         with RESULT_FILE.open("w", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(result, indent=2))
     except Exception:
-        pass  # durable result is a convenience, not a gate
+        result_saved = False  # durable result is a convenience, not a gate
 
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(build_report(scope_label, gates, repair_note))
+        print(build_report(scope_label, gates, repair_note, result_saved))
 
     verdict = status.upper()
     failed = [g["name"] for g in gates if not g["passed"]]

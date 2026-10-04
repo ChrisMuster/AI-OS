@@ -6,6 +6,7 @@ scope selection, the subprocess test runner, gate aggregation, report
 formatting, and the import coupling to the audit and link-check scripts.
 """
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -161,16 +162,79 @@ class TestRunnerTests(unittest.TestCase):
     def test_passing_test_file(self):
         with tempfile.TemporaryDirectory() as folder:
             path = self._write(folder, "test_pass.py", "import sys\nsys.exit(0)\n")
-            ok, tail = run.run_test_file(path)
+            ok, tail, output = run.run_test_file(path)
             self.assertTrue(ok)
             self.assertEqual(tail, "")
+            self.assertIsNone(output)
 
-    def test_failing_test_file_captures_tail(self):
+    def test_failing_test_file_keeps_every_output_line_and_short_tail(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = self._write(folder, "test_fail.py", "print('boom')\nraise SystemExit(1)\n")
-            ok, tail = run.run_test_file(path)
-            self.assertFalse(ok)
-            self.assertIn("boom", tail)
+            body = ("import sys\n"
+                    "for number in range(7): print(f'out {number}')\n"
+                    "print('error 1', file=sys.stderr)\n"
+                    "print('error 2', file=sys.stderr)\n"
+                    "raise SystemExit(1)\n")
+            path = self._write(folder, "test_fail.py", body)
+            gate = run.gate_tests([("tmp/failing", [path])])
+            file_result = json.loads(json.dumps(gate))["files"][0]
+            self.assertFalse(gate["passed"])
+            self.assertEqual(file_result["output"],
+                             "".join(f"out {number}\n" for number in range(7))
+                             + "error 1\nerror 2\n")
+            self.assertEqual(file_result["tail"],
+                             "out 5\n        out 6\n        error 1\n        error 2")
+            report = run.build_report("all", [gate])
+            self.assertIn(file_result["tail"], report)
+            self.assertIn("Full output: workflows/close-out/last-result.json", report)
+            self.assertNotIn("out 0", report)
+
+    def test_passing_file_has_no_output_field(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self._write(folder, "test_pass.py", "print('passed')\n")
+            file_result = run.gate_tests([("tmp/passing", [path])])["files"][0]
+            self.assertTrue(file_result["passed"])
+            self.assertEqual(file_result["tail"], "")
+            self.assertNotIn("output", file_result)
+
+    def test_unstartable_file_keeps_reason_in_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "missing.py"
+            with mock.patch.object(run.subprocess, "run", side_effect=OSError("launch blocked")):
+                file_result = run.gate_tests([("tmp/missing", [path])])["files"][0]
+            self.assertFalse(file_result["passed"])
+            self.assertEqual(file_result["tail"], "could not run: launch blocked")
+            self.assertEqual(file_result["output"], file_result["tail"])
+
+    def test_timed_out_file_keeps_reason_in_output(self):
+        timeout = run.subprocess.TimeoutExpired("test.py", 1,
+                                                output=b"before timeout\n",
+                                                stderr=b"partial error\n")
+        with mock.patch.object(run.subprocess, "run", side_effect=timeout):
+            file_result = run.gate_tests([("tmp/timeout", [Path("test.py")])])["files"][0]
+        self.assertFalse(file_result["passed"])
+        self.assertIn("timed out", file_result["output"])
+        self.assertEqual(file_result["output"],
+                         "before timeout\npartial error\n" + file_result["tail"])
+
+    def test_undecodable_byte_keeps_the_rest_of_the_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            body = ("import sys\n"
+                    "sys.stdout.buffer.write(b'before\\nbad \\xff byte\\nafter\\n')\n"
+                    "raise SystemExit(1)\n")
+            path = self._write(folder, "test_bad_byte.py", body)
+            file_result = run.gate_tests([("tmp/bad-byte", [path])])["files"][0]
+            self.assertFalse(file_result["passed"])
+            self.assertEqual(file_result["output"], "before\nbad � byte\nafter\n")
+            self.assertNotIn("could not run", file_result["tail"])
+
+    def test_report_omits_pointer_when_result_file_was_not_saved(self):
+        gate = {"name": "test suites", "passed": False, "detail": "1 failed",
+                "files": [{"file": "x/test_a.py", "passed": False, "tail": "boom"}]}
+        saved = run.build_report("all", [gate])
+        unsaved = run.build_report("all", [gate], result_saved=False)
+        self.assertIn("Full output: workflows/close-out/last-result.json", saved)
+        self.assertNotIn("Full output:", unsaved)
+        self.assertIn("boom", unsaved)
 
     def test_gate_tests_aggregates_pass_and_fail(self):
         with tempfile.TemporaryDirectory() as folder:

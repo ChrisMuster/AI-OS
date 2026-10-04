@@ -1,6 +1,6 @@
 # Close-out
 
-**Last modified:** 2026-08-05
+**Last modified:** 2026-10-03
 
 ## Purpose
 The executable, mechanical half of the close-out task. It bundles the structural audit, the link audit, and the workflow test suites into one pass/fail verifier, so a "the checks pass" claim is a script exit code rather than prose. It is the enforcement backing for the Verification discipline rule in `AGENTS.md` [[AGENTS]].
@@ -8,7 +8,7 @@ The executable, mechanical half of the close-out task. It bundles the structural
 ## Contents
 - scripts/ - `workflows/close-out/scripts/` [[workflows/close-out/scripts/CONTEXT]] - holds `run.py`, the verifier that runs the audit and link checks in-process and the selected test suites as subprocesses, then returns one aggregate result. It surfaces any DEGRADED check scope distinctly and non-blocking, whether that means a guard could not run or one file was skipped as unreadable; `--repair` runs setup.py only for the runtime-failure class and re-runs the gates once.
 - tests/ - `workflows/close-out/tests/` [[workflows/close-out/tests/CONTEXT]] - the test suite for the verifier, including a regression guard that flags entry-point scripts importing a project-only package without a runtime signal (a `.venv` bootstrap, a `# runtime-guard: degrades without <pkg>` marker, or a `# runtime-guard: launched via <mechanism>` marker).
-- `last-result.json` - the structured result of the most recent run (gitignored; rewritten on every run).
+- `last-result.json` - the structured result of the most recent run (gitignored; rewritten on every run). A failed test file's `output` field keeps its full standard output and standard error; a passing file has no `output` field.
 
 ## Inputs
 - The project's existing check scripts: the audit (`workflows/audit/scripts/run.py` [[workflows/audit/scripts/CONTEXT]]), the link checker (`workflows/link-check/scripts/run.py` [[workflows/link-check/scripts/CONTEXT]]), and every workflow and skill test suite (the test files under each `tests/` directory).
@@ -16,7 +16,7 @@ The executable, mechanical half of the close-out task. It bundles the structural
 
 ## Outputs
 - A human-readable PASS/FAIL report (or `--json`) to stdout.
-- `last-result.json` - the structured result of the most recent run.
+- `last-result.json` - the structured result of the most recent run, including the whole output or run failure reason for each failed test file.
 - An exit code: 0 if every gate passed, 1 otherwise.
 - LOG.md entries at both ends of every run.
 
@@ -25,7 +25,7 @@ The executable, mechanical half of the close-out task. It bundles the structural
 2. Select the test suites to run from `--scope` (affected/default, `all`, or a workflow name); affected falls back to all if git cannot determine the changed set, and escalates to all when the change touches project-wide files no single suite owns (root-level `.md` governance docs or `templates/` [[templates/CONTEXT]]).
 3. Run the structural audit in-process (0 FAIL required to pass; WARN reported but not gating, except a WARN under one of the three blocking labels - `doc-sync` for CONTEXT/LOG drift, `skill-hardening` for a SKILL.md gap, and `encoding` for a text-I/O or line-ending violation - which hard-fails the gate. Severity is part of the rule: a DEGRADED finding under any of them means a check did not happen - the guard could not run, or a single file could not be read - and is non-blocking).
 4. Run the link audit in-process (0 dead links required to pass).
-5. Run each selected test file as a subprocess (all must exit 0).
+5. Run each selected test file as a subprocess (all must exit 0). Keep each failure's complete output in `last-result.json`; print only its last few lines and the result file location.
 6. Surface any DEGRADED checks distinctly and non-blocking; with `--repair`, run setup.py to fix runtime-related DEGRADED findings and re-run the gates once, otherwise print guidance to handle either the runtime fix or the file-specific skipped-scope message.
 7. Aggregate into one verdict, write `last-result.json`, print the report, and set the exit code.
 8. Append LOG.md with a completion or failure entry.
@@ -98,3 +98,4 @@ The executable, mechanical half of the close-out task. It bundles the structural
   runtime failure or a single unreadable file. The `--repair` wording now
   specifically targets runtime-related DEGRADED findings instead of implying
   setup.py can fix file-level skips. No gate behaviour changed.
+- 2026-10-03 - Failed test files now keep their full output in `last-result.json`; the report retains a short tail and points to that file.

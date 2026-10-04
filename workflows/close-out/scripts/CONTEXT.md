@@ -1,6 +1,6 @@
 # Close-out - Scripts
 
-**Last modified:** 2026-08-05
+**Last modified:** 2026-10-04
 
 ## Purpose
 Holds the close-out verifier script.
@@ -12,7 +12,7 @@ Holds the close-out verifier script.
 - Invoked as `python workflows/close-out/scripts/run.py [--scope all|NAME] [--json] [--repair]`. Reads the audit and link-check scripts (imported), the project test suites, and git working-tree state for affected-scope selection.
 
 ## Outputs
-- A stdout report (or `--json`), `workflows/close-out/last-result.json` [[workflows/close-out/CONTEXT]], an exit code (0 pass / 1 fail), and LOG.md entries at both ends of a run.
+- A stdout report (or `--json`), `workflows/close-out/last-result.json` [[workflows/close-out/CONTEXT]], an exit code (0 pass / 1 fail), and LOG.md entries at both ends of a run. Each failed test file has a full `output` field in the JSON result; the printed report retains its short `tail` and points to the result file when it was written. A byte that is not valid UTF-8 in a test's output is kept as a replacement character rather than losing the output.
 - The report verdict distinguishes three outcomes: `RESULT: PASS` (all checks ran and passed), `RESULT: DEGRADED` (gates passed but one or more check scopes were skipped - non-blocking, but not a clean pass), and `RESULT: FAIL`. The JSON carries a matching `status` (`pass` / `degraded` / `fail`) and a `clean` boolean, so a consumer can tell a clean pass from a degraded one without parsing the human report.
 
 ## Steps
@@ -41,3 +41,4 @@ N/A - see the parent workflow `CONTEXT.md` for the verifier's step sequence.
   failures and file-level skipped scopes, matching encoding-guard's per-file
   DEGRADED for unparseable Python. `--repair` is now described as a runtime
   repair path rather than a fix for every DEGRADED message.
+- 2026-10-04 - `run.py` now stores full output for failed test files and includes the result file location in the printed report (built 2026-10-03 by the review-orchestration proof run). After review, a test's output is decoded with `errors="replace"`, because one undecodable byte had discarded the whole output and recorded a misleading "could not run" reason, and the report names the result file only when it was actually written.
