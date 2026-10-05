@@ -1,6 +1,6 @@
 # Weekly Review
 
-**Last modified:** 2026-09-26
+**Last modified:** 2026-10-05
 
 ## Purpose
 The cron + memory flywheel for Book Dragon: a weekly retrospective that reads the
@@ -20,7 +20,7 @@ AGENTS-reading AI, with no per-AI scheduling adapter.
 - scripts/ - `workflows/weekly-review/scripts/` [[workflows/weekly-review/scripts/CONTEXT]]
   - run.py (gather / status / record) plus gather.py, state.py, config.py.
 - tests/ - `workflows/weekly-review/tests/` [[workflows/weekly-review/tests/CONTEXT]]
-  - hermetic unit tests (31) for the window and backfill logic and the readers.
+  - hermetic unit tests (44) for the window and backfill logic and the readers.
 - skills/ - `workflows/weekly-review/skills/` [[workflows/weekly-review/skills/CONTEXT]]
   - the weekly-review synthesis skill (the AI half).
 
@@ -68,10 +68,23 @@ AGENTS-reading AI, with no per-AI scheduling adapter.
   Claude-Desktop-only and is deliberately not built.
 - The first few reviews are thin until enough history accumulates (expected for a
   flywheel).
-- The run day is never counted in its own review (the day is not finished, so its
-  journal is incomplete); it is deferred to the next review. This applies to the
-  journal only - LOG.md, git, and session activity for the run day are timestamped
-  real events and are included.
+- Nothing from the run day is counted in its own review, the user's rule: the
+  window and the coverage watermark both end the day before (`state.review_end`), so
+  the run day's journal, LOG.md entries, commits and sessions all open the next
+  review's window.
+- A review is weekly and runs only at the user's word: once one is recorded, the
+  gather and `--record` both refuse until the next is due, 7 calendar days later
+  (from the morning of that date), saying so and giving the date. There is no
+  second review in a week and no part-week, so two reviews never share an ISO week
+  label. Every date is a local calendar date: a session counts once, in the window
+  holding the local date of its first message (the index stores UTC), and a commit
+  by its moment on the local clock.
+- A review more than 31 days after the last (`MAX_WINDOW_DAYS`) covers only the most
+  recent 31 days; the days before are never reviewed. Kept by the user's decision
+  on 2026-10-05 after Codex's review raised it: the cap keeps a long gap from
+  producing an unbounded packet, and reaching it means skipping four weekly reviews
+  in a row, against a longest gap so far of 11 days. Revisit if a gap ever comes
+  near the cap.
 
 ## Revision History
 - 2026-07-02 - Initial creation. Gather script (run/gather/state/config), 28-test
@@ -88,3 +101,14 @@ AGENTS-reading AI, with no per-AI scheduling adapter.
   correction is the drift the check exists to catch.
 - 2026-09-26 - Corrected the W39 coverage watermark to 25 September after the
   user directed that all 26 September activity belongs to the next review.
+- 2026-10-05 - The run day is now left out of its own review for every source, not
+  just the journal: the window and the watermark end the day before, so W39's and
+  W40's hand corrections are no longer needed. Then, from Codex's review of the
+  change: git's bounds are whole days, a pending day after the window is never
+  included early, and a review file that does not state its window is refused. From
+  the second round, at the user's rule that a weekly review happens once a week: the
+  gather and `--record` refuse until the next review is due, and a session counts
+  once, on the day of its first message. From the third round: local calendar dates
+  for sessions and commits, and the weekly gate counted in calendar days on the run
+  date. Tests 31 to 44. The fourth round confirmed the run-day handling and raised
+  the 31-day cap, kept by the user's decision and recorded in Known Issues.

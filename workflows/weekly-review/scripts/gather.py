@@ -25,7 +25,7 @@ Signals gathered:
 import re
 import sqlite3
 import subprocess
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Leading day number of a journal heading, e.g. "## 1 July" -> 1.
@@ -158,14 +158,17 @@ def git_commits(project_root, start, end):
 
     Empty on any failure (git missing, not a repo, etc.).
     """
-    # git --until is exclusive of the following midnight; add a day so the end
-    # date is fully included regardless of commit time.
-    until = (end + timedelta(days=1)).isoformat()
+    # Both bounds name local midnight explicitly: a date-only bound is read by git as
+    # that date at the current time of day, which let the run day's morning commits
+    # in and left the first day's morning out. The dates are then filtered as well,
+    # so nothing outside the window is listed whatever git makes of the bounds.
+    since = f"{start.isoformat()} 00:00"
+    until = f"{(end + timedelta(days=1)).isoformat()} 00:00"
     try:
         result = subprocess.run(
             ["git", "-C", str(project_root), "log",
-             f"--since={start.isoformat()}", f"--until={until}",
-             "--date=short", "--pretty=%h%x1f%ad%x1f%s"],
+             f"--since={since}", f"--until={until}",
+             "--pretty=%h%x1f%ct%x1f%s"],
             capture_output=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
@@ -173,10 +176,19 @@ def git_commits(project_root, start, end):
     if result.returncode != 0:
         return []
     commits = []
+    start_iso, end_iso = start.isoformat(), end.isoformat()
     for line in result.stdout.splitlines():
         parts = line.split("\x1f")
-        if len(parts) == 3:
-            commits.append((parts[0], parts[1], parts[2]))
+        if len(parts) != 3:
+            continue
+        # The commit's moment (%ct, seconds since the epoch) on the local calendar, the
+        # same clock the bounds use, whatever offset the commit was stamped with.
+        try:
+            day = datetime.fromtimestamp(int(parts[1])).date().isoformat()
+        except (ValueError, OverflowError, OSError):
+            continue
+        if start_iso <= day <= end_iso:
+            commits.append((parts[0], day, parts[2]))
     return commits
 
 
@@ -204,11 +216,25 @@ def memory_changes(project_root, start, end):
 # ---------------------------------------------------------------------------
 # session activity
 # ---------------------------------------------------------------------------
+def local_day(timestamp):
+    """The local calendar day (ISO) of an ISO timestamp, or None if unreadable. A
+    timestamp with an offset or ``Z`` is converted to local time; one with none is
+    taken as already local."""
+    try:
+        moment = datetime.fromisoformat(str(timestamp))
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    return moment.date().isoformat()
+
+
 def session_summary(data_dir, start, end):
     """Return {'total': int, 'by_ai': {ai: count}, 'titles': [..]} for the window.
 
-    Queries every session-search shard read-only, filtering on the date prefix of
-    the timestamp so format/timezone differences do not matter. Degrades to an
+    Queries every session-search shard read-only. A session counts in the window
+    holding the local date of its first message (the index stores UTC), never in two
+    windows. Degrades to an
     empty summary on any failure or when no index exists.
     """
     empty = {"total": 0, "by_ai": {}, "titles": []}
@@ -221,18 +247,29 @@ def session_summary(data_dir, start, end):
 
     sessions = {}  # session_id -> (ai_identity, title)
     start_iso, end_iso = start.isoformat(), end.isoformat()
+    wide_start = (start - timedelta(days=1)).isoformat()
+    wide_end = (end + timedelta(days=1)).isoformat()
     for shard in shards:
         try:
             conn = sqlite3.connect(f"file:{shard}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
+            # Each session belongs to the local day of its first message, so a session
+            # that runs past midnight into the next review's window is counted only
+            # once. The index stores UTC timestamps, so the day is worked out in local
+            # time; the query takes a day either side and the filter below decides.
             rows = conn.execute(
-                "SELECT DISTINCT session_id, session_title, ai_identity "
-                "FROM sessions "
-                "WHERE substr(timestamp, 1, 10) >= ? AND substr(timestamp, 1, 10) <= ?",
-                (start_iso, end_iso),
+                "SELECT session_id, MAX(session_title) AS session_title, "
+                "MAX(ai_identity) AS ai_identity, MIN(timestamp) AS first_at "
+                "FROM sessions GROUP BY session_id "
+                "HAVING MIN(substr(timestamp, 1, 10)) >= ? "
+                "AND MIN(substr(timestamp, 1, 10)) <= ?",
+                (wide_start, wide_end),
             ).fetchall()
             for row in rows:
                 sid = row["session_id"]
+                first_day = local_day(row["first_at"])
+                if first_day is None or not start_iso <= first_day <= end_iso:
+                    continue
                 if sid and sid not in sessions:
                     sessions[sid] = (
                         row["ai_identity"] or "unknown",
@@ -296,9 +333,10 @@ def build_packet(*, label, start, end, included_days, empty_days,
     )
     lines.append("")
     lines.append(
-        f"The run day ({end.isoformat()}) is deliberately not counted in the "
-        "journal for this review - the day is not finished. It will be picked up "
-        "by a later review once written."
+        f"The run day ({(end + timedelta(days=1)).isoformat()}) is left out "
+        "entirely - its journal, commits, LOG.md entries and sessions alike - and "
+        "opens the next review's window. Everything in this packet ends on "
+        f"{end.isoformat()}."
     )
     lines.append("")
 

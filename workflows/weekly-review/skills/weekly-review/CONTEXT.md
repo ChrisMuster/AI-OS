@@ -1,6 +1,6 @@
 # Weekly Review (Skill)
 
-**Last modified:** 2026-07-09
+**Last modified:** 2026-10-05
 
 ## Purpose
 The judgement half of the weekly-review flywheel: how Biblio turns the gather
@@ -40,3 +40,7 @@ reconcile, distil, record). It is not duplicated here.
 - 2026-07-09 - Added the required Hardening section to SKILL.md (umbrella Bucket-1
   child #6): documents the write boundaries (reviews/ and, gated on confirmation,
   memory/) and the never-bulk-copy-to-memory rule.
+- 2026-10-05 - SKILL.md's gap-check step now says nothing from the run day belongs
+  to the review, for every source, matching the script's new window end; the write
+  step says to state the window exactly as the packet prints it, which `--record`
+  now checks, and to stop when the gather says this week's review is already done.

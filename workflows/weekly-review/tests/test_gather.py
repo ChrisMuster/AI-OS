@@ -3,7 +3,7 @@
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -138,6 +138,99 @@ class TestMisc(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 gather.git_commits(tmp, date(2026, 6, 26), date(2026, 7, 2)), [])
+
+    def test_git_commits_bounds_are_whole_days(self):
+        # A date-only git bound means that date at the current time of day, which let
+        # the run day's morning commits in and left the first day's morning out.
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args, when=None):
+                env = dict(os.environ)
+                if when:
+                    env.update(GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+                subprocess.run(["git", "-C", tmp, *args], check=True, env=env,
+                               capture_output=True)
+            git("init", "-q")
+            git("config", "user.email", "t@example.invalid")
+            git("config", "user.name", "t")
+            for subject, when in (("before", "2026-09-25T23:30:00"),
+                                  ("first-morning", "2026-09-26T00:30:00"),
+                                  ("last-night", "2026-10-03T23:30:00"),
+                                  ("run-day-morning", "2026-10-04T00:30:00")):
+                git("commit", "-q", "--allow-empty", "-m", subject, when=when)
+            commits = gather.git_commits(tmp, date(2026, 9, 26), date(2026, 10, 3))
+        self.assertEqual(sorted(subject for _h, _d, subject in commits),
+                         ["first-morning", "last-night"])
+
+    def test_git_commits_are_dated_on_the_local_calendar(self):
+        # A commit stamped with another timezone's offset is dated by its moment on
+        # the local clock, the clock the bounds use, so it is neither dropped nor
+        # counted twice at a boundary. Expectations come from this machine's clock.
+        import os
+        import subprocess
+        from datetime import datetime, timezone
+        moment = datetime(2026, 10, 3, 23, 30, tzinfo=timezone.utc)
+        local = moment.astimezone().date()
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, GIT_AUTHOR_DATE="2026-10-03T23:30:00+00:00",
+                       GIT_COMMITTER_DATE="2026-10-03T23:30:00+00:00")
+            for args in (["init", "-q"], ["config", "user.email", "t@example.invalid"],
+                         ["config", "user.name", "t"]):
+                subprocess.run(["git", "-C", tmp, *args], check=True, capture_output=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-q", "--allow-empty", "-m",
+                            "offset"], check=True, env=env, capture_output=True)
+            own = gather.git_commits(tmp, local, local)
+            other = gather.git_commits(tmp, local - timedelta(days=7),
+                                       local - timedelta(days=1))
+        self.assertEqual([(d, s) for _h, d, s in own], [(local.isoformat(), "offset")])
+        self.assertEqual(other, [])
+
+    def test_a_session_crossing_midnight_counts_once(self):
+        # Counted on the day of its first message, so never in two reviews.
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "sessions-test.db"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE sessions (timestamp TEXT, session_id TEXT, "
+                         "session_title TEXT, ai_identity TEXT)")
+            conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?)", [
+                ("2026-10-03T23:50:00", "late", "late night", "Claude Code"),
+                ("2026-10-04T00:20:00", "late", "late night", "Claude Code"),
+                ("2026-10-04T10:00:00", "next", "next day", "Codex CLI"),
+            ])
+            conn.commit()
+            conn.close()
+            first = gather.session_summary(tmp, date(2026, 9, 26), date(2026, 10, 3))
+            second = gather.session_summary(tmp, date(2026, 10, 4), date(2026, 10, 10))
+        self.assertEqual((first["total"], first["titles"]), (1, ["late night"]))
+        self.assertEqual((second["total"], second["titles"]), (1, ["next day"]))
+
+    def test_a_utc_session_start_is_dated_on_the_local_calendar(self):
+        # The index stores UTC. A session whose first message is 23:20Z on 3 October
+        # began on 4 October wherever local time is ahead of UTC, so it belongs to
+        # that day's window there; the expectation is worked out on this machine's
+        # clock, so the test holds in any timezone.
+        import sqlite3
+        from datetime import datetime, timezone
+        stamp = "2026-10-03T23:20:00.000Z"
+        local = datetime(2026, 10, 3, 23, 20, tzinfo=timezone.utc).astimezone().date()
+        self.assertEqual(gather.local_day(stamp), local.isoformat())
+        self.assertEqual(gather.local_day("2026-10-03T23:20:00"), "2026-10-03")
+        self.assertIsNone(gather.local_day("not a time"))
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = sqlite3.connect(Path(tmp) / "sessions-test.db")
+            conn.execute("CREATE TABLE sessions (timestamp TEXT, session_id TEXT, "
+                         "session_title TEXT, ai_identity TEXT)")
+            conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?)",
+                         (stamp, "edge", "edge", "Codex CLI"))
+            conn.commit()
+            conn.close()
+            day = gather.session_summary(tmp, local, local)
+            before = gather.session_summary(tmp, local - timedelta(days=7),
+                                            local - timedelta(days=1))
+        self.assertEqual(day["total"], 1)
+        self.assertEqual(before["total"], 0)
 
     def test_build_packet_has_all_sections(self):
         packet = gather.build_packet(

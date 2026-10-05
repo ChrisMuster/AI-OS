@@ -30,7 +30,7 @@ Usage:
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -76,8 +76,12 @@ def _today(args):
     return _now().date()
 
 
-def _staleness(now):
-    """Return (is_due, last_run_date_str_or_None, age_days_or_None)."""
+def _staleness(today):
+    """Return (is_due, last_run_date_str_or_None, age_days_or_None).
+
+    Counted in calendar days on the run date (``--today`` when given), not in whole
+    24-hour periods: a review recorded on a Saturday evening is due again from the
+    next Saturday morning, the date it gives as the due date."""
     if not _LAST_RUN_PATH.is_file():
         return True, None, None
     try:
@@ -85,33 +89,50 @@ def _staleness(now):
         last = datetime.fromisoformat(raw)
     except (OSError, ValueError):
         return True, None, None
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=now.tzinfo)
-    age = (now - last).days
+    if last.tzinfo is not None:
+        last = last.astimezone()
+    age = (today - last.date()).days
     return age >= config.STALENESS_DAYS, last.date().isoformat(), age
 
 
 def _resolve(today):
     """Compute window, journal coverage, and empty-in-window days for `today`."""
     st = state_mod.load_state(_STATE_PATH)
+    # Nothing from the run day belongs to its own review: the window ends the day
+    # before, for every source, and so does the watermark --record writes, so the
+    # run day opens the next review's window.
     start, end = state_mod.compute_window(
-        st, today, config.WINDOW_DAYS, config.MAX_WINDOW_DAYS)
+        st, state_mod.review_end(today), config.WINDOW_DAYS, config.MAX_WINDOW_DAYS)
     has_content = gather.make_journal_checker(_JOURNAL_ROOT)
-    # `end` is the run day. It is never counted in its own review (the day is not
-    # finished), so it is excluded from the coverage and from the empty-day warning.
     included, new_pending = state_mod.resolve_journal_days(
-        st, start, end, has_content, config.CARRY_FORWARD_DAYS, run_day=end)
+        st, start, end, has_content, config.CARRY_FORWARD_DAYS, run_day=today)
     empty_in_window = [
         d.isoformat() for d in state_mod.daterange(start, end)
-        if d != end and not has_content(d)
+        if not has_content(d)
     ]
     return st, start, end, included, new_pending, empty_in_window
 
 
+def window_text(start, end):
+    """The window as the packet prints it and a review must state it."""
+    return f"{start.isoformat()} to {end.isoformat()}"
+
+
+def _already_done(today):
+    """The refusal while this week's review is done and the next is not yet due, or
+    None. The review is weekly and runs only when the user asks, so there is no second
+    review in a week, and no part-week: until it is due again there is nothing to do."""
+    is_due, last_run, _age = _staleness(today)
+    if is_due:
+        return None
+    next_due = state_mod.parse_date(last_run) + timedelta(days=config.STALENESS_DAYS)
+    return (f"This week's review has already been done ({last_run}). The next one is "
+            f"due on {next_due.isoformat()}; there is nothing to do until then.")
+
+
 def cmd_status(args):
-    now = _now()
     today = _today(args)
-    is_due, last_run, age = _staleness(now)
+    is_due, last_run, age = _staleness(today)
     _st, start, end, _included, _new_pending, empty_in_window = _resolve(today)
     label = gather.iso_week_label(end)
 
@@ -144,6 +165,10 @@ def cmd_gather(args):
     today = _today(args)
     _st, start, end, included, _new_pending, empty_in_window = _resolve(today)
     label = gather.iso_week_label(end)
+    refusal = _already_done(today)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
 
     packet = gather.build_packet(
         label=label, start=start, end=end,
@@ -164,13 +189,25 @@ def cmd_gather(args):
 
 def cmd_record(args):
     today = _today(args)
-    st, start, end, _included, new_pending, _empty = _resolve(today)
+    _st, start, end, _included, new_pending, _empty = _resolve(today)
     label = gather.iso_week_label(end)
     review_file = _REVIEWS_DIR / f"{label}.md"
 
-    if not review_file.is_file() or not review_file.read_text(encoding="utf-8").strip():
+    refusal = _already_done(today)
+    if refusal:
+        print(refusal + " Nothing was recorded.", file=sys.stderr)
+        return 1
+    text = review_file.read_text(encoding="utf-8") if review_file.is_file() else ""
+    if not text.strip():
         print(f"No review found at reviews/{label}.md (or it is empty). Write the "
               f"review before recording completion.", file=sys.stderr)
+        return 1
+    # A backstop: the file must state the window it reviews, so a review written for
+    # other days is never recorded as covering these.
+    if window_text(start, end) not in text:
+        print(f"reviews/{label}.md does not state this review's window "
+              f"({window_text(start, end)}), so it is not the review of these days. "
+              f"Nothing was recorded.", file=sys.stderr)
         return 1
 
     new_state = {

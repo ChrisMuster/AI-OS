@@ -27,14 +27,19 @@ say go (the startup gate offers, it does not auto-run).
    If it warns about empty journal days in the window, tell the user which days
    are blank and ask whether they want to fill them in before continuing. If they
    fill them, or choose to proceed, carry on; days left blank are tracked and
-   picked up automatically by a later review (never silently lost). The current
-   day (the run day) is deliberately excluded from this warning and from the
-   review - it is not finished - so never ask the user to "fill in today"; it is
-   deferred to the next review automatically.
+   picked up automatically by a later review (never silently lost). Nothing from
+   the current day (the run day) belongs to this review: the script ends the
+   window the day before, so the run day's journal, commits, LOG.md entries and
+   sessions all go to the next review. Never ask the user to "fill in today", and
+   never write the run day's activity into the review.
 2. **Gather.** Run `python workflows/weekly-review/scripts/run.py` and read the
    whole briefing packet it prints.
 3. **Write the review** to `reviews/<label>.md` (the packet states the label,
-   e.g. `2026-W27.md`). Aim for about one page, covering:
+   e.g. `2026-W27.md`). State the window near the top exactly as the packet prints
+   it (`**Window:** YYYY-MM-DD to YYYY-MM-DD`): `--record` refuses a file that does
+   not. If the gather says this week's review has already been done, stop: the
+   review is weekly, and there is nothing to do until the date it gives. Aim for
+   about one page, covering:
    - **What got done** - grounded in the git commits, LOG entries, and journal,
      not invented.
    - **Recurring themes** - patterns across the week and against prior reviews.

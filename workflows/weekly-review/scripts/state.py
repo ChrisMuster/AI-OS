@@ -58,6 +58,17 @@ def daterange(start, end):
         current += timedelta(days=1)
 
 
+def review_end(run_day):
+    """The last day a review run on ``run_day`` covers: the day before it.
+
+    The user's rule: nothing from the day a review is run belongs to that review, not
+    its journal, its commits, its LOG.md entries or its sessions. Ending the window
+    here keeps every source out together, and the watermark the review records stops
+    here too, so the next review's window starts on the run day.
+    """
+    return run_day - timedelta(days=1)
+
+
 def compute_window(state: dict, end, window_days: int, max_window_days: int):
     """Return (start, end) dates for the review window.
 
@@ -91,18 +102,23 @@ def resolve_journal_days(state: dict, start, end, has_content, carry_forward_day
         start, end: window bounds (date objects).
         has_content: callable(date) -> bool, True if that day's journal has text.
         carry_forward_days: horizon after which a still-empty day is dropped.
-        run_day: the day the review is being run (usually == end). It is never
-            counted in its own review - the day is not finished, so its journal is
-            incomplete - and is always deferred to a later review, even if it
-            already has partial content. This prevents both a false "fill today
-            first" nag and the loss of an entry written later the same day.
+        run_day: the day the review is being run. The caller ends the window the day
+            before it (``review_end``), so the run day lies outside the window and is
+            simply the next window's first day: it is neither included nor added to
+            pending. Should a caller pass a run day inside the window, it is still
+            never included and is deferred as pending (the original contract, kept
+            and tested).
+
+    A pending day later than ``end`` is kept pending and never included before its
+    own window.
 
     Returns:
         (included, new_pending): sorted lists of ISO date strings.
         included     = window days with content + carried pending days now filled,
-                       excluding the run day.
-        new_pending  = window days still empty + the run day + still-empty carried
-                       days within horizon.
+                       never the run day and never a day after ``end``.
+        new_pending  = window days still empty + still-empty carried days within the
+                       horizon + carried days after ``end`` (+ the run day, only if it
+                       was inside the window).
     """
     window_dates = list(daterange(start, end))
     window_set = {d.isoformat() for d in window_dates}
@@ -133,6 +149,9 @@ def resolve_journal_days(state: dict, start, end, has_content, carry_forward_day
             continue
         if d < horizon_start:
             continue  # past the carry-forward horizon; stop tracking it
+        if d > end:
+            new_pending.append(iso)  # not yet in any window (the run day, or later):
+            continue                 # kept, and never included before its window
         if has_content(d):
             included.append(iso)     # backfilled since last review - pick it up now
         else:

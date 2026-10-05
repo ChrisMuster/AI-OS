@@ -1,6 +1,6 @@
 # Weekly Review - Scripts
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-10-05
 
 ## Purpose
 The deterministic (~90%) half of the weekly-review flywheel: gather the week's
@@ -13,7 +13,9 @@ the review from.
   default/`--gather` (print the briefing packet, read-only), `--status` (report
   whether a review is due and warn about empty journal days, read-only, `--json`),
   `--record` (advance the coverage watermark and stamp staleness after a review is
-  written; honours `--dry-run`). `--today` overrides the date for testing.
+  written; honours `--dry-run`). The gather and `--record` both refuse while this
+  week's review is done and the next is not yet due, and `--record` refuses a review
+  file that does not state the window. `--today` overrides the date for testing.
 - gather.py - `workflows/weekly-review/scripts/gather.py` [[workflows/weekly-review/scripts/CONTEXT]] - Deterministic readers
   (journal, LOG.md activity, git commits, memory changes, session activity, prior
   reviews) and the packet assembler. Each reader degrades to empty rather than
@@ -21,8 +23,9 @@ the review from.
 - state.py - `workflows/weekly-review/scripts/state.py` [[workflows/weekly-review/scripts/CONTEXT]] - Coverage state: the
   window computation and the journal backfill logic (watermark + pending-days
   carry-forward) that guarantees a backfilled journal day is picked up by a later
-  review rather than lost. The run day is never counted in its own review (the day
-  is not finished) and is always deferred to a later one.
+  review rather than lost. `review_end` sets every window to end the day before the
+  run day, so nothing from the run day (journal, LOG.md, commits, sessions) is
+  counted in its own review, and the watermark `--record` writes stops there too.
 - config.py - `workflows/weekly-review/scripts/config.py` [[workflows/weekly-review/scripts/CONTEXT]] - Tunable constants
   (window, staleness, carry-forward horizon, prior-review count, max span).
 
@@ -68,3 +71,4 @@ the review from.
 - 2026-07-02 - Initial creation. run.py, gather.py, state.py, config.py for the
   weekly-review flywheel (best-practices umbrella Bucket-1 child #3).
 - 2026-08-04 - Line endings pinned on all three text writes (the LOG.md append and `.last-run` stamp in `run.py`, and the `state.json` save in `state.py`), which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.
+- 2026-10-05 - `state.review_end` added and used by `run.py`: the window and the watermark end the day before the run day, so the run day is left out for every source rather than for the journal only, and the packet says so. From Codex's review of that change: `gather.git_commits` passes whole-day bounds (a date-only git bound means that date at the current time) and filters the dates too; `state.resolve_journal_days` keeps a pending day after the window without including it; `--record` refuses a review file that does not state the window. From its second round, at the user's rule that the review is weekly: the gather and `--record` refuse while the next review is not yet due (`run._already_done`), and `gather.session_summary` counts each session once, on the day of its first message. From its third round: dates are local calendar dates throughout (a session's first message, stored in UTC, via `gather.local_day`; a commit's moment via `%ct`), and the weekly gate counts calendar days on the run date, `--today` included, so a review is allowed from the morning of its due date.
