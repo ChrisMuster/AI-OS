@@ -5417,5 +5417,31 @@ class TestHiddenCommandWrappers(unittest.TestCase):
                                  command)
 
 
+class TestReinjectForCodex(unittest.TestCase):
+    """The SessionStart reminder in each AI's form. Codex reports a session-start
+    hook whose stdout is not its documented JSON as failed, which it did in every
+    Codex session until 2026-10-05; Claude Code takes the plain text."""
+
+    def run_reinject(self, *extra):
+        return subprocess.run([sys.executable, str(RUN_PY), "--reinject", *extra],
+                              capture_output=True, text=True, encoding="utf-8")
+
+    def test_positive_codex_gets_the_reminder_as_sessionstart_json(self):
+        done = self.run_reinject("--ai", "codex")
+        self.assertEqual(done.returncode, 0)
+        data = json.loads(done.stdout)
+        self.assertEqual(set(data), {"hookSpecificOutput"})
+        self.assertEqual(data["hookSpecificOutput"],
+                         {"hookEventName": "SessionStart",
+                          "additionalContext": run_mod.REMINDER})
+
+    def test_negative_claude_and_no_ai_still_get_plain_text(self):
+        for extra in ((), ("--ai", "claude")):
+            with self.subTest(extra=extra):
+                done = self.run_reinject(*extra)
+                self.assertEqual(done.returncode, 0)
+                self.assertEqual(done.stdout.strip(), run_mod.REMINDER)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

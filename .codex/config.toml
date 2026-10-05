@@ -20,12 +20,16 @@ tool_timeout_sec = 300
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
 type = "command"
-command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'session-search', 'scripts', 'index.py')])\""
+command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'session-search', 'scripts', 'index.py'), '--codex-stop-hook'])\""
 
 # Deterministic rule-enforcement hooks (workflows/rule-hooks). PreToolUse fires
 # before a shell or file-edit tool runs; run.py evaluates the rules and denies
 # on a violation. SessionStart re-injects the permission-gate reminder. Commands
 # resolve the git root before execing scripts so hook launch survives cwd drift.
+# The SessionStart and Stop commands pass Codex modes ('--ai codex',
+# '--codex-stop-hook') because Codex reports a hook as failed unless its stdout is
+# the JSON it documents for that event. Changing any hook command here resets
+# Codex's trust in it, so the user approves the project hooks again once.
 [[hooks.PreToolUse]]
 matcher = "Bash"
 [[hooks.PreToolUse.hooks]]
@@ -41,4 +45,4 @@ command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'rule-hooks', 'scripts', 'run.py'), '--reinject'])\""
+command = "python -c \"import os,subprocess,sys; root=subprocess.check_output(['git','rev-parse','--show-toplevel'], text=True).strip(); os.execv(sys.executable, [sys.executable, os.path.join(root, 'workflows', 'rule-hooks', 'scripts', 'run.py'), '--reinject', '--ai', 'codex'])\""

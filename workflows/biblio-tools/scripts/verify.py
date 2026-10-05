@@ -668,6 +668,168 @@ def check_codex_hooks() -> dict:
     return judge_codex_hooks(entries, defined, cwds)
 
 
+# ---------------------------------------------------------------------------
+# Codex hook output
+# ---------------------------------------------------------------------------
+# A trusted hook can still fail every run: Codex reports a SessionStart or Stop
+# hook as failed unless its stdout is the JSON it documents for that event, and
+# until 2026-10-05 both of this project's did, in every Codex session, while the
+# trust check above passed. So this check confirms each command names its script
+# and Codex mode, and runs the script in that mode to confirm the output is the
+# shape Codex accepts. It does not run the configured launcher line itself (doing
+# so for Stop would index for real), so a launcher that printed text of its own
+# would not be caught here; Codex's own report of the hook run is the proof of
+# that, as the 2026-10-05 live probe showed. The Stop mode runs with --dry-run, so
+# the check writes nothing.
+
+CODEX_HOOK_OUTPUT_CHECK = "Codex hook output"
+# The fields Codex's output schemas allow, each with additionalProperties false
+# (codex-rs/hooks/schema/generated/session-start.command.output.schema.json and
+# stop.command.output.schema.json, read 2026-10-05). A field outside these is
+# rejected by Codex, so it fails this check too.
+CODEX_SESSION_START_FIELDS = {"continue", "hookSpecificOutput", "stopReason",
+                              "systemMessage", "suppressOutput"}
+CODEX_SESSION_START_INNER_FIELDS = {"hookEventName", "additionalContext"}
+CODEX_STOP_FIELDS = {"continue", "decision", "reason", "stopReason", "suppressOutput",
+                     "systemMessage"}
+# Each field's type in those schemas; `null` is allowed for the optional strings.
+CODEX_HOOK_FIELD_TYPES = {"continue": bool, "suppressOutput": bool, "stopReason": str,
+                          "systemMessage": str, "reason": str, "decision": str}
+
+
+def _codex_field_type_problems(event: str, data: dict) -> list:
+    """Fields present with a value of the wrong type for Codex's schema."""
+    problems = []
+    for field, kind in CODEX_HOOK_FIELD_TYPES.items():
+        if field not in data:
+            continue
+        value = data[field]
+        if kind is str and value is None:
+            continue
+        if kind is bool and not isinstance(value, bool):
+            problems.append(f"{field} must be true or false, not {value!r}")
+        elif kind is str and not isinstance(value, str):
+            problems.append(f"{field} must be text, not {value!r}")
+    if problems:
+        return [f"the {event} mode's JSON has values of the wrong type: " + "; ".join(problems)]
+    return []
+CODEX_HOOK_MODES = {
+    "SessionStart": ("rule-hooks", "run.py", "'--reinject', '--ai', 'codex'"),
+    "Stop": ("session-search", "index.py", "'--codex-stop-hook'"),
+}
+
+
+def _project_codex_hook_commands() -> dict:
+    """{event: [command, ...]} for the SessionStart and Stop hooks in
+    .codex/config.toml; empty when the file is absent."""
+    path = PROJECT_ROOT / ".codex" / "config.toml"
+    if not path.is_file():
+        return {}
+    import tomllib
+
+    hooks = tomllib.loads(path.read_text(encoding="utf-8")).get("hooks", {})
+    found = {}
+    for event in CODEX_HOOK_MODES:
+        for group in hooks.get(event, []) if isinstance(hooks, dict) else []:
+            for hook in (group.get("hooks") or []) if isinstance(group, dict) else []:
+                if isinstance(hook, dict) and isinstance(hook.get("command"), str):
+                    found.setdefault(event, []).append(hook["command"])
+    return found
+
+
+def judge_codex_hook_output(commands: dict, outputs: dict) -> dict:
+    """Turn the configured commands and each mode's stdout into a check result.
+
+    `commands` is {event: [command, ...]} from a .codex/config.toml that exists, so
+    both events must be present: a missing hook means the reminder or the indexing
+    silently stops. `outputs` is {event: stdout or an exception}. Each output must
+    be a JSON object holding only the fields Codex's schema for that event allows.
+    A SessionStart output's hookSpecificOutput must name SessionStart and carry
+    additionalContext text. A Stop output must not block the stop or ask for
+    another turn. A command that does not ask for its Codex mode would print plain
+    text, so it fails too.
+    """
+    problems = []
+    for event, (_folder, script, flag) in CODEX_HOOK_MODES.items():
+        if event not in commands:
+            problems.append(f".codex/config.toml defines no {event} hook, so its "
+                            f"{script} step no longer runs in Codex")
+            continue
+        for command in commands[event]:
+            if script not in command or flag not in command:
+                problems.append(f"the {event} hook does not run {script} with {flag}, so "
+                                "Codex would get plain text and report it as failed")
+        output = outputs.get(event)
+        if isinstance(output, Exception):
+            problems.append(f"the {event} mode could not run: {output}")
+            continue
+        try:
+            data = json.loads(output or "")
+        except json.JSONDecodeError:
+            problems.append(f"the {event} mode's output is not JSON: {(output or '')[:80]!r}")
+            continue
+        if not isinstance(data, dict):
+            problems.append(f"the {event} mode's output is not a JSON object")
+            continue
+        allowed = CODEX_SESSION_START_FIELDS if event == "SessionStart" else CODEX_STOP_FIELDS
+        extra = sorted(set(data) - allowed)
+        if extra:
+            problems.append(f"the {event} mode's JSON has fields Codex's schema does not "
+                            f"allow: {', '.join(extra)}")
+        problems.extend(_codex_field_type_problems(event, data))
+        if event == "SessionStart":
+            inner = data.get("hookSpecificOutput")
+            if (not isinstance(inner, dict) or inner.get("hookEventName") != "SessionStart"
+                    or not isinstance(inner.get("additionalContext"), str)):
+                problems.append("the SessionStart mode's JSON lacks "
+                                "hookSpecificOutput.additionalContext for SessionStart")
+            elif set(inner) - CODEX_SESSION_START_INNER_FIELDS:
+                problems.append("the SessionStart mode's hookSpecificOutput has fields "
+                                "Codex's schema does not allow: "
+                                + ", ".join(sorted(set(inner) - CODEX_SESSION_START_INNER_FIELDS)))
+        elif data.get("decision") is not None or data.get("continue", True) is not True:
+            problems.append("the Stop mode's JSON would block the stop or end the session "
+                            "differently (decision or continue set)")
+    if problems:
+        return {"check": CODEX_HOOK_OUTPUT_CHECK, "status": "FAIL", "surface": True,
+                "detail": "Codex will report a project hook as failed: " + "; ".join(problems)
+                          + ". See workflows/rule-hooks and workflows/session-search."}
+    return {"check": CODEX_HOOK_OUTPUT_CHECK, "status": "PASS",
+            "detail": ("The Codex SessionStart and Stop hook commands name their Codex "
+                       "modes, and each mode prints the JSON Codex accepts.")}
+
+
+def check_codex_hook_output() -> dict:
+    """Confirm the project's Codex SessionStart and Stop hooks print what Codex
+    accepts, by running each one's Codex mode (Stop with --dry-run)."""
+    if not (PROJECT_ROOT / ".codex" / "config.toml").is_file():
+        return {"check": CODEX_HOOK_OUTPUT_CHECK, "status": "PASS",
+                "detail": "There is no .codex/config.toml, so there are no Codex hooks."}
+    try:
+        commands = _project_codex_hook_commands()
+    except (OSError, ValueError, ImportError) as exc:
+        return {"check": CODEX_HOOK_OUTPUT_CHECK, "status": "WARN", "surface": True,
+                "detail": f"Could not read .codex/config.toml: {exc}"}
+    runs = {
+        "SessionStart": [PROJECT_ROOT / "workflows" / "rule-hooks" / "scripts" / "run.py",
+                         "--reinject", "--ai", "codex"],
+        "Stop": [PROJECT_ROOT / "workflows" / "session-search" / "scripts" / "index.py",
+                 "--codex-stop-hook", "--dry-run"],
+    }
+    outputs = {}
+    for event in commands:
+        try:
+            done = subprocess.run([sys.executable, *map(str, runs[event])],
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  timeout=120, cwd=PROJECT_ROOT)
+            outputs[event] = (done.stdout if done.returncode == 0
+                              else RuntimeError(f"exit {done.returncode}: "
+                                                f"{done.stderr.strip()[-200:]}"))
+        except (OSError, subprocess.SubprocessError) as exc:
+            outputs[event] = exc
+    return judge_codex_hook_output(commands, outputs)
+
+
 def check_mcp_package() -> dict:
     """Check that the mcp Python package is installed."""
     spec = importlib.util.find_spec("mcp")
@@ -997,6 +1159,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
             "PDF extraction",
             "Git pre-commit hook",
             CODEX_HOOK_CHECK,
+            CODEX_HOOK_OUTPUT_CHECK,
         ]
         for cf in reqs["config_files"]:
             checks.append(f"Config: {cf}")
@@ -1022,6 +1185,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     # Every AI runs this, not only Codex: an unhooked Codex has to be noticed by
     # whichever session starts next, and that is rarely a Codex one.
     results.append(check_codex_hooks())
+    results.append(check_codex_hook_output())
     results.extend(check_config_files(reqs["config_files"]))
 
     if reqs.get("readiness_blocker"):

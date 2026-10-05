@@ -1,6 +1,6 @@
 # Book Dragon — AI Setup Guide
 
-**Last updated:** 2026-09-23 (Python floor raised to 3.13; Codex hook approval check)
+**Last updated:** 2026-10-05 (Codex hook output check)
 
 This file is the single reference for setting up Book Dragon with any supported AI. It covers what each AI needs, how to verify setup, and how to fix common issues.
 
@@ -334,6 +334,8 @@ high-capability model (Claude Opus, GPT-5.4+, or Gemini 3.1 Pro).
 Codex records approval against the project path as spelled, and on Windows the same folder can arrive as `C:\...` or `c:\...`. The check tests both spellings and names the one still unapproved; approve again from a Codex started with that spelling.
 
 The check also compares Codex's list with the hooks `.codex/config.toml` defines. If it says Codex "does not list" a hook, approving will not help, because Codex has not loaded that hook at all: confirm that Codex trusts the project folder itself and that `/hooks` shows the hook, and if it does not, check `.codex/config.toml` for an error.
+
+**Codex hook output.** A trusted hook can still fail on every run: Codex reports a SessionStart or Stop hook as failed unless it prints the JSON Codex documents for that event. The project's SessionStart hook runs `run.py --reinject --ai codex` and its Stop hook runs `index.py --codex-stop-hook`, the modes that print it. Setup verification's "Codex hook output" check confirms both commands name those modes and that each mode's output is what Codex accepts; it runs the scripts in those modes, not the launcher lines themselves.
 
 ### OpenCode
 

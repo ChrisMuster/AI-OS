@@ -1,11 +1,12 @@
 # Session Search — Tests
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-05
 
 ## Purpose
 Standalone unit tests for the session-search scripts. Currently covers `search.py`'s `--json` output mode — the machine-readable contract consumed by the knowledge-graph `sessions` cross-reference command — verifying that it emits a bare JSON list on stdout, never leaks the human-readable banner, returns an empty list for a non-matching query regardless of whether a session index is present, and that each result dict carries the documented `search()` fields when matches exist.
 
 ## Contents
+- test_codex_stop_hook.py - `workflows/session-search/tests/test_codex_stop_hook.py` [[workflows/session-search/tests/CONTEXT]] - Subprocess tests of `index.py --codex-stop-hook --dry-run`: stdout is only `{}`, the progress text (the archiver's included) is on stderr, and without the flag stdout is the usual text; and in-process tests with archive.py's result replaced: a failed archive fails the hook with nothing on stdout, while an ordinary run warns and carries on. Writes nothing.
 - test_json_output.py — `workflows/session-search/tests/test_json_output.py` [[workflows/session-search/tests/CONTEXT]] — Subprocess-level tests of `search.py --json`: bare JSON list on stdout, no human text, empty list for a nonsense query (deterministic on any machine), and result-shape validation when an index has matches.
 
 ## Inputs
@@ -28,3 +29,4 @@ None. The tests invoke `search.py` as a subprocess with a deliberately non-match
 ## Revision History
 - 2026-06-24 — Initial creation. Added test_json_output.py covering search.py's new `--json` mode (the knowledge-graph session-search cross-reference contract).
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.
+- 2026-10-05 - Added `test_codex_stop_hook.py` (3 tests) for `index.py --codex-stop-hook`. With the redirect, or the archiver's stdout passthrough, removed in a scratch copy, the suite failed. Then 3 more, from Codex's review, for a failed archive.

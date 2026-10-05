@@ -1,13 +1,13 @@
 # Biblio Tools
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-05
 
 ## Purpose
 Provides Book Dragon's canonical Python runtime, setup verification, cross-platform workflow launcher, and MCP (Model Context Protocol) server. The same project commands work for every AI; MCP-capable clients additionally receive typed tools, while other clients run the underlying scripts directly.
 
 ## Contents
 - scripts/ - `workflows/biblio-tools/scripts/` [[workflows/biblio-tools/scripts/CONTEXT]] - Shared runtime setup and hand-off helpers, MCP server, per-AI verification, launcher, protocol smoke tests, and lifecycle checks.
-- tests/ - `workflows/biblio-tools/tests/` [[workflows/biblio-tools/tests/CONTEXT]] - Unit tests for the server's pure helpers (the knowledge-graph query dispatcher's argv assembly and the `_run_json_script` failure paths) and for the Python floor checks and the Codex hook trust check in verify.py and setup.py.
+- tests/ - `workflows/biblio-tools/tests/` [[workflows/biblio-tools/tests/CONTEXT]] - Unit tests for the server's pure helpers (the knowledge-graph query dispatcher's argv assembly and the `_run_json_script` failure paths) and for the Python floor checks and the Codex hook output and trust checks in verify.py and setup.py.
 - requirements.txt - `workflows/biblio-tools/requirements.txt` - MCP dependency included by the root project manifest.
 - archived/ - `workflows/biblio-tools/archived/` [[workflows/biblio-tools/archived/CONTEXT]] - Holds the gitignored CODEX-MCP-AVAILABILITY-PLAN.md investigation notes; local-only.
 
@@ -62,3 +62,4 @@ Earlier history archived to LOG.md on 2026-06-17.
 - 2026-09-23 - Project Python floor raised from 3.9 to 3.13. The 3.9 floor was already unreachable: `truststore` (web-research) needs 3.10+ with no version marker, so setup on 3.9 could not install. `requirements.txt` drops the `python_version` marker on `mcp`, which becomes an ordinary required dependency; the Dependencies line and the Known Issues entry describing a 3.9 degraded mode were replaced by one recording where the floor is held and why verify.py now warns above it.
 - 2026-09-23 - Repaired the two findings from Codex's review of the floor change. The above-floor WARN now carries `"surface": true` and AGENTS.md step 6c reports such results, where before startup's silence on WARN-only results hid it. The project `.venv` interpreter is now checked against the floor: verify.py gained a "Project runtime Python version" check, and setup.py refuses a below-floor `.venv` in both `--check` and repair. Added `tests/test_verify_floor.py`. Known Issues rewritten for both.
 - 2026-09-23 - Setup verification now asks the installed Codex, for every AI's session, whether it will run the project's Codex hooks, and fails visibly if it will not. Added after Codex was found to have run without them for eight weeks, because editing a hook voids its stored approval and Codex then skips it silently. Added `tests/test_verify_codex_hooks.py`; Codex is listed as an optional external dependency.
+- 2026-10-05 - verify.py gained the "Codex hook output" check: the Codex SessionStart and Stop hooks must print the JSON Codex accepts, which they did not until this date, while the trust check passed. Tests entry updated.

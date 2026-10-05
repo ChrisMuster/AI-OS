@@ -69,6 +69,21 @@ REMINDER = """[Book Dragon - rule reminders re-injected at session start]
   not ad-hoc substitutes."""
 
 
+def reinject_output(ai=None):
+    """The SessionStart reminder in the form the AI's hook runner reads.
+
+    Claude Code adds plain text from a SessionStart hook to the session, so it gets
+    the reminder as written. Codex reports a session-start hook whose output is not
+    the JSON it expects as failed (the reminder opens with "[", which Codex tries to
+    read as JSON), so for Codex it is wrapped in Codex's documented SessionStart
+    shape, ``hookSpecificOutput.additionalContext``.
+    """
+    if ai == "codex":
+        return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                  "additionalContext": REMINDER}})
+    return REMINDER
+
+
 # ---------------------------------------------------------------------------
 # Fire-log (infrastructure record, gitignored)
 # ---------------------------------------------------------------------------
@@ -363,7 +378,7 @@ def main():
 
     try:
         if args.reinject:
-            print(REMINDER)
+            print(reinject_output(args.ai))
             return 0
         if args.precommit:
             return run_precommit()

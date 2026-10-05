@@ -15,6 +15,7 @@ maintenance so all supported AIs keep the search index fresh.
 """
 
 import argparse
+import contextlib
 import json
 import socket
 import sqlite3
@@ -210,13 +211,21 @@ def index_archive_file(conn: sqlite3.Connection, archive_file: Path,
 # Main
 # ---------------------------------------------------------------------------
 
-def run_index(dry_run: bool = False, rebuild: bool = False) -> None:
+def run_index(dry_run: bool = False, rebuild: bool = False) -> int:
+    """Archive new sessions, then index anything new. Returns archive.py's exit code."""
     # Step 1: run archive.py --all to capture any sessions not yet archived
     archive_script = SCRIPT_DIR / 'archive.py'
     cmd = [sys.executable, str(archive_script), '--all']
     if dry_run:
         cmd.append('--dry-run')
-    subprocess.run(cmd, check=False)
+    # The archiver writes to whatever stdout is current, so the Codex Stop hook's
+    # redirect to stderr covers it too. A failed archive does not stop the indexing
+    # of what is already archived; its exit code is returned so a caller can report it.
+    sys.stdout.flush()
+    archived = subprocess.run(cmd, check=False, stdout=sys.stdout)
+    if archived.returncode != 0:
+        print(f'  [WARNING] archive.py exited {archived.returncode}; '
+              f'sessions it did not archive are not indexed this run.')
 
     # Step 2: (re)build the database
     state = load_state()
@@ -276,6 +285,7 @@ def run_index(dry_run: bool = False, rebuild: bool = False) -> None:
         save_state(state)
 
     print(f'Done. {total} message(s) indexed.')
+    return archived.returncode
 
 
 def main() -> None:
@@ -296,7 +306,27 @@ def main() -> None:
         action='store_true',
         help='Print what would happen without writing anything',
     )
+    parser.add_argument(
+        '--codex-stop-hook',
+        action='store_true',
+        help='Run as the Codex Stop hook: progress text goes to stderr and stdout '
+             'carries only the JSON Codex expects',
+    )
     args = parser.parse_args()
+    if args.codex_stop_hook:
+        # Codex reports a Stop hook that exits 0 with anything but JSON on stdout as
+        # failed, so the indexer's progress text goes to stderr and stdout gets an
+        # empty JSON object: no fields, so the session stops as it would anyway. A
+        # real error still raises and exits non-zero, and so does a failed archive,
+        # so Codex reports the hook as failed rather than as a success it was not.
+        with contextlib.redirect_stdout(sys.stderr):
+            archive_code = run_index(dry_run=args.dry_run, rebuild=args.rebuild)
+        if archive_code:
+            print(f'archive.py failed (exit {archive_code}); see the lines above.',
+                  file=sys.stderr)
+            sys.exit(1)
+        print('{}')
+        return
     run_index(dry_run=args.dry_run, rebuild=args.rebuild)
 
 

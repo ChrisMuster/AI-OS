@@ -1,6 +1,6 @@
 # Codex
 
-**Last modified:** 2026-10-04
+**Last modified:** 2026-10-05
 
 ## Purpose
 Stores project-scoped Codex configuration for Book Dragon.
@@ -17,7 +17,7 @@ Stores project-scoped Codex configuration for Book Dragon.
 ## Outputs
 - Codex sessions use the lifecycle hook settings.
 - New Codex sessions can discover the plugin-backed `biblio_tools` MCP server once the project-local plugin is installed.
-- The Stop hook refreshes session-search indexing through a git-root-anchored launcher.
+- The Stop hook refreshes session-search indexing through a git-root-anchored launcher, in the indexer's `--codex-stop-hook` mode, and the SessionStart hook passes the permission-gate reminder to the session through `run.py --reinject --ai codex`; both print the JSON Codex documents for their event, without which Codex reports them as failed.
 
 ## Steps
 N/A. This is a configuration directory, not a workflow.
@@ -33,6 +33,7 @@ N/A. This is a configuration directory, not a workflow.
 ## Known Issues
 - The raw `[mcp_servers.biblio-tools]` entry in `config.toml` is intentionally disabled because Codex agent sessions expose local Biblio Tools reliably through the project-local plugin-backed `biblio_tools` server instead.
 - Windows process startup for the project Python environment can exceed Codex's default MCP startup timeout, so Biblio MCP registrations set explicit startup timeouts.
+- Editing any hook command in `config.toml` resets Codex's trust in that hook, and Codex then skips it until the user approves it again in Codex (`/hooks`). Setup verification's "Codex hook trust" check reports it; its "Codex hook output" check confirms the SessionStart and Stop commands print what Codex accepts.
 
 ## Revision History
 - 2026-06-24 - Initial creation.
@@ -42,3 +43,4 @@ N/A. This is a configuration directory, not a workflow.
 - 2026-06-25 - Added the project-local Biblio Tools Codex plugin route and disabled the older raw Codex MCP server entry.
 - 2026-07-31 - Anchored Codex lifecycle hook launch commands to the git project root so PreToolUse, SessionStart, and Stop hooks keep working after a session cwd drift.
 - 2026-10-04 - Added `rules/` with `review-orchestration.rules`, so a Codex session can start, resume and stop a review-orchestration run outside its sandbox. `config.toml` is unchanged, so the project hooks' trust is unaffected.
+- 2026-10-05 - The SessionStart and Stop hook commands in `config.toml` pass Codex modes (`--reinject --ai codex`, `--codex-stop-hook`) so their output is the JSON Codex accepts; Codex had reported both as failed in every session. The change resets the two hooks' trust, so the user re-approves them once.

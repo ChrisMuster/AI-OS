@@ -1,6 +1,6 @@
 # Session Search
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-05
 
 ## Purpose
 Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-text search database and provides a skill for Biblio to search session history on demand. Fills the recall gap that memory files and LOG.md cannot cover: the raw conversational archive of every session, searchable by keyword, date, or source.
@@ -9,7 +9,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - scripts/ — `workflows/session-search/scripts/` [[workflows/session-search/scripts/CONTEXT]] — Python scripts implementing the archive, indexing, search, discovery, and background scheduling functionality.
 - data/ — `workflows/session-search/data/` [[workflows/session-search/data/CONTEXT]] — Archive JSONL files (source of truth) and SQLite database shards. Gitignored; Google Drive-synced automatically.
 - skills/session-search/ — `workflows/session-search/skills/session-search/` [[workflows/session-search/skills/session-search/CONTEXT]] — Biblio-invocable skill for searching session history.
-- tests/ — `workflows/session-search/tests/` [[workflows/session-search/tests/CONTEXT]] — Standalone unit tests; currently covers `search.py`'s `--json` output mode (the contract consumed by the knowledge-graph `sessions` cross-reference).
+- tests/ - `workflows/session-search/tests/` [[workflows/session-search/tests/CONTEXT]] - Standalone unit tests; currently covers `search.py`'s `--json` output mode (the contract consumed by the knowledge-graph `sessions` cross-reference) and `index.py`'s `--codex-stop-hook` mode (the output Codex accepts from a Stop hook).
 
 ## Inputs
 - Claude Code session transcripts: `%USERPROFILE%\.claude\projects\<sanitized-cwd>\<session-uuid>.jsonl`
@@ -44,7 +44,7 @@ Indexes all Book Dragon conversation transcripts into a local SQLite FTS5 full-t
 - `.cursor/hooks.json` — sessionEnd hook calls `archive.py --all` for Cursor sessions.
 - `.windsurf/hooks.json` — post_cascade_response hook calls `archive.py --all` for Windsurf/Devin Desktop sessions.
 - `.clinerules/hooks/TaskComplete` — Executable hook script calls `archive.py --all` for Cline sessions.
-- `.codex/config.toml` - Stop hook calls `index.py` for Codex CLI/Desktop sessions.
+- `.codex/config.toml` - Stop hook calls `index.py --codex-stop-hook` for Codex CLI/Desktop sessions (the mode that answers Codex with the JSON it expects).
 - `AGENTS.md` [[AGENTS]] - Universal session startup step 6c runs `index.py` for every AI that reads the project instructions.
 - `scheduled-tasks` MCP - Claude-only hourly scheduled task runs `index.py` while the Claude desktop app is open.
 - `scripts/scheduler.py` - Python background scheduler for non-Claude AIs. Started at session startup (AGENTS.md step 6e), PID-guarded, auto-terminates after 4 hours of inactivity. Primary archive-and-index mechanism for AIs without hooks (GitHub Copilot, OpenCode, Aider).
@@ -71,3 +71,4 @@ Earlier history archived to LOG.md on 2026-06-30.
 - 2026-08-12 - Guard-coverage stage 3c: `data/scheduler.pid` added to Outputs. This was the one path of the stage's five that appeared nowhere in its workflow's CONTEXT.md, not in Contents, Steps or Known Issues: the scheduler itself was documented but the file it writes to hold its single-instance lock was not. The path was confirmed against `scripts/scheduler.py` rather than taken from the plan, and it is covered by the tracked inventory's `workflows/session-search/data/*` row.
 - 2026-08-12 - Known Issues gained the scheduler's idle-timeout behaviour, at the user's request and prompted by observing it live during the entry above: the four-hour auto-terminate can fire mid-session during a long break, so an open, actively used session can have no scheduler running behind it. Recorded rather than changed, because the behaviour is deliberate and correct; what makes it worth writing down is that the resulting failure is silent and the natural assumption runs the other way.
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13; the scripts, adapters and tests CONTEXT files follow. No behaviour change.
+- 2026-10-05 - `index.py --codex-stop-hook`, which the Codex Stop hook now runs, answers Codex with the JSON it expects (Codex had reported the hook as failed in every session); `tests/test_codex_stop_hook.py` covers it. Dependencies and the tests entry updated.

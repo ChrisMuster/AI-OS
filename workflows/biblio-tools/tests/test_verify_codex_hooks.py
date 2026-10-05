@@ -408,5 +408,114 @@ class TestLiveCodex(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class CodexHookOutputTests(unittest.TestCase):
+    """The Codex hook output check: a trusted SessionStart or Stop hook still fails
+    every run unless its stdout is the JSON Codex documents, which both of this
+    project's did until 2026-10-05 while the trust check passed."""
+
+    LAUNCH = ("python -c \"import os,subprocess,sys; root=...; os.execv(sys.executable, "
+              "[sys.executable, os.path.join(root, 'workflows', {path}){args}])\"")
+    GOOD = {
+        "SessionStart": [LAUNCH.format(path="'rule-hooks', 'scripts', 'run.py'",
+                                       args=", '--reinject', '--ai', 'codex'")],
+        "Stop": [LAUNCH.format(path="'session-search', 'scripts', 'index.py'",
+                               args=", '--codex-stop-hook'")],
+    }
+    REMINDER_JSON = ('{"hookSpecificOutput": {"hookEventName": "SessionStart", '
+                     '"additionalContext": "reminder"}}')
+    OUTPUTS = {"SessionStart": REMINDER_JSON, "Stop": "{}\n"}
+
+    def judge(self, commands=None, outputs=None):
+        return verify.judge_codex_hook_output(commands or self.GOOD,
+                                              outputs or self.OUTPUTS)
+
+    def test_positive_both_modes_print_what_codex_accepts(self):
+        self.assertEqual(self.judge()["status"], "PASS")
+
+    def test_positive_the_project_config_passes_live(self):
+        # The real .codex/config.toml and the real scripts (Stop with --dry-run).
+        result = verify.check_codex_hook_output()
+        self.assertEqual(result["status"], "PASS", result["detail"])
+
+    def test_rejection_a_command_without_its_codex_mode(self):
+        # The commands as they stood before 2026-10-05: plain text for Codex.
+        old = {"SessionStart": [self.GOOD["SessionStart"][0].replace(", '--ai', 'codex'", "")],
+               "Stop": [self.GOOD["Stop"][0].replace(", '--codex-stop-hook'", "")]}
+        result = self.judge(commands=old)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("SessionStart hook does not run", result["detail"])
+        self.assertIn("Stop hook does not run", result["detail"])
+
+    def test_rejection_output_codex_would_not_accept(self):
+        cases = {
+            "plain text": {"SessionStart": "[Book Dragon - reminder]", "Stop": "{}"},
+            "stop text": {"SessionStart": self.REMINDER_JSON, "Stop": "Indexing 3 files"},
+            "wrong event": {"SessionStart": self.REMINDER_JSON.replace("SessionStart", "Stop"),
+                            "Stop": "{}"},
+            "not an object": {"SessionStart": self.REMINDER_JSON, "Stop": "[]"},
+            "could not run": {"SessionStart": RuntimeError("exit 1"), "Stop": "{}"},
+        }
+        for label, outputs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.judge(outputs=outputs)["status"], "FAIL")
+
+    def test_rejection_a_missing_hook(self):
+        # From a config that exists, both hooks must be defined (Codex review R2).
+        for missing in ("SessionStart", "Stop"):
+            with self.subTest(missing=missing):
+                commands = {k: v for k, v in self.GOOD.items() if k != missing}
+                result = self.judge(commands=commands)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertIn(f"defines no {missing} hook", result["detail"])
+        self.assertEqual(verify.judge_codex_hook_output({}, {})["status"], "FAIL")
+
+    def test_rejection_fields_codex_schemas_do_not_allow(self):
+        # Codex's output schemas set additionalProperties false (Codex review R2).
+        cases = {
+            "stop with a SessionStart field": {
+                "SessionStart": self.REMINDER_JSON,
+                "Stop": '{"hookSpecificOutput": {"hookEventName": "Stop"}}'},
+            "session start with an unknown field": {
+                "SessionStart": self.REMINDER_JSON[:-1] + ', "extra": 1}', "Stop": "{}"},
+            "an unknown inner field": {
+                "SessionStart": self.REMINDER_JSON.replace(
+                    '"additionalContext"', '"other": 1, "additionalContext"'),
+                "Stop": "{}"},
+        }
+        for label, outputs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.judge(outputs=outputs)["status"], "FAIL")
+
+    def test_rejection_a_stop_answer_that_blocks_or_ends_differently(self):
+        for stop in ('{"decision": "block", "reason": "again"}', '{"continue": false}'):
+            with self.subTest(stop=stop):
+                result = self.judge(outputs={"SessionStart": self.REMINDER_JSON,
+                                             "Stop": stop})
+                self.assertEqual(result["status"], "FAIL")
+
+    def test_rejection_values_of_the_wrong_type(self):
+        # Codex review R3: a string "false" for continue is rejected by Codex.
+        cases = {
+            "string continue": {"SessionStart": self.REMINDER_JSON,
+                                "Stop": '{"continue": "false"}'},
+            "number systemMessage": {"SessionStart": self.REMINDER_JSON,
+                                     "Stop": '{"systemMessage": 3}'},
+            "string suppressOutput": {
+                "SessionStart": self.REMINDER_JSON[:-1] + ', "suppressOutput": "no"}',
+                "Stop": "{}"},
+        }
+        for label, outputs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.judge(outputs=outputs)["status"], "FAIL")
+        null_message = {"SessionStart": self.REMINDER_JSON,
+                        "Stop": '{"systemMessage": null}'}
+        self.assertEqual(self.judge(outputs=null_message)["status"], "PASS")
+
+    def test_positive_allowed_optional_fields_pass(self):
+        outputs = {"SessionStart": self.REMINDER_JSON[:-1] + ', "suppressOutput": false}',
+                   "Stop": '{"systemMessage": "indexed", "continue": true}'}
+        self.assertEqual(self.judge(outputs=outputs)["status"], "PASS")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
