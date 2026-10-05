@@ -43,6 +43,7 @@ Usage:
   python workflows/close-out/scripts/run.py --scope all    # full close-out
   python workflows/close-out/scripts/run.py --scope audit  # one workflow
   python workflows/close-out/scripts/run.py --json
+  python workflows/close-out/scripts/run.py --read-only   # run without saving results
   python workflows/close-out/scripts/run.py --repair       # auto-fix DEGRADED checks
 """
 import argparse
@@ -396,7 +397,8 @@ def run_repair():
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
-def build_report(scope_label, gates, repair_note=None, result_saved=True):
+def build_report(scope_label, gates, repair_note=None, result_saved=True,
+                 read_only=False):
     lines = [
         "Book Dragon - Close-out Verifier",
         f"Scope: {scope_label}",
@@ -415,6 +417,8 @@ def build_report(scope_label, gates, repair_note=None, result_saved=True):
                     lines.append(f"        {fr['tail']}")
                 if result_saved:
                     lines.append("        Full output: workflows/close-out/last-result.json")
+                elif read_only:
+                    lines.append("        Full output is not saved in read-only mode.")
     degraded = collect_degraded(gates)
     if degraded:
         lines.append("-" * 60)
@@ -452,15 +456,24 @@ def main():
     )
     parser.add_argument("--json", action="store_true", help="Emit the result as JSON.")
     parser.add_argument(
+        "--read-only", action="store_true",
+        help="Run every gate without writing LOG.md or last-result.json.",
+    )
+    parser.add_argument(
         "--repair", action="store_true",
         help="If a runtime check DEGRADED, run setup.py to repair the project "
              "runtime, then re-run the gates once.",
     )
     args = parser.parse_args()
 
+    if args.read_only and args.repair:
+        print("--read-only and --repair cannot be combined.")
+        sys.exit(2)
+
     reexec_under_venv()
 
-    append_log("started", f"Close-out verifier started (scope: {args.scope}).")
+    if not args.read_only:
+        append_log("started", f"Close-out verifier started (scope: {args.scope}).")
 
     selected, scope_label = select_suites(args.scope)
     gates = [gate_audit(), gate_link(), gate_tests(selected)]
@@ -502,17 +515,19 @@ def main():
         "repair_note": repair_note,
         "gates": gates,
     }
-    result_saved = True
-    try:
-        with RESULT_FILE.open("w", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(result, indent=2))
-    except Exception:
-        result_saved = False  # durable result is a convenience, not a gate
+    result_saved = False if args.read_only else True
+    if not args.read_only:
+        try:
+            with RESULT_FILE.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(json.dumps(result, indent=2))
+        except Exception:
+            result_saved = False  # durable result is a convenience, not a gate
 
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(build_report(scope_label, gates, repair_note, result_saved))
+        print(build_report(scope_label, gates, repair_note, result_saved,
+                           read_only=args.read_only))
 
     verdict = status.upper()
     failed = [g["name"] for g in gates if not g["passed"]]
@@ -524,7 +539,8 @@ def main():
     else:
         body = "All gates green."
     note = f"Close-out verifier {verdict} (scope: {scope_label}). {body}{degrade_suffix}"
-    append_log("completed" if overall_pass else "failed", note)
+    if not args.read_only:
+        append_log("completed" if overall_pass else "failed", note)
 
     sys.exit(0 if overall_pass else 1)
 

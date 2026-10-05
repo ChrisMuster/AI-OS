@@ -6,10 +6,12 @@ scope selection, the subprocess test runner, gate aggregation, report
 formatting, and the import coupling to the audit and link-check scripts.
 """
 import importlib.util
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -152,6 +154,109 @@ class ReexecTests(unittest.TestCase):
             else:
                 os.environ[run.REEXEC_MARKER] = original
 
+    def test_reexec_preserves_read_only_flag(self):
+        with mock.patch.dict(os.environ, {run.REEXEC_MARKER: "0"}), \
+             mock.patch.object(run, "venv_python", return_value=SCRIPT), \
+             mock.patch.object(run.sys, "argv", [str(SCRIPT), "--read-only", "--scope", "all"]), \
+             mock.patch.object(run.subprocess, "run", return_value=mock.Mock(returncode=0)) as spy:
+            with self.assertRaises(SystemExit) as exit_result:
+                run.reexec_under_venv()
+        self.assertEqual(exit_result.exception.code, 0)
+        self.assertEqual(spy.call_args.args[0][-3:], ["--read-only", "--scope", "all"])
+        self.assertEqual(spy.call_args.kwargs["env"][run.REEXEC_MARKER], "1")
+
+
+class ReadOnlyTests(unittest.TestCase):
+    def invoke(self, args, gates):
+        output = io.StringIO()
+        with mock.patch.object(run.sys, "argv", [str(SCRIPT), *args]), \
+             mock.patch.object(run, "reexec_under_venv") as reexec, \
+             mock.patch.object(run, "select_suites", return_value=([], "name=close-out")) as select, \
+             mock.patch.object(run, "gate_audit", return_value=gates[0]) as audit, \
+             mock.patch.object(run, "gate_link", return_value=gates[1]) as link, \
+             mock.patch.object(run, "gate_tests", return_value=gates[2]) as tests, \
+             redirect_stdout(output):
+            with self.assertRaises(SystemExit) as exit_result:
+                run.main()
+        return exit_result.exception.code, output.getvalue(), (reexec, select, audit, link, tests)
+
+    def gates(self, test_passed=True):
+        return [
+            {"name": "structural audit", "passed": True, "detail": "clear"},
+            {"name": "link audit", "passed": True, "detail": "0 dead link(s)"},
+            {"name": "tests", "passed": test_passed, "detail": "1 test file(s)",
+             "files": [{"file": "x/test_x.py", "passed": test_passed,
+                        "tail": "" if test_passed else "failure output",
+                        **({} if test_passed else {"output": "failure output"})}]},
+        ]
+
+    def test_json_scope_runs_all_gates_and_preserves_existing_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / "LOG.md"
+            result = Path(folder) / "last-result.json"
+            log.write_bytes(b"previous log\n")
+            result.write_bytes(b'{"previous": true}\n')
+            with mock.patch.object(run, "LOG_FILE", log), \
+                 mock.patch.object(run, "RESULT_FILE", result):
+                code, printed, calls = self.invoke(
+                    ["--read-only", "--json", "--scope", "close-out"], self.gates())
+            self.assertEqual(code, 0)
+            self.assertEqual(log.read_bytes(), b"previous log\n")
+            self.assertEqual(result.read_bytes(), b'{"previous": true}\n')
+            payload = json.loads(printed)
+            self.assertEqual(payload["scope"], "close-out")
+            self.assertEqual([gate["name"] for gate in payload["gates"]],
+                             ["structural audit", "link audit", "tests"])
+            for gate in calls[2:]:
+                gate.assert_called_once()
+
+    def test_failing_gate_reports_unsaved_output_and_creates_no_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / "LOG.md"
+            result = Path(folder) / "last-result.json"
+            with mock.patch.object(run, "LOG_FILE", log), \
+                 mock.patch.object(run, "RESULT_FILE", result):
+                code, printed, calls = self.invoke(
+                    ["--read-only", "--scope", "close-out"], self.gates(False))
+            self.assertEqual(code, 1)
+            self.assertIn("RESULT: FAIL", printed)
+            self.assertIn("Full output is not saved in read-only mode.", printed)
+            self.assertNotIn("last-result.json", printed)
+            self.assertFalse(log.exists())
+            self.assertFalse(result.exists())
+            for gate in calls[2:]:
+                gate.assert_called_once()
+
+    def test_repair_combination_is_refused_before_reexec_or_gates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / "LOG.md"
+            result = Path(folder) / "last-result.json"
+            with mock.patch.object(run, "LOG_FILE", log), \
+                 mock.patch.object(run, "RESULT_FILE", result):
+                code, printed, calls = self.invoke(
+                    ["--read-only", "--repair"], self.gates())
+            self.assertFalse(log.exists())
+            self.assertFalse(result.exists())
+        self.assertEqual(code, 2)
+        self.assertEqual(printed, "--read-only and --repair cannot be combined.\n")
+        for call in calls:
+            call.assert_not_called()
+
+    def test_normal_run_still_writes_result_and_both_log_entries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / "LOG.md"
+            result = Path(folder) / "last-result.json"
+            with mock.patch.object(run, "LOG_FILE", log), \
+                 mock.patch.object(run, "RESULT_FILE", result):
+                code, printed, _calls = self.invoke(["--scope", "close-out"], self.gates())
+            self.assertEqual(code, 0)
+            self.assertIn("RESULT: PASS", printed)
+            self.assertEqual(len(log.read_bytes().splitlines()), 2)
+            self.assertIn("Action: started", log.read_text(encoding="utf-8"))
+            self.assertIn("Action: completed", log.read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["scope"],
+                             "close-out")
+
 
 class TestRunnerTests(unittest.TestCase):
     def _write(self, folder, name, body):
@@ -232,8 +337,12 @@ class TestRunnerTests(unittest.TestCase):
                 "files": [{"file": "x/test_a.py", "passed": False, "tail": "boom"}]}
         saved = run.build_report("all", [gate])
         unsaved = run.build_report("all", [gate], result_saved=False)
+        read_only = run.build_report("all", [gate], result_saved=False,
+                                     read_only=True)
         self.assertIn("Full output: workflows/close-out/last-result.json", saved)
         self.assertNotIn("Full output:", unsaved)
+        self.assertNotIn("read-only mode", unsaved)
+        self.assertIn("Full output is not saved in read-only mode.", read_only)
         self.assertIn("boom", unsaved)
 
     def test_gate_tests_aggregates_pass_and_fail(self):
