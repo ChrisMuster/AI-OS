@@ -7,7 +7,10 @@ Modes:
                          returns its result unchanged: the same PASS or FAIL lines
                          on stdout, the same exit code, the same LOG.md entries.
   --run <brief>          Start a build-and-review run from a brief that passes the
-                         check (loop.py). Needs --item, the name of the review packet
+                         check (loop.py). Needs --builder claude|codex, the provider
+                         the user named to build (the other reviews; there is no
+                         default, and an AI asked to start a run with no builder named
+                         asks the user), --item, the name of the review packet
                          (memory/<item>_review_packet.md, which must not exist yet),
                          and --git-dir, the personal repository the run's preflight
                          checks is captured. --wait sleeps through a usage limit that
@@ -17,7 +20,8 @@ Modes:
                          and resume.
   --resume <run-id>      Continue an ended run whose stop reason allows it
                          (max-rounds, usage-limit, error) from its last completed
-                         step. --rounds N allows N more review rounds.
+                         step. --rounds N allows N more review rounds. The run keeps
+                         the roles it started with, so --builder is refused here.
   --stop <run-id>        End a paused run.
 
 --dry-run: with --check-brief, prints the LOG.md entries to stderr instead of writing
@@ -31,13 +35,15 @@ before it starts or resumes.
 
 Usage:
   python workflows/review-orchestration/scripts/run.py --check-brief <brief>
-  python workflows/review-orchestration/scripts/run.py --run <brief> --item <item> --git-dir <dir>
+  python workflows/review-orchestration/scripts/run.py --run <brief> --builder claude|codex --item <item> --git-dir <dir>
   python workflows/review-orchestration/scripts/run.py --resume <run-id> [--rounds N]
   python workflows/review-orchestration/scripts/run.py --stop <run-id>
 """
 
 import argparse
 import asyncio
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,6 +53,44 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 import brief  # noqa: E402
 
 REFUSED = 3
+
+# Set on the child so the project interpreter never re-runs itself again.
+REEXEC_MARKER = "BOOK_DRAGON_REVIEW_ORCHESTRATION_REEXEC"
+
+
+def venv_python(root=brief.PROJECT_ROOT):
+    """The project .venv interpreter for this platform (it may not exist)."""
+    if os.name == "nt":
+        return Path(root) / ".venv" / "Scripts" / "python.exe"
+    return Path(root) / ".venv" / "bin" / "python"
+
+
+def reexec_under_venv(argv, *, target=None, executable=None, environ=None,
+                      runner=subprocess.run):
+    """Re-run this script under the project .venv interpreter when the current one is
+    another, and return the child's exit code; return None to carry on here.
+
+    The documented command is ``python workflows/review-orchestration/scripts/run.py``,
+    and which ``python`` that finds depends on the shell: a Codex session's PowerShell
+    found the system interpreter, which lacks the two SDKs, so the run was refused. The
+    SDKs live in the project .venv, as the close-out verifier's packages do, so this
+    does what its ``reexec_under_venv`` does. Everything the run starts later uses
+    ``sys.executable``, so it follows. With no .venv, or if the re-run cannot start,
+    the current interpreter carries on and the SDK check says what is missing.
+    """
+    environ = os.environ if environ is None else environ
+    if environ.get(REEXEC_MARKER) == "1":
+        return None
+    target = Path(target) if target is not None else venv_python()
+    executable = executable or sys.executable
+    try:
+        if not target.exists() or target.resolve() == Path(executable).resolve():
+            return None
+        completed = runner([str(target), str(Path(__file__).resolve()), *argv],
+                           env=dict(environ, **{REEXEC_MARKER: "1"}))
+    except OSError:
+        return None
+    return completed.returncode
 
 
 def _outcome(run):
@@ -77,6 +121,8 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
     modes.add_argument("--run", metavar="BRIEF", help="start a run from a brief")
     modes.add_argument("--resume", metavar="RUN_ID", help="continue an ended run")
     modes.add_argument("--stop", metavar="RUN_ID", help="end a paused run")
+    parser.add_argument("--builder", choices=("claude", "codex"),
+                        help="the provider that builds; the other reviews (with --run)")
     parser.add_argument("--item", help="the review packet's item name (with --run)")
     parser.add_argument("--git-dir", help="the personal repository (with --run)")
     parser.add_argument("--rounds", type=int, help="more review rounds (with --resume)")
@@ -88,6 +134,9 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
                         help="check and say what would happen, changing nothing")
     args = parser.parse_args(argv)
 
+    if args.builder and not args.run:
+        parser.error("--builder is given only with --run: a resumed or stopped run "
+                     "keeps the roles it started with")
     if args.check_brief:
         return brief.run_check(args.check_brief, root=root, log_path=log_path,
                                dry_run=args.dry_run)
@@ -98,10 +147,14 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
     common = {"root": root, "deps": deps, "log_path": log_path, "runs_dir": runs_dir}
     try:
         if args.run:
+            if not args.builder:
+                parser.error("--run needs --builder claude or --builder codex: name the "
+                             "provider that builds, and the other reviews")
             if not args.item or not args.git_dir:
                 parser.error("--run needs --item and --git-dir")
             run = loop.start(args.run, args.item, args.git_dir, inject=args.inject_limit,
-                             dry_run=args.dry_run, wait=args.wait, **common)
+                             dry_run=args.dry_run, wait=args.wait, builder=args.builder,
+                             **common)
             if run is None:
                 return 0
         elif args.resume:
@@ -124,4 +177,5 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = reexec_under_venv(sys.argv[1:])
+    sys.exit(main() if code is None else code)

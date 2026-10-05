@@ -1,0 +1,22 @@
+# Verification commands an orchestrated Codex builder may run (short chunk (d) plan,
+# section 3.7). A Codex builder uses this list, not verify-commands.txt.
+#
+# Same format: one Python regular expression per line, the whole trimmed command must
+# match one line, and no line accepts a flag it does not name.
+#
+# Two things are left off on purpose:
+#
+#   - The targeted audit and the close-out verifier. Each appends to LOG.md files
+#     outside any ordinary edit path, and the check after every Codex builder turn
+#     ends the run on such a write. The orchestrator runs both itself before every
+#     review and reports what they find.
+#   - The general `scripts/run.py --check` line. It would accept any workflow's check,
+#     and the Reddit collector's makes an HTTP request, while the web-research and
+#     personal-data guard checks read the project's `.env` file. The third line below
+#     names the checks a Codex builder may run, one by one. Add a name only after
+#     reading what that check does: it must not reach the network, read `.env`, or
+#     write a tracked or hand-written file.
+python -m py_compile( (?!-)[\w./\-]+)+
+python (workflows|skills)/[\w./\-]+/tests/[\w./\-]+\.py( (?!-)[\w.]+)*( -v)?
+python workflows/(ai-style-guard|backlog-guard|encoding-guard|skill-hardening-guard|sync-architecture)/scripts/run\.py --check
+python workflows/doc-sync-guard/scripts/run\.py( --check)?

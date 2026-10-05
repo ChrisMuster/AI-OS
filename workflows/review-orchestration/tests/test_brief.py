@@ -690,5 +690,63 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(self.call("run.py").returncode, 2)
 
 
+class ReexecTests(unittest.TestCase):
+    """run.py re-runs itself under the project .venv interpreter, so the documented
+    command works whichever ``python`` a shell finds first (chunk (d) proof run 2: a
+    Codex session found the system interpreter, which lacks the SDKs)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.venv = self.tmp / "venv-python.exe"
+        self.venv.write_bytes(b"")
+        self.other = self.tmp / "system-python.exe"
+        self.other.write_bytes(b"")
+        self.calls = []
+
+    def runner(self, cmd, env):
+        self.calls.append((cmd, env))
+        return subprocess.CompletedProcess(cmd, 7)
+
+    def reexec(self, environ=None, target=None, executable=None, runner=None):
+        return run.reexec_under_venv(
+            ["--run", "b.md", "--builder", "codex"],
+            target=self.venv if target is None else target,
+            executable=executable or self.other, environ=environ or {"KEEP": "1"},
+            runner=runner or self.runner)
+
+    def test_another_interpreter_re_runs_under_the_venv(self):
+        """Positive control: a different interpreter re-runs the same script with the
+        same arguments under the .venv one, marks the child, keeps the environment,
+        and returns the child's exit code."""
+        self.assertEqual(self.reexec(), 7)
+        [(cmd, env)] = self.calls
+        self.assertEqual(cmd, [str(self.venv), str(SCRIPTS.joinpath("run.py").resolve()),
+                               "--run", "b.md", "--builder", "codex"])
+        self.assertEqual(env, {"KEEP": "1", run.REEXEC_MARKER: "1"})
+
+    def test_the_venv_interpreter_carries_on(self):
+        self.assertIsNone(self.reexec(executable=self.venv))
+        self.assertEqual(self.calls, [])
+
+    def test_the_marked_child_never_re_runs(self):
+        self.assertIsNone(self.reexec(environ={run.REEXEC_MARKER: "1"}))
+        self.assertEqual(self.calls, [])
+
+    def test_no_venv_carries_on(self):
+        self.assertIsNone(self.reexec(target=self.tmp / "missing.exe"))
+        self.assertEqual(self.calls, [])
+
+    def test_a_re_run_that_cannot_start_carries_on(self):
+        def broken(cmd, env):
+            raise OSError("cannot start")
+        self.assertIsNone(self.reexec(runner=broken))
+
+    def test_the_default_target_is_the_project_venv(self):
+        name = "python.exe" if run.os.name == "nt" else "python"
+        self.assertEqual(run.venv_python().name, name)
+        self.assertEqual(run.venv_python().parent.parent,
+                         brief.PROJECT_ROOT / ".venv")
+
+
 if __name__ == "__main__":
     unittest.main()

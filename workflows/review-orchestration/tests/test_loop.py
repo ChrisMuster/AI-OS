@@ -50,6 +50,7 @@ brief = _load("brief")
 limits = _load("limits")
 settings_mod = _load("settings")
 approver = _load("approver")
+codex_rules = _load("codex_rules")
 stopreasons = _load("stopreasons")
 providers = _load("providers")
 runrecord = _load("runrecord")
@@ -161,12 +162,15 @@ def finding(title="A defect", reraises=""):
 
 
 class FakeUsage:
-    def __init__(self, value=None):
-        self.value = value
+    """Stands in for the run's one limits.ClaudeUsage: its reading is whatever the
+    harness holds at that moment, so a session can set it mid-run as an event would."""
+
+    def __init__(self, harness):
+        self.harness = harness
 
     def reading(self):
-        return self.value or limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
-                                            reason="no event")
+        return self.harness.claude_usage or limits.Reading(
+            limits.CLAUDE, limits.UNAVAILABLE, reason="no event")
 
 
 class Harness:
@@ -188,6 +192,23 @@ class Harness:
         self.start_check_writes = None
         self.files_reviewed = None
         self.check_writes = None
+        # Chunk (d): the reverse pairing. With ``swapped`` the fake builder is a Codex
+        # one (it needs the check after every turn and has a frozen folder) and the
+        # fake reviewer a Claude one.
+        self.swapped = False
+        self.usage = FakeUsage(self)
+        self.given = []
+        self.cat_a = set(CAT_A)
+        self.frozen = None
+        self.builder_refusals = []
+        self.review_refusals = []
+        self.during_review = None
+        self.inventories = 0
+        # A Codex builder's thread totals, one per turn, as the real one reports a
+        # running total (the chunk (d) short plan, 11.3); 700 each when not given.
+        self.codex_totals = []
+        # What a fake Codex builder reports as its launch record (11.2), per launch.
+        self.launch_records = []
 
     def start_check(self, root, python):
         """The start-of-run close-out check: clean unless a test says otherwise."""
@@ -199,16 +220,23 @@ class Harness:
         return loop.Deps(make_builder=self.make_builder, make_reviewer=self.make_reviewer,
                          read_codex=self.read_codex, run_checks=self.run_checks,
                          baseline_checks=self.start_check,
-                         category_a=lambda root: CAT_A,
+                         category_a=lambda root: set(self.cat_a),
                          capture_problems=lambda root, git_dir: [],
+                         inventory=self.inventory, claude_usage=lambda: self.usage,
                          sleep=self.slept.append, now=lambda: self.clock)
 
-    def make_builder(self, settings, approver_, cwd, resume):
+    def inventory(self, root, git_dir, category_a):
+        self.inventories += 1
+        return worktree.inventory(root, git_dir, category_a)
+
+    def make_builder(self, settings, approver_, cwd, resume, run_dir, usage):
+        self.given.append(("builder", run_dir, usage))
         builder = FakeBuilder(self, resume)
         self.builders.append(builder)
         return builder
 
-    def make_reviewer(self, settings, cwd):
+    def make_reviewer(self, settings, cwd, usage):
+        self.given.append(("reviewer", None, usage))
         return FakeReviewer(self)
 
     def read_codex(self, root):
@@ -222,7 +250,6 @@ class Harness:
 
 
 class FakeBuilder:
-    provider = limits.CLAUDE
 
     def __init__(self, harness, resume):
         self.harness = harness
@@ -230,38 +257,60 @@ class FakeBuilder:
         self.session_id = resume
         self.prompts = []
         self.last_messages = []
-        self.usage = FakeUsage(harness.claude_usage)
         self.closed = False
+        self.provider = limits.CODEX if harness.swapped else limits.CLAUDE
+        self.needs_turn_check = harness.swapped
+        self.frozen_dir = harness.frozen if harness.swapped else None
+        self.refusals = []
+        self.launch_record = None
 
     async def start(self):
-        pass
+        if self.harness.swapped and self.harness.launch_records:
+            self.launch_record = self.harness.launch_records.pop(0)
 
     async def turn(self, name, prompt):
         self.prompts.append((name, prompt))
         self.last_messages = [{"_type": "SystemMessage", "data": {"session_id": "s-1"}}]
-        text = self.harness.builder_script.pop(0)(prompt)
+        try:
+            text = self.harness.builder_script.pop(0)(prompt)
+        except Exception:
+            # A real Codex builder keeps what its hook refused when a turn fails.
+            self.refusals = list(self.harness.builder_refusals)
+            raise
         self.session_id = "s-1"
+        if self.harness.swapped:
+            total = self.harness.codex_totals.pop(0) if self.harness.codex_totals else 700
+            return providers.TurnRecord(
+                name=name, final_text=text, session_id="s-1", model="gpt-6-sol",
+                num_turns=None, is_error=False, usage={"total": {"totalTokens": total}},
+                cost_usd_equivalent=None, wall_seconds=0.1, messages=[{"n": 1}],
+                tokens=total, refusals=list(self.harness.builder_refusals))
+        usage = {"input_tokens": 100, "output_tokens": 10}
         return providers.TurnRecord(name=name, final_text=text, session_id="s-1",
                                     model=MODEL, num_turns=1, is_error=False,
-                                    usage={"input_tokens": 100, "output_tokens": 10},
-                                    cost_usd_equivalent=0.01, wall_seconds=0.1,
-                                    messages=[{"n": 1}])
+                                    usage=usage, cost_usd_equivalent=0.01,
+                                    wall_seconds=0.1, messages=[{"n": 1}],
+                                    tokens=providers.claude_tokens(usage))
 
     async def close(self):
         self.closed = True
 
 
 class FakeReviewer:
-    provider = limits.CODEX
-    model = "gpt-6-sol"
 
     def __init__(self, harness):
         self.harness = harness
+        self.provider = limits.CLAUDE if harness.swapped else limits.CODEX
+        self.model = MODEL if harness.swapped else "gpt-6-sol"
+        self.refusals = []
 
     def review(self, prompt, schema):
         self.harness.review_calls.append((prompt, schema))
+        if self.harness.during_review:
+            self.harness.during_review()
         answer = self.harness.reviews.pop(0)
         if isinstance(answer, Exception):
+            self.refusals = list(self.harness.review_refusals)
             raise answer
         # A compliant reviewer lists every changed file the prompt names, unless the
         # test says otherwise.
@@ -269,11 +318,19 @@ class FakeReviewer:
         listed = [line[2:] for line in section.splitlines() if line.startswith("- ")]
         if self.harness.files_reviewed is not None:
             listed = self.harness.files_reviewed
+        if self.harness.swapped:
+            usage = {"input_tokens": 400, "output_tokens": 50}
+            return providers.ReviewRecord(
+                reply={"summary": "s", "findings": answer, "files_reviewed": listed},
+                thread_id="claude-session", status="completed", usage=usage,
+                wall_seconds=0.1, raw={"r": 1}, tokens=providers.claude_tokens(usage),
+                model=MODEL, refusals=list(self.harness.review_refusals))
+        usage = {"total": {"total_tokens": 1000}}
         return providers.ReviewRecord(reply={"summary": "s", "findings": answer,
                                              "files_reviewed": listed},
-                                      thread_id="t", status="completed",
-                                      usage={"total": {"total_tokens": 1000}},
-                                      wall_seconds=0.1, raw={"r": 1})
+                                      thread_id="t", status="completed", usage=usage,
+                                      wall_seconds=0.1, raw={"r": 1},
+                                      tokens=providers.codex_tokens(usage))
 
 
 class LoopCase(unittest.TestCase):
@@ -283,14 +340,17 @@ class LoopCase(unittest.TestCase):
         self.h = Harness(self.root)
         self.runs = self.root / "runs"
         self.log = self.root / "LOG.md"
-        self.settings = settings_mod.load_settings()
+        # A run's resolved settings carry its roles; these tests build with Claude unless
+        # a test names the builder (the chunk (d) short plan, 11.1).
+        self.settings = settings_mod.assign_roles(settings_mod.load_settings(), "claude")
 
     def start(self, cap=3, inject=None, wait=False, item="demo"):
         settings = json.loads(json.dumps(self.settings))
         settings["round_caps"]["build_review"] = cap
         run = loop.start("brief.md", item, str(self.personal), root=self.root,
                          deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
-                         inject=inject, wait=wait, settings=settings)
+                         inject=inject, wait=wait, settings=settings,
+                         builder="codex" if self.h.swapped else "claude")
         asyncio.run(run.advance())
         return run
 
@@ -655,10 +715,13 @@ class UsageTests(LoopCase):
         self.assertFalse(self.runs.exists())
 
     def test_rejection_claude_paid_overage_stops_before_the_next_step(self):
-        self.h.claude_usage = limits.Reading(limits.CLAUDE, limits.LIMIT_REPORTED,
-                                             percent=50, resets_at=5, window="five_hour",
-                                             reason="using paid overage")
-        self.h.builder_script = [edit(self.root, "x\n")]
+        # The reading arrives as the builder's session reports it, during the build.
+        def build(prompt):
+            self.h.claude_usage = limits.Reading(
+                limits.CLAUDE, limits.LIMIT_REPORTED, percent=50, resets_at=5,
+                window="five_hour", reason="using paid overage")
+            return edit(self.root, "x\n")(prompt)
+        self.h.builder_script = [build]
         run = self.start()
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
         self.assertEqual(run.state["step"], "build")  # the build finished; review never ran
@@ -712,6 +775,23 @@ class UsageTests(LoopCase):
             self.h.readings = [reading(credits=credits)]
             with self.assertRaises(loop.RunRefused):
                 self.start()
+
+    def test_rejection_a_refusal_for_credits_names_what_codex_answered(self):
+        """A reading with no credit snapshot is usually an unavailable one, and the
+        refusal must carry its reason rather than only "no credits snapshot" (proof run
+        2's resume from Codex was refused twice with nothing to go on)."""
+        self.h.readings = [reading(credits=None, source="unavailable")]
+        with self.assertRaises(loop.RunRefused) as caught:
+            self.start()
+        self.assertIn("Codex usage not reported: x", caught.exception.args[0][0])
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start(inject="build")
+        self.h.readings = [reading(credits=None, source="unavailable")]
+        with self.assertRaises(loop.RunRefused) as caught:
+            loop.resume(run)
+        self.assertIn("Codex usage not reported: x", caught.exception.args[0][0])
+        self.assertIn("the run is unchanged", caught.exception.args[0][0])
 
     def test_negative_no_credits_and_not_unlimited_needs_no_balance(self):
         self.h.readings = [reading(credits={"hasCredits": False, "unlimited": False})] * 3
@@ -841,6 +921,10 @@ class PreflightTests(LoopCase):
 
     def test_negative_env_and_uncommitted_work_elsewhere_do_not_refuse_the_run(self):
         (self.root / "work" / ".env").write_bytes(b"SECRET=x\n")  # never part of a run
+        # Ignored, as a real one must be: a run does not start while a .env-named file
+        # is neither tracked nor ignored (chunk (d), short plan 5.1 rule 3).
+        with open(self.root / ".git" / "info" / "exclude", "ab") as handle:
+            handle.write(b".env\n")
         (self.root / "brief.md").write_bytes(BRIEF.encode("utf-8") + b"\n")  # outside
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
@@ -961,6 +1045,8 @@ class PreflightTests(LoopCase):
 
 class CommandLineTests(LoopCase):
 
+    RUN = ("--run", "brief.md", "--builder", "claude")
+
     def call(self, *argv):
         out = io.StringIO()
         with redirect_stdout(out):
@@ -971,29 +1057,79 @@ class CommandLineTests(LoopCase):
     def test_positive_run_exits_0_on_reviewed_clean(self):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        code, out = self.call("--run", "brief.md", "--item", "demo", "--git-dir",
+        code, out = self.call(*self.RUN, "--item", "demo", "--git-dir",
                               str(self.personal))
         self.assertEqual(code, 0, out)
         self.assertIn("ended reviewed-clean", out)
 
     def test_rejection_a_refused_run_exits_3_and_other_ends_exit_1(self):
         self.h.readings = [reading(95)]
-        code, out = self.call("--run", "brief.md", "--item", "demo", "--git-dir",
+        code, out = self.call(*self.RUN, "--item", "demo", "--git-dir",
                               str(self.personal))
         self.assertEqual(code, 3)
         self.assertIn("REFUSED", out)
         self.h.builder_script = [reply("nothing")]
-        code, _ = self.call("--run", "brief.md", "--item", "other", "--git-dir",
+        code, _ = self.call(*self.RUN, "--item", "other", "--git-dir",
                             str(self.personal))
         self.assertEqual(code, 1)
 
     def test_rejection_stop_refuses_a_run_that_is_not_paused(self):
         self.h.builder_script = [reply("nothing")]
-        self.call("--run", "brief.md", "--item", "demo", "--git-dir", str(self.personal))
+        self.call(*self.RUN, "--item", "demo", "--git-dir", str(self.personal))
         run_id = next(self.runs.iterdir()).name
         code, out = self.call("--stop", run_id)
         self.assertEqual(code, 3)
         self.assertIn("only a paused run", out)
+
+    def usage_error(self, *argv):
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            self.call(*argv)
+        self.assertEqual(caught.exception.code, 2)
+        return err.getvalue()
+
+    def test_rejection_run_with_no_builder_is_a_usage_error(self):
+        # The chunk (d) short plan, 11.1: no default; the AI asks, never picks.
+        text = self.usage_error("--run", "brief.md", "--item", "demo", "--git-dir",
+                                str(self.personal))
+        self.assertIn("--run needs --builder claude or --builder codex", text)
+        self.assertFalse(self.runs.exists() and any(self.runs.iterdir()))
+
+    def test_rejection_a_builder_that_is_not_a_provider(self):
+        text = self.usage_error("--run", "brief.md", "--builder", "gemini", "--item",
+                                "demo", "--git-dir", str(self.personal))
+        self.assertIn("invalid choice: 'gemini'", text)
+
+    def test_rejection_builder_with_resume_stop_or_check(self):
+        for argv in (("--resume", "20261004-000000-abcd"), ("--stop", "20261004-000000-abcd"),
+                     ("--check-brief", "brief.md")):
+            with self.subTest(mode=argv[0]):
+                text = self.usage_error(*argv, "--builder", "codex")
+                self.assertIn("--builder is given only with --run", text)
+
+    def test_positive_the_named_builder_is_kept_in_the_record_for_a_resume(self):
+        self.h.builder_script = [reply("nothing")]
+        self.call(*self.RUN, "--item", "demo", "--git-dir", str(self.personal))
+        run_dir = next(self.runs.iterdir())
+        saved = json.loads((run_dir / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["roles"], {"builder": "claude", "reviewer": "codex"})
+        again = loop.load(run_dir.name, root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        self.assertEqual(again.settings["roles"], saved["roles"])
+
+    def test_rejection_preflight_with_no_builder_and_no_roles(self):
+        bare = settings_mod.load_settings()
+        with self.assertRaises(loop.RunRefused) as caught:
+            loop.preflight("brief.md", "demo", str(self.personal), root=self.root,
+                           deps=self.h.deps(), settings=bare)
+        self.assertIn("no builder named", " ".join(caught.exception.args[0]))
+
+    def test_positive_a_named_builder_overrides_nothing_else(self):
+        ready = loop.preflight("brief.md", "demo", str(self.personal), root=self.root,
+                               deps=self.h.deps(), settings=settings_mod.load_settings(),
+                               builder="codex")
+        self.assertEqual(ready["settings"]["roles"], {"builder": "codex", "reviewer": "claude"})
+        self.assertEqual(ready["settings"]["models"], settings_mod.DEFAULT_MODELS)
 
     def bytes_of(self, run_dir):
         return ({p.name: p.read_bytes() for p in run_dir.iterdir() if p.is_file()},
@@ -1029,7 +1165,7 @@ class CommandLineTests(LoopCase):
 
     def test_positive_stop_dry_run_changes_nothing(self):
         self.h.builder_script = [reply("nothing")]
-        self.call("--run", "brief.md", "--item", "demo", "--git-dir", str(self.personal))
+        self.call(*self.RUN, "--item", "demo", "--git-dir", str(self.personal))
         run_dir = next(self.runs.iterdir())
         state = runrecord.read_state(run_dir)
         state.update(status="paused", pause="awaiting-user")
@@ -1044,7 +1180,7 @@ class CommandLineTests(LoopCase):
 
     def test_positive_stop_ends_a_paused_run_stopped_by_user(self):
         self.h.builder_script = [reply("nothing")]
-        self.call("--run", "brief.md", "--item", "demo", "--git-dir", str(self.personal))
+        self.call(*self.RUN, "--item", "demo", "--git-dir", str(self.personal))
         run_dir = next(self.runs.iterdir())
         state = runrecord.read_state(run_dir)
         state.update(status="paused", pause="awaiting-user")
@@ -1114,6 +1250,88 @@ class PriceAlarmTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         self.assertEqual(loop.price_alarm(self.start()), [])
+
+    def two_runs(self):
+        """An earlier run whose build step is cheap, and a later one to judge."""
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        first = self.start(item="one")
+        self.reset_work()
+        self.h.builder_script = [edit(self.root, "y\n")]
+        self.h.reviews = [[]]
+        second = self.start(item="two")
+        return first, second
+
+    def test_negative_the_other_providers_steps_in_the_same_role_are_not_compared(self):
+        # The chunk (d) short plan, 11.3: like with like, provider and role together.
+        first, second = self.two_runs()
+        first.state["steps"][0].update(tokens=10, provider="codex",
+                                       thread_total_tokens=10)
+        runrecord.write_state(first.run_dir, first.state)
+        self.assertEqual(loop.price_alarm(second), [])  # second's builder is Claude
+        first.state["steps"][0]["provider"] = "claude"
+        runrecord.write_state(first.run_dir, first.state)
+        self.assertEqual([f["step"] for f in loop.price_alarm(second)], ["build"])
+
+    def test_negative_a_codex_builder_step_with_no_thread_total_is_not_compared(self):
+        # R9-1: the first proof run's Codex builder steps hold the thread's running
+        # total and no thread_total_tokens, so they cannot stand as a step's share.
+        first, second = self.two_runs()
+        shaped = {"tokens": 10, "provider": "codex"}  # as 20261003-035437-0ec4 records
+        first.state["steps"][0].update(shaped)
+        first.state["steps"][0].pop("thread_total_tokens", None)
+        runrecord.write_state(first.run_dir, first.state)
+        second.state["steps"][0].update(provider="codex", tokens=110,
+                                        thread_total_tokens=110)
+        self.assertEqual(loop.price_alarm(second), [])
+        first.state["steps"][0]["thread_total_tokens"] = 10  # recorded under fix 3
+        runrecord.write_state(first.run_dir, first.state)
+        flags = loop.price_alarm(second)
+        self.assertEqual([(f["step"], f["provider"]) for f in flags], [("build", "codex")])
+
+    def test_negative_a_step_that_names_no_provider_is_not_compared(self):
+        first, second = self.two_runs()
+        first.state["steps"][0]["tokens"] = 10
+        first.state["steps"][0].pop("provider")
+        runrecord.write_state(first.run_dir, first.state)
+        self.assertEqual(loop.price_alarm(second), [])
+
+
+class RunRecordEscapingTests(LoopCase):
+    """The chunk (d) short plan, 11.4: every JSON file of a run record is written with
+    non-ASCII characters escaped, so a garbled tool output kept verbatim cannot fail the
+    encoding guard, and reads back as the same values."""
+
+    # Built with chr() so this source file stays ASCII: an em dash, the three characters
+    # an em dash becomes when UTF-8 is read as Windows-1252, and a pound sign.
+    GARBLED = ("em dash " + chr(0x2014) + ", garbled " + chr(0xE2) + chr(0x20AC)
+               + chr(0x201D) + ", pound " + chr(0xA3))
+
+    def test_positive_write_json_escapes_and_reads_back_equal(self):
+        path = self.root / "out" / "x.json"
+        value = {"text": self.GARBLED, "list": [self.GARBLED]}
+        loop._write_json(path, value)
+        raw = path.read_bytes()
+        self.assertTrue(raw.isascii(), raw)
+        self.assertEqual(json.loads(raw.decode("utf-8")), value)
+
+    def test_positive_every_json_file_a_run_writes_is_ascii(self):
+        write = edit(self.root, "x\n")
+
+        def build(prompt):
+            write(prompt)
+            return "Changed work/a.txt. " + self.GARBLED
+        self.h.builder_script = [build,
+                                 reply(self.GARBLED + "\n" + actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding(title="A defect in " + self.GARBLED)], []]
+        run = self.start()
+        files = [p for p in run.run_dir.rglob("*") if p.suffix in (".json", ".jsonl")]
+        self.assertTrue(files)
+        for path in files:
+            with self.subTest(path=path.relative_to(run.run_dir).as_posix()):
+                self.assertTrue(path.read_bytes().isascii())
+        self.assertIn(self.GARBLED, json.dumps(runrecord.read_state(run.run_dir),
+                                               ensure_ascii=False))
 
 
 class PacketTests(unittest.TestCase):
@@ -1449,15 +1667,532 @@ class ChecksTests(unittest.TestCase):
         self.assertEqual(found[0]["file"], "work")
 
 
+class SwappedCase(LoopCase):
+    """Whole runs with Codex building and Claude reviewing (chunk (d))."""
+
+    def setUp(self):
+        super().setUp()
+        self.h.swapped = True
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.h.frozen = Path(folder.name).resolve() / "frozen"
+        self.h.frozen.mkdir()
+        (self.h.frozen / "codex_hook.py").write_bytes(b"the frozen rules\n")
+        (self.h.frozen / "hook-decisions.jsonl").write_bytes(b"")
+
+    def evidence(self, run):
+        return json.dumps(run.state["stop_reasons"][-1]["evidence"])
+
+
+class ReversePairingTests(SwappedCase):
+    """Short plan section 6: every row of the table of what the loop assumed, with the
+    roles swapped. The same rows with the roles as they are today are the tests above
+    and ``TodaysPairingTests`` below."""
+
+    def test_positive_a_whole_run_records_by_provider_not_by_role(self):
+        self.h.builder_script = [edit(self.root, "done\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        steps = run.state["steps"]
+        self.assertEqual([(s["role"], s["provider"]) for s in steps],
+                         [("builder", "codex"), ("reviewer", "claude")])
+        # Tokens come from the session that knows its own usage shape.
+        self.assertEqual([s["tokens"] for s in steps], [700, 450])
+        self.assertIsNone(steps[0]["cost_usd_equivalent"])
+        self.assertEqual(steps[1]["thread_id"], "claude-session")
+        live = run.state["live"]
+        self.assertEqual(live["codex_model"], "gpt-6-sol")
+        self.assertEqual(live["claude_init_model"], MODEL)
+        # The builder is given the run folder and the run's one Claude usage object;
+        # so is every fresh Claude reviewer.
+        self.assertEqual(self.h.given[0], ("builder", run.run_dir, self.h.usage))
+        self.assertEqual(self.h.given[1], ("reviewer", None, self.h.usage))
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("## Check after every builder turn", report)
+        self.assertIn("- build: ", report)
+        self.assertIn("nothing found", report)
+
+    def builder_steps(self, run):
+        return [s for s in run.state["steps"] if s["role"] == "builder"]
+
+    def test_positive_each_codex_builder_step_records_its_share(self):
+        # The chunk (d) short plan, 11.3 and live check 9: the thread reports a running
+        # total, and a second fix is measured from the first fix, not the build.
+        self.h.codex_totals = [1000, 1600, 2500]
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed"))),
+                                 reply(actions(("R2-1", "fixed")))]
+        self.h.reviews = [[finding()], [finding(title="Another defect")], []]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        steps = self.builder_steps(run)
+        self.assertEqual([s["step"] for s in steps], ["build", "fix-R1", "fix-R2"])
+        self.assertEqual([s["tokens"] for s in steps], [1000, 600, 900])
+        self.assertEqual([s["thread_total_tokens"] for s in steps], [1000, 1600, 2500])
+        self.assertEqual({s["thread"] for s in steps}, {"s-1"})
+
+    def test_positive_the_forced_stop_and_resume_of_live_check_3(self):
+        # R8-1's repair: --inject-limit fix-R1 stops the run before the fix turn, after
+        # the builder session is open; the resume opens a new session on the same
+        # thread, whose launch record is stored with its step, and the share still holds.
+        self.h.codex_totals = [1000, 1600]
+        self.h.launch_records = [{"self_test": "passed", "thread": {"method": "start"}},
+                                 {"self_test": "passed", "thread": {"method": "resume"}}]
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        run = self.start(inject="fix-R1")
+        self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
+        self.assertEqual(run.state["step"], "review-R1")
+        self.assertEqual([s["step"] for s in self.builder_steps(run)], ["build"])
+        self.assertTrue(self.h.builders[0].closed)
+        again = self.resume(run)
+        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.h.builders[1].resume, "s-1")
+        launches = again.state["live"]["codex_builder_launches"]
+        self.assertEqual([(entry["step"], entry["thread"]["method"]) for entry in launches],
+                         [("build", "start"), ("fix-R1", "resume")])
+        self.assertEqual([s["tokens"] for s in self.builder_steps(again)], [1000, 600])
+
+    def test_negative_a_session_with_no_launch_record_adds_nothing(self):
+        self.h.builder_script = [edit(self.root, "done\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertNotIn("codex_builder_launches", run.state["live"])
+
+    def test_positive_the_title_pattern_is_not_sent_to_a_claude_reviewer(self):
+        self.h.builder_script = [edit(self.root, "done\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        schema = self.h.review_calls[0][1]
+        title = schema["properties"]["findings"]["items"]["properties"]["title"]
+        self.assertNotIn("pattern", title)
+        self.assertIn("files_reviewed", schema["required"])
+        self.assertEqual(run.state["live"]["title_pattern"], "not sent")
+
+    def test_rejection_the_ceiling_on_a_reading_from_an_earlier_reviewer_session(self):
+        # The run holds one Claude usage object, so what round 1's reviewer session
+        # reported is still there before the next step, with that session gone.
+        def reported():
+            self.h.claude_usage = limits.Reading(
+                limits.CLAUDE, limits.REPORTED, percent=85, resets_at=5,
+                window="five_hour")
+        self.h.during_review = reported
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[finding()]]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
+        self.assertEqual(run.state["step"], "review-R1")  # the fix pass never started
+        self.assertEqual(len(self.h.builders[0].prompts), 1)
+        stop = run.state["stop_reasons"][-1]["evidence"]
+        self.assertEqual(stop["provider"], "claude")
+        self.assertIn("ceiling", stop["detail"])
+
+    def test_rejection_the_credit_rule_runs_before_a_codex_builder_step(self):
+        changed = dict(CREDITS, balance="4.50")
+        self.h.readings = [reading(), reading(credits=changed)]
+        self.h.builder_script = [edit(self.root, "x\n")]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
+        self.assertEqual(run.state["step"], "preflight")
+        self.assertEqual(self.h.builders, [])
+        self.assertIn("balance '5.00' -> '4.50'", self.evidence(run))
+
+    def test_negative_the_credit_rule_does_not_run_before_a_claude_review_step(self):
+        changed = dict(CREDITS, balance="4.50")
+        self.h.readings = [reading(), reading(), reading(credits=changed)]
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+
+    def test_positive_refusals_from_each_kind_of_session_reach_the_report(self):
+        self.h.builder_refusals = [{"tool": "Bash", "detail": "curl example.com",
+                                    "reason": "Refused by the orchestrator: no."}]
+        self.h.review_refusals = [{"tool": "Write", "detail": "x.txt",
+                                   "reason": "Refused by the orchestrator: the reviewer "
+                                             "is read-only."}]
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual([(r["step"], r["tool"]) for r in run.state["refusals"]],
+                         [("build", "Bash"), ("review-R1", "Write")])
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("## Refused calls", report)
+        self.assertIn("- build: Bash curl example.com", report)
+        self.assertIn("- review-R1: Write x.txt", report)
+
+    def test_positive_refusals_are_kept_when_the_step_fails(self):
+        self.h.builder_refusals = [{"tool": "webrun", "detail": "", "reason": "r"}]
+
+        def fails(prompt):
+            raise RuntimeError("the turn was ended")
+        self.h.builder_script = [fails]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertEqual([(r["step"], r["tool"]) for r in run.state["refusals"]],
+                         [("build", "webrun")])
+
+    def test_positive_a_failed_review_keeps_what_the_reviewer_was_refused(self):
+        self.h.review_refusals = [{"tool": "Bash", "detail": "ls", "reason": "r"}]
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [providers.ProviderError("no structured reply")]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertEqual([(r["step"], r["tool"]) for r in run.state["refusals"]],
+                         [("review-R1", "Bash")])
+
+    def test_positive_both_prompts_take_the_form_for_their_provider(self):
+        self.h.builder_script = [edit(self.root, "x\n"),
+                                 reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        build, fix = (prompt for _, prompt in self.h.builders[0].prompts)
+        for text in (build, fix):
+            self.assertIn("apply_patch", text)
+            self.assertIn('Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"', text)
+            self.assertIn("Get-Content -LiteralPath PATH", text)
+            # Nothing a Codex builder does not have.
+            for absent in ("Biblio Tools", "get_timestamp", "append_log"):
+                self.assertNotIn(absent, text)
+            # Its own verification list: neither writing command is offered.
+            self.assertIn("ai-style-guard|backlog-guard", text)
+            self.assertNotIn("workflows/audit/scripts/run", text)
+            self.assertNotIn("workflows/close-out/scripts/run", text)
+            self.assertNotIn("$", text.replace("`$`", ""))
+        review = self.h.review_calls[0][0]
+        self.assertIn("you cannot run anything", review)
+        self.assertIn("A file wildcard in a search is refused", review)
+        self.assertNotIn("You may run read-only commands", review)
+
+    def test_positive_the_lists_printed_are_the_frozen_folders(self):
+        # The frozen copies judge the builder, so they are what its prompt shows.
+        (self.h.frozen / "codex-verify-commands.txt").write_bytes(b"python frozen-verify\n")
+        (self.h.frozen / "codex-read-commands.txt").write_bytes(b"frozen-read PATH\n")
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        self.start()
+        build = self.h.builders[0].prompts[0][1]
+        self.assertIn("python frozen-verify", build)
+        self.assertIn("frozen-read PATH", build)
+        # The project's own read list is not printed. The prompt's literal Get-Content
+        # example (fix 5) names a real path; the list's line names the PATH token.
+        self.assertNotIn("Get-Content -LiteralPath PATH", build)
+        self.assertNotIn("rg( -n", build)
+
+    def test_positive_an_injected_limit_at_a_codex_builder_step(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start(inject="build")
+        self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
+        self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["provider"], "codex")
+        self.assertEqual(self.reason(self.resume(run)), sr.REVIEWED_CLEAN)
+
+    def test_positive_an_injected_limit_at_a_claude_review_step(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start(inject="review-R1")
+        self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
+        self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["provider"], "claude")
+        self.assertEqual(self.h.review_calls, [])
+        self.assertEqual(self.reason(self.resume(run)), sr.REVIEWED_CLEAN)
+
+
+class TodaysPairingTests(LoopCase):
+    """The same rows of the table with Claude building and Codex reviewing."""
+
+    def test_positive_tokens_models_and_sessions_by_provider(self):
+        self.h.builder_script = [edit(self.root, "done\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        steps = run.state["steps"]
+        self.assertEqual([(s["role"], s["provider"]) for s in steps],
+                         [("builder", "claude"), ("reviewer", "codex")])
+        self.assertEqual([s["tokens"] for s in steps], [110, 1000])
+        self.assertEqual(steps[0]["cost_usd_equivalent"], 0.01)
+        self.assertEqual(steps[1]["thread_id"], "t")
+        self.assertEqual(run.state["live"]["claude_init_model"], MODEL)
+        self.assertNotIn("codex_model", run.state["live"])
+        self.assertEqual(run.state["live"]["title_pattern"], "accepted")
+        self.assertEqual(self.h.given[0], ("builder", run.run_dir, self.h.usage))
+        self.assertEqual(self.h.given[1], ("reviewer", None, self.h.usage))
+
+    def test_negative_the_check_after_every_turn_is_not_run_for_a_claude_builder(self):
+        def stray(prompt):
+            (self.root / "other.txt").write_bytes(b"outside the edit paths\n")
+            return edit(self.root, "x\n")(prompt)
+        self.h.builder_script = [stray]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.h.inventories, 0)
+        self.assertNotIn("turn_checks", run.state)
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertNotIn("Check after every builder turn", report)
+
+    def test_positive_both_prompts_take_the_form_for_their_provider(self):
+        self.h.builder_script = [edit(self.root, "x\n"),
+                                 reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        build, fix = (prompt for _, prompt in self.h.builders[0].prompts)
+        self.assertIn("the Biblio Tools\n    `get_timestamp` or `append_log` tool", build)
+        self.assertIn("workflows/audit/scripts/run", build)
+        for text in (build, fix):
+            # Nothing a Claude builder does not have.
+            for absent in ("apply_patch", "Get-Date", "Get-Content"):
+                self.assertNotIn(absent, text)
+        review = self.h.review_calls[0][0]
+        self.assertIn("You may run read-only commands, such as the tests.", review)
+        self.assertNotIn("cannot run anything", review)
+
+
+class TurnCheckTests(SwappedCase):
+    """The check after every Codex builder turn (plan 10.4, chunk (d); short plan 4)."""
+
+    def planted(self, action):
+        """A run whose builder does ``action`` during its turn, as well as its work."""
+        def turn(prompt):
+            action()
+            return edit(self.root, "x\n")(prompt)
+        self.h.builder_script = [turn]
+        self.h.reviews = [[]]
+        return self.start()
+
+    def refused(self, action, *named):
+        run = self.planted(action)
+        self.assertEqual(self.reason(run), sr.ERROR)
+        text = self.evidence(run)
+        self.assertIn("check after the builder's turn", text)
+        for name in named:
+            self.assertIn(name, text)
+        self.assertEqual(self.h.review_calls, [], "no review of a turn that failed it")
+        # The failed step's partial record is saved before the run ends.
+        self.assertTrue((run.run_dir / "partial" / "build.patch").is_file())
+        self.assertEqual(run.state["interrupted"], "build")
+        self.assertTrue(run.state["turn_checks"][-1]["changes"])
+        return run
+
+    def personal_git(self, *args):
+        git(self.root, "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args,
+            git_dir=str(self.personal))
+
+    def test_positive_a_turn_inside_the_edit_paths_passes(self):
+        run = self.planted(lambda: None)
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        check, = run.state["turn_checks"]
+        self.assertEqual((check["step"], check["changes"]), ("build", []))
+        self.assertIsInstance(check["seconds"], float)
+        self.assertEqual(self.h.inventories, 2, "one before the turn and one after")
+
+    def test_rejection_a_write_to_a_tracked_file_outside_the_edit_paths(self):
+        self.refused(lambda: (self.root / "brief.md").write_bytes(b"changed\n"),
+                     "brief.md was changed outside the edit paths")
+
+    def test_rejection_a_new_file_outside_the_edit_paths(self):
+        self.refused(lambda: (self.root / "other.txt").write_bytes(b"new\n"),
+                     "other.txt was added outside the edit paths")
+
+    def test_rejection_a_new_category_a_file(self):
+        self.refused(lambda: (self.root / "memory" / "new.md").write_bytes(b"new\n"),
+                     "memory/new.md was added")
+
+    def test_rejection_a_change_to_an_existing_category_a_file(self):
+        self.refused(lambda: (self.root / "memory" / "note.md").write_bytes(b"other\n"),
+                     "memory/note.md was changed")
+
+    def test_rejection_a_deleted_tracked_file(self):
+        self.refused((self.root / "brief.md").unlink, "brief.md was removed")
+
+    def test_rejection_a_deleted_category_a_file(self):
+        self.refused((self.root / "memory" / "note.md").unlink,
+                     "memory/note.md was removed")
+
+    def test_rejection_a_git_add_in_the_public_repository(self):
+        def add():
+            (self.root / "work" / "a.txt").write_bytes(b"staged\n")
+            git(self.root, "add", "work/a.txt")
+        self.refused(add, "the staged contents changed in the public repository")
+
+    def test_rejection_a_new_branch_in_the_public_repository(self):
+        self.refused(lambda: git(self.root, "branch", "sneaky"),
+                     "a ref changed in the public repository")
+
+    def test_rejection_a_git_add_in_the_personal_repository(self):
+        def add():
+            (self.root / "memory" / "note.md").write_bytes(b"staged\n")
+            self.personal_git("add", "-f", "memory/note.md")
+        self.refused(add, "the staged contents changed in the personal repository")
+
+    def test_rejection_a_new_branch_in_the_personal_repository(self):
+        self.refused(lambda: self.personal_git("branch", "sneaky"),
+                     "a ref changed in the personal repository")
+
+    def test_negative_a_change_inside_the_run_record_is_the_runs_own(self):
+        # The session copies its hook's decisions into the run record during a turn.
+        def record():
+            folder, = self.runs.iterdir()
+            (folder / "hook-decisions.jsonl").write_bytes(b"{}\n")
+            self.h.cat_a.add(f"runs/{folder.name}/hook-decisions.jsonl")
+        run = self.planted(record)
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(run.state["turn_checks"][0]["changes"], [])
+
+    def test_rejection_any_other_change_inside_the_run_record(self):
+        # Code review finding R3-1: only the decisions copy is the orchestrator's own;
+        # a listed test that rewrote the run's saved roles must end the run.
+        for name in ("settings.json", "state.json", "brief.md", "new.txt"):
+            with self.subTest(name):
+                self.setUp()
+
+                def record(name=name):
+                    folder, = self.runs.iterdir()
+                    (folder / name).write_bytes(b"{}\n")
+                    self.h.cat_a.add(f"runs/{folder.name}/{name}")
+                self.refused(record, f"/{name} was ")
+
+    def test_positive_the_exempt_record_file_is_the_one_the_session_copies(self):
+        self.assertEqual(worktree.TURN_RECORD_WRITES, (codex_rules.DECISIONS_FILE,))
+
+    def test_rejection_a_run_record_change_under_an_edit_path_that_covers_it(self):
+        # Code review finding R5-1: an edit path over this workflow covers runs/ too,
+        # and run records are judged before edit paths.
+        root = self.root
+        base = "workflows/review-orchestration"
+        run_dir = root / base / "runs" / "20261004-000000-abcd"
+
+        def inventory(files):
+            return {"files": files, "git": {"public": {}, "personal": {}}}
+        record = f"{base}/runs/20261004-000000-abcd"
+        before = inventory({f"{record}/settings.json": "a", f"{record}/hook-decisions.jsonl": "a",
+                            f"{base}/runs/20261003-000000-dcba/state.json": "a",
+                            f"{base}/scripts/x.py": "a"})
+        after = inventory({f"{record}/settings.json": "b", f"{record}/hook-decisions.jsonl": "b",
+                           f"{base}/runs/20261003-000000-dcba/state.json": "b",
+                           f"{base}/scripts/x.py": "b", f"{record}/new.txt": "b"})
+        for edit_paths in ([f"{base}/"], [f"{base}/runs/"], ["workflows/"]):
+            with self.subTest(edit_paths=edit_paths):
+                problems = worktree.compare_inventory(before, after, edit_paths, run_dir,
+                                                      root)
+                expected = [f"{record}/new.txt was added in a run record",
+                            f"{record}/settings.json was changed in a run record",
+                            f"{base}/runs/20261003-000000-dcba/state.json was changed "
+                            "in a run record"]
+                if edit_paths == [f"{base}/runs/"]:
+                    expected.append(f"{base}/scripts/x.py was changed outside the edit "
+                                    "paths")
+                self.assertEqual(sorted(problems), sorted(expected))
+
+    def test_rejection_a_changed_added_or_removed_file_in_the_frozen_folder(self):
+        for label in ("changed", "added", "removed"):
+            with self.subTest(label):
+                self.setUp()  # a fresh project and frozen folder for each case
+                hook = self.h.frozen / "codex_hook.py"
+                run = self.planted({"changed": lambda: hook.write_bytes(b"other\n"),
+                                    "added": lambda: (self.h.frozen / "extra.py")
+                                    .write_bytes(b"x\n"),
+                                    "removed": hook.unlink}[label])
+                self.assertEqual(self.reason(run), sr.ERROR)
+                self.assertIn("the frozen hook folder changed during the turn",
+                              self.evidence(run))
+                self.assertIn({"changed": "codex_hook.py", "added": "extra.py",
+                               "removed": "codex_hook.py"}[label], self.evidence(run))
+
+    def test_negative_the_decisions_file_is_meant_to_change(self):
+        decisions = self.h.frozen / "hook-decisions.jsonl"
+        run = self.planted(lambda: decisions.write_bytes(b'{"decision": "allow"}\n'))
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+
+    def test_negative_a_bytecode_cache_in_the_frozen_folder_is_not_a_change(self):
+        # Running the hook writes one; the rules it runs from are what is compared.
+        def cache():
+            (self.h.frozen / "__pycache__").mkdir()
+            (self.h.frozen / "__pycache__" / "codex_rules.cpython-313.pyc").write_bytes(b"x")
+        run = self.planted(cache)
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+
+    def test_rejection_the_check_runs_when_the_turn_raised(self):
+        def fails(prompt):
+            (self.root / "other.txt").write_bytes(b"left behind\n")
+            raise RuntimeError("the turn was ended")
+        self.h.builder_script = [fails]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertIn("other.txt was added outside the edit paths", self.evidence(run))
+        self.assertEqual(self.h.inventories, 2)
+
+    def test_negative_a_turn_that_raised_and_changed_nothing_keeps_its_own_error(self):
+        def fails(prompt):
+            raise RuntimeError("the turn was ended")
+        self.h.builder_script = [fails]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertIn("RuntimeError: the turn was ended", self.evidence(run))
+        self.assertNotIn("check after the builder's turn", self.evidence(run))
+        self.assertEqual(run.state["turn_checks"][0]["changes"], [])
+
+    def test_positive_the_check_runs_after_a_fix_pass_too(self):
+        def fix(prompt):
+            (self.root / "other.txt").write_bytes(b"new\n")
+            return actions(("R1-1", "fixed"))
+        self.h.builder_script = [edit(self.root, "x\n"), fix]
+        self.h.reviews = [[finding()]]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertEqual([c["step"] for c in run.state["turn_checks"]],
+                         ["build", "fix-R1"])
+        self.assertIn("other.txt was added", self.evidence(run))
+
+
+class EnvPreflightTests(LoopCase):
+    """Short plan 5.1 rule 3: no run of either pairing starts while a .env-named file
+    is neither tracked nor ignored."""
+
+    def loose(self):
+        (self.root / ".env").write_bytes(b"SECRET=1\n")
+        (self.root / "sub").mkdir()
+        (self.root / "sub" / ".env.local").write_bytes(b"SECRET=2\n")
+
+    def test_rejection_an_untracked_unignored_env_file_each_named(self):
+        self.loose()
+        for swapped in (False, True):
+            with self.subTest(swapped=swapped):
+                self.h.swapped = swapped
+                with self.assertRaises(loop.RunRefused) as caught:
+                    self.start()
+                text = " ".join(caught.exception.args[0])
+                self.assertIn(".env is a `.env`-named file that git neither tracks",
+                              text)
+                self.assertIn("sub/.env.local is a `.env`-named file", text)
+                self.assertIn("add it to .gitignore", text)
+                self.assertFalse(self.runs.exists())
+
+    def test_positive_the_run_starts_once_they_are_ignored(self):
+        self.loose()
+        with open(self.root / ".git" / "info" / "exclude", "ab") as handle:
+            handle.write(b".env\n.env.*\n")
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+
+    def test_negative_a_tracked_env_named_file_does_not_refuse_the_run(self):
+        # A tracked file is already published, so it is not a secret; the read rules
+        # still stop a read that names it.
+        (self.root / ".env.example").write_bytes(b"KEY=placeholder\n")
+        git(self.root, "add", ".env.example")
+        git(self.root, "commit", "-qm", "example")
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+
+
 class PromptTests(unittest.TestCase):
 
     def test_positive_every_prompt_renders_with_its_fields(self):
-        loop.render("builder", edit_paths="a/", verify_commands="x", brief="B")
-        loop.render("fix", round=2, findings="F")
+        loop.render("builder", edit_paths="a/", tool_rules="  - x", brief="B")
         text = loop.render("reviewer", round=1, brief="B", mechanical="M", prior="P",
-                           diff="D", changed_files="- a", check_written="None.")
+                           diff="D", changed_files="- a", check_written="None.",
+                           reviewer_tools="T")
         self.assertIn("round\n1.", text)
-        fix = loop.render("fix", round=2, findings="F")
+        fix = loop.render("fix", round=2, findings="F", tool_rules="")
         self.assertIn('"label": "R2-1"', fix)
 
     def test_rejection_a_missing_field_fails_loudly(self):
@@ -1465,11 +2200,12 @@ class PromptTests(unittest.TestCase):
             loop.render("reviewer", round=1)
 
     def test_positive_the_builder_prompt_lists_the_verification_commands(self):
-        run_patterns = approver.load_verify_commands()
-        verify = "\n".join(p.pattern for p in run_patterns)
-        text = loop.render("builder", edit_paths="a/", verify_commands=verify, brief="B")
+        rules = loop.tool_rules(limits.CLAUDE, approver.load_verify_commands())
+        text = loop.render("builder", edit_paths="a/", tool_rules=rules, brief="B")
         self.assertIn("doc-sync-guard", text)
         self.assertIn("No git commands", text)
+        self.assertNotIn("$", text.split("THE BRIEF")[0].replace("(?!-)", ""),
+                         "no field is left unfilled")
 
 
 if __name__ == "__main__":

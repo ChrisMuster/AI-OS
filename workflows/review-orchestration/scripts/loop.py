@@ -25,6 +25,15 @@ exactly what it was at preflight. A limit hit mid-step is caught as its own clas
 in progress, and ``--resume`` continues from the last completed step; a builder cut
 off mid-step is resumed in the same session.
 
+Which provider builds and which reviews is the run's ``roles``, set from the builder
+the user names when the run starts (``--builder``) and kept in the run record's
+``settings.json`` for a resume; the loop asks a
+session for what it needs and records what the session returns (tokens, model, refused
+calls), so nothing here is tied to one pairing. A Codex builder's turns are each
+followed by a check of the whole project against an inventory taken just before the
+turn, and a run of either pairing does not start while a ``.env``-named file is
+neither tracked nor ignored.
+
 Nothing here stages, commits, pushes or changes branch (plan section 3). Every entry
 point to an SDK or a subprocess that talks to one is a replaceable dependency
 (``Deps``), which is how the tests drive a whole run with no model call.
@@ -49,13 +58,14 @@ from typing import Callable
 import approver as approver_mod
 import brief as brief_mod
 import checks as checks_mod
+import codex_rules
 import limits
 import packet as packet_mod
 import providers
 import runrecord
 import stopreasons as sr
 import worktree
-from settings import load_settings
+from settings import assign_roles, load_settings
 
 PROJECT_ROOT = brief_mod.PROJECT_ROOT
 LOG_PATH = brief_mod.LOG_PATH
@@ -87,6 +97,11 @@ RECOMMEND = {
 
 class RunRefused(Exception):
     """The run cannot start (or resume). Nothing is created."""
+
+
+class TurnCheckError(Exception):
+    """The check after a Codex builder's turn found a change the builder may not make.
+    The run ends ``error``, naming every changed path and git reading."""
 
 
 # ------------------------------------------------------------------ dependencies
@@ -137,16 +152,21 @@ class Deps:
     baseline_checks: Callable = None
     category_a: Callable = None
     capture_problems: Callable = None
+    inventory: Callable = None
+    claude_usage: Callable = limits.ClaudeUsage
     sleep: Callable = time.sleep
     now: Callable = time.time
 
     def __post_init__(self):
         if self.make_builder is None:
-            self.make_builder = lambda settings, approver, cwd, resume: \
-                providers.make_builder(settings, approver, cwd=cwd, resume=resume)
+            self.make_builder = lambda settings, approver, cwd, resume, run_dir, usage: \
+                providers.make_builder(settings, approver, cwd=cwd, resume=resume,
+                                       run_dir=run_dir, usage=usage)
         if self.make_reviewer is None:
-            self.make_reviewer = lambda settings, cwd: providers.make_reviewer(settings,
-                                                                               cwd=cwd)
+            self.make_reviewer = lambda settings, cwd, usage: \
+                providers.make_reviewer(settings, cwd=cwd, usage=usage)
+        if self.inventory is None:
+            self.inventory = worktree.inventory
         if self.read_codex is None:
             self.read_codex = _read_codex_live
         if self.run_checks is None:
@@ -200,24 +220,55 @@ def untrackable(snapshot):
     return None
 
 
-def claude_tokens(usage):
-    if not isinstance(usage, dict):
-        return None
-    keys = ("input_tokens", "output_tokens", "cache_read_input_tokens",
-            "cache_creation_input_tokens")
-    values = [usage.get(key) for key in keys]
-    numbers = [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
-    return sum(numbers) if numbers else None
+def _listed(lines):
+    return "\n".join(f"      {line}" for line in lines)
 
 
-def codex_tokens(usage):
-    if not isinstance(usage, dict):
+def tool_rules(provider, verify_patterns, frozen_dir=None):
+    """The builder prompt's rules for its tools, by the builder's provider (short plan
+    3.8). A Claude builder is told of Biblio Tools and its verification list; a Codex
+    builder of its read commands, apply_patch and its own verification list, read from
+    the run's frozen folder where it exists, since those are the copies that judge it."""
+    if provider != limits.CODEX:
+        return render("builder-tools-claude", verify_commands=_listed(
+            pattern.pattern for pattern in verify_patterns)).rstrip("\n")
+    verify_path, read_path = codex_rules.VERIFY_COMMANDS_PATH, codex_rules.READ_COMMANDS_PATH
+    if frozen_dir is not None and (Path(frozen_dir) / codex_rules.FROZEN_LISTS[0]).is_file():
+        verify_path = Path(frozen_dir) / codex_rules.FROZEN_LISTS[0]
+        read_path = Path(frozen_dir) / codex_rules.FROZEN_LISTS[1]
+    return render("builder-tools-codex",
+                  verify_commands=_listed(pattern.pattern for pattern in
+                                          codex_rules.load_verify_commands(verify_path)),
+                  read_commands=_listed(codex_rules.read_command_lines(read_path))
+                  ).rstrip("\n")
+
+
+def reviewer_tools(provider):
+    """The reviewer prompt's sentence on what the reviewer can do (short plan 5)."""
+    name = "reviewer-tools-claude" if provider == limits.CLAUDE else "reviewer-tools-codex"
+    return " ".join(render(name).split())
+
+
+def frozen_state(folder):
+    """A SHA-256 for every file in a Codex builder's frozen folder except the decisions
+    file, or None where there is no folder. Bytecode caches are left out: running the
+    hook writes them."""
+    if folder is None or not Path(folder).is_dir():
         return None
-    for part in ("total", "last"):
-        block = usage.get(part)
-        if isinstance(block, dict) and isinstance(block.get("total_tokens"), int):
-            return block["total_tokens"]
-    return None
+    folder = Path(folder)
+    return {path.relative_to(folder).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(folder.rglob("*"))
+            if path.is_file() and "__pycache__" not in path.parts
+            and path.name != codex_rules.DECISIONS_FILE}
+
+
+def unignored_env_files(root):
+    """Every ``.env``-named file in the project that git neither tracks nor ignores
+    (short plan 5.1 rule 3). Claude's search tool keeps such a file out of a folder
+    search only because git ignores it, so a run does not start while one exists."""
+    out = worktree.git(root, "ls-files", "--others", "--exclude-standard", "--",
+                       ":(glob,icase)**/.env", ":(glob,icase)**/.env.*")
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
 def _session_id(messages):
@@ -248,9 +299,13 @@ def review_schema(with_pattern=True):
 
 
 def _write_json(path, data):
+    """A JSON file of the run record, with every non-ASCII character escaped: a tool's
+    output kept verbatim can hold garbled text, which the encoding guard (and so the
+    close-out verifier) would flag as written; escaped, it reads back as exactly the
+    same values (the chunk (d) short plan, 11.4)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1, ensure_ascii=False, default=repr) + "\n",
+    path.write_text(json.dumps(data, indent=1, default=repr) + "\n",
                     encoding="utf-8", newline="\n")
 
 
@@ -290,6 +345,10 @@ class Run:
                                               approver_mod.load_verify_commands(),
                                               root=self.root)
         self.usage = limits.RunUsage()
+        # One Claude usage object for the run, given to whichever Claude session is
+        # open, builder or reviewer, so a reading from one round's reviewer is still
+        # there before the next step. It starts empty in each process.
+        self.claude_usage = self.deps.claude_usage()
         # A negative Codex reading holds for the whole run, resumes included.
         source = state.get("usage_source") or {}
         if source.get("codex") == limits.UNAVAILABLE:
@@ -446,10 +505,7 @@ class Run:
 
     def readings(self):
         codex = self.note_codex(self.deps.read_codex(self.root))
-        claude = (self.builder.usage.reading() if self.builder is not None
-                  else limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
-                                      reason="no builder session open yet"))
-        return codex, claude
+        return codex, self.claude_usage.reading()
 
     def before_step(self, step, provider):
         """None if the step may start, else the evidence for a ``usage-limit`` stop."""
@@ -482,12 +538,60 @@ class Run:
 
     # -------------------------------------------------------------- builder
 
-    async def _builder(self):
+    async def _builder(self, step):
+        """The open builder session, opened for ``step`` if there is none. A session
+        that reports a launch record (a Codex builder, the chunk (d) short plan, 11.2)
+        has it stored in the run record with that step before any turn runs."""
         if self.builder is None:
             self.builder = self.deps.make_builder(self.settings, self.approver, self.root,
-                                                  self.state.get("builder_session"))
+                                                  self.state.get("builder_session"),
+                                                  self.run_dir, self.claude_usage)
             await self.builder.start()
+            record = getattr(self.builder, "launch_record", None)
+            if record is not None:
+                self.state.setdefault("live", {}).setdefault(
+                    "codex_builder_launches", []).append({"step": step, **record})
+                self.save()
         return self.builder
+
+    async def _builder_turn(self, step, builder, prompt):
+        """One builder turn. For a Codex builder, with the check after every turn
+        around it (plan 10.4, chunk (d)): an inventory taken immediately before the
+        turn and compared after it, including when the turn raised. A change outside
+        the edit paths (other than the run-record files the orchestrator writes during
+        a turn, ``worktree.TURN_RECORD_WRITES``), any change in either repository's git
+        state, or any change to the frozen hook folder ends the run ``error``."""
+        if not getattr(builder, "needs_turn_check", False):
+            return await builder.turn(step, prompt)
+        edit_paths, git_dir = self.state["edit_paths"], self.state["git_dir"]
+        started = time.time()
+        before = self.deps.inventory(self.root, git_dir, self.deps.category_a(self.root))
+        frozen = frozen_state(builder.frozen_dir)
+        spent = time.time() - started
+        turn, failure = None, None
+        try:
+            turn = await builder.turn(step, prompt)
+        except Exception as exc:  # noqa: BLE001 - compared first, then raised again
+            failure = exc
+        started = time.time()
+        after = self.deps.inventory(self.root, git_dir, self.deps.category_a(self.root))
+        problems = worktree.compare_inventory(before, after, edit_paths, self.run_dir,
+                                              self.root)
+        now = frozen_state(builder.frozen_dir)
+        if now != frozen:
+            names = sorted(name for name in set(frozen or {}) | set(now or {})
+                           if (frozen or {}).get(name) != (now or {}).get(name))
+            problems.append("the frozen hook folder changed during the turn: "
+                            + (", ".join(names) or "the folder itself"))
+        self.state.setdefault("turn_checks", []).append(
+            {"step": step, "seconds": round(spent + time.time() - started, 1),
+             "changes": problems})
+        if problems:
+            raise TurnCheckError("the check after the builder's turn found changes a "
+                                 "builder may not make: " + "; ".join(problems)) from failure
+        if failure is not None:
+            raise failure
+        return turn
 
     async def _close_builder(self):
         if self.builder is not None:
@@ -513,31 +617,67 @@ class Run:
                     "complete it. The request was:\n\n" + prompt)
         return prompt
 
-    def _take_refusals(self, step):
-        for refusal in self.approver.refusals:
-            self.state.setdefault("refusals", []).append({"step": step, **refusal})
+    def _take_refusals(self, step, returned=()):
+        """Every refused call since the last taking, into ``state["refusals"]`` with its
+        step: the ones a turn or a review returned (a Codex builder's come from its
+        hook's decisions file, a Claude reviewer's from its hook), the orchestrator's
+        own approver's, and any a builder session still holds from a turn that did not
+        complete."""
+        taken = list(returned or ())
+        taken += self.approver.refusals
         self.approver.refusals.clear()
+        pending = getattr(self.builder, "refusals", None)
+        if isinstance(pending, list):
+            taken += pending
+            pending.clear()
+        for refusal in taken:
+            self.state.setdefault("refusals", []).append({"step": step, **refusal})
+
+    def _record_model(self, provider, model):
+        """The model a session reported, once per provider: Claude's first init model,
+        builder or reviewer, and a Codex thread's model from its start reply."""
+        if model:
+            key = "claude_init_model" if provider == limits.CLAUDE else "codex_model"
+            self.state.setdefault("live", {}).setdefault(key, model)
+
+    def _codex_builder_share(self, turn):
+        """A Codex builder's thread carries on from step to step and reports its running
+        total, so a step's tokens are the increase during the step: this total minus that
+        of the latest earlier builder step on the same thread, or the whole total when
+        there is none (the chunk (d) short plan, 11.3). Read from the step records, so it
+        holds across a stop and resume."""
+        earlier = [s for s in self.state.get("steps", [])
+                   if s.get("role") == "builder" and s.get("provider") == limits.CODEX
+                   and s.get("thread") == turn.session_id
+                   and isinstance(s.get("thread_total_tokens"), int)]
+        before = earlier[-1]["thread_total_tokens"] if earlier else 0
+        return {"tokens": turn.tokens - before, "thread": turn.session_id,
+                "thread_total_tokens": turn.tokens}
 
     def _after_builder(self, step, turn):
         self.state["builder_session"] = turn.session_id
-        if turn.model and "claude_init_model" not in self.state.setdefault("live", {}):
-            self.state["live"]["claude_init_model"] = turn.model
+        self._record_model(self.builder.provider, turn.model)
+        tokens = {"tokens": turn.tokens}
+        if self.builder.provider == limits.CODEX and isinstance(turn.tokens, int):
+            tokens = self._codex_builder_share(turn)
         self.state.setdefault("steps", []).append(
             {"step": step, "role": "builder", "provider": self.builder.provider,
-             "model": turn.model, "tokens": claude_tokens(turn.usage),
+             "model": turn.model, **tokens,
              "usage": turn.usage, "cost_usd_equivalent": turn.cost_usd_equivalent,
              "wall_seconds": turn.wall_seconds, "summary": (turn.final_text or "")[-4000:]})
         _write_json(self.run_dir / "transcripts" / f"{step}.json", turn.messages)
-        self._take_refusals(step)
+        self._take_refusals(step, turn.refusals)
+
+    def _tool_rules(self, builder):
+        return tool_rules(builder.provider, self.approver.verify_patterns,
+                          getattr(builder, "frozen_dir", None))
 
     async def build(self):
-        builder = await self._builder()
-        verify = "\n".join(f"      {pattern.pattern}"
-                           for pattern in self.approver.verify_patterns)
+        builder = await self._builder("build")
         prompt = render("builder", edit_paths=", ".join(self.state["edit_paths"]),
-                        verify_commands=verify, brief=self.brief_text())
+                        tool_rules=self._tool_rules(builder), brief=self.brief_text())
         self._inject("build", builder.provider)
-        turn = await builder.turn("build", self._prompt("build", prompt))
+        turn = await self._builder_turn("build", builder, self._prompt("build", prompt))
         self._after_builder("build", turn)
         after = worktree.snapshot(self.root, self.state["edit_paths"],
                                   self.deps.category_a(self.root))
@@ -549,7 +689,7 @@ class Run:
 
     async def fix(self, round_no):
         step = f"fix-R{round_no}"
-        builder = await self._builder()
+        builder = await self._builder(step)
         open_labels = self.ledger.open_labels()
         blocks = []
         for label in open_labels:
@@ -558,9 +698,15 @@ class Run:
                           f"File: {f.get('file')}\nEvidence: {f.get('evidence')}\n"
                           f"Suggested fix: {f.get('fix')}"
                           + (f"\nRe-raises: {f['reraises']}" if f.get("reraises") else ""))
-        prompt = render("fix", round=round_no, findings="\n\n".join(blocks))
+        # A Claude builder's fix prompt is as it was; a Codex builder is reminded of
+        # its tool rules, which differ from what its own instructions assume.
+        rules = ("" if builder.provider != limits.CODEX else
+                 "The rules for your tools are as before:\n" + self._tool_rules(builder)
+                 + "\n")
+        prompt = render("fix", round=round_no, findings="\n\n".join(blocks),
+                        tool_rules=rules)
         self._inject(step, builder.provider)
-        turn = await builder.turn(step, self._prompt(step, prompt))
+        turn = await self._builder_turn(step, builder, self._prompt(step, prompt))
         self._after_builder(step, turn)
         actions = sr.parse_builder_reply(turn.final_text, open_labels)
         self.ledger.apply_actions(actions)
@@ -582,8 +728,13 @@ class Run:
 
     def _review_once(self, reviewer, prompt):
         """One review. If Codex refuses the schema's title pattern, it comes out and
-        the script's own title check is the only one (plan 10.4 chunk (c) check 3)."""
+        the script's own title check is the only one (plan 10.4 chunk (c) check 3). A
+        Claude reviewer is never sent the pattern: whether Claude accepts a lookahead
+        there is not measured, and the script's check holds either way."""
         live = self.state.setdefault("live", {})
+        if reviewer.provider == limits.CLAUDE:
+            live["title_pattern"] = "not sent"
+            return reviewer.review(prompt, review_schema(with_pattern=False))
         if live.get("title_pattern", "").startswith("refused"):
             return reviewer.review(prompt, review_schema(with_pattern=False))
         try:
@@ -637,22 +788,31 @@ class Run:
             f"- {f['label']} ({f['source']}) {f.get('title')}: builder action "
             f"{f.get('action') or 'none yet'}"
             for f in self.ledger.findings.values()) or "None."
+        reviewer = self.deps.make_reviewer(self.settings, self.root, self.claude_usage)
         prompt = render("reviewer", round=round_no, brief=self.brief_text(),
                         mechanical=mechanical_text or "None.", prior=prior,
                         diff=self._shown_diff(diff, folder),
                         changed_files="\n".join(f"- {path}" for path in changed_files)
                         or "None.",
-                        check_written=check_written or "None.")
-        reviewer = self.deps.make_reviewer(self.settings, self.root)
+                        check_written=check_written or "None.",
+                        reviewer_tools=reviewer_tools(reviewer.provider))
         self._inject(step, reviewer.provider)
-        record = self._review_once(reviewer, prompt)
+        try:
+            record = self._review_once(reviewer, prompt)
+        except Exception:
+            # What a reviewer was refused before its round failed still goes in the
+            # report.
+            self._take_refusals(step, getattr(reviewer, "refusals", None))
+            raise
+        self._take_refusals(step, record.refusals)
+        self._record_model(reviewer.provider, record.model)
         reply = self._covered(record.reply, changed_files)
         findings = sr.parse_review(reply, self.ledger)
         new = self.ledger.add_round(round_no, mechanical, findings)
         self._accept_declines(round_no, new)
         self.state.setdefault("steps", []).append(
             {"step": step, "role": "reviewer", "provider": reviewer.provider,
-             "model": reviewer.model, "tokens": codex_tokens(record.usage),
+             "model": reviewer.model, "tokens": record.tokens,
              "usage": record.usage, "wall_seconds": record.wall_seconds,
              "thread_id": record.thread_id, "summary": record.reply.get("summary"),
              "mechanical": mechanical_text})
@@ -748,8 +908,21 @@ def _started(state):
         return None
 
 
+def _comparable(step):
+    """Whether an earlier step's ``tokens`` can stand as one step's usage: it names its
+    provider, and a Codex builder step records ``thread_total_tokens``. A Codex builder
+    step recorded before that field existed holds the thread's running total, not the
+    step's share, so it is left out rather than corrected (finding R9-1)."""
+    if not isinstance(step.get("tokens"), int) or step.get("provider") is None:
+        return False
+    if step.get("provider") == limits.CODEX and step.get("role") == "builder":
+        return isinstance(step.get("thread_total_tokens"), int)
+    return True
+
+
 def _earlier_steps(run):
-    """Token counts by role from every other run that started strictly before this one.
+    """Token counts by provider and role from every other run that started strictly
+    before this one (the chunk (d) short plan, 11.3: like is compared with like).
 
     Compared by the recorded start time in nanoseconds, not the run ID or the start
     second: two runs started in the same second differ only in the ID's random suffix,
@@ -770,22 +943,24 @@ def _earlier_steps(run):
         if ours is None or theirs is None or theirs >= ours:
             continue
         for step in data.get("steps", []):
-            if isinstance(step.get("tokens"), int):
-                by_role.setdefault(step.get("role"), []).append(step["tokens"])
+            if _comparable(step):
+                by_role.setdefault((step["provider"], step.get("role")),
+                                   []).append(step["tokens"])
     return by_role
 
 
 def price_alarm(run):
-    """Plan 10.10 item 6: every step using more than twice the median for its role
-    across earlier runs."""
+    """Plan 10.10 item 6: every step using more than twice the median for the same
+    provider in the same role across earlier runs."""
     earlier = _earlier_steps(run)
     flags = []
     for step in run.state.get("steps", []):
-        history = earlier.get(step.get("role"))
+        history = earlier.get((step.get("provider"), step.get("role")))
         if history and isinstance(step.get("tokens"), int):
             median = statistics.median(history)
             if median and step["tokens"] > 2 * median:
                 flags.append({"step": step["step"], "role": step["role"],
+                              "provider": step.get("provider"),
                               "tokens": step["tokens"], "median": median})
     return flags
 
@@ -804,6 +979,7 @@ def write_report(run):
         "addressed": [f["label"] for f in findings if packet_mod.is_addressed(f)],
         "readings": state.get("readings", []), "steps": state.get("steps", []),
         "refusals": state.get("refusals", []), "live": state.get("live", {}),
+        "turn_checks": state.get("turn_checks", []),
         "inject": state.get("inject"), "price_alarm": price_alarm(run),
         "usage_source": {"codex": (state.get("usage_source") or {}).get("codex",
                                                                          "not read"),
@@ -840,9 +1016,14 @@ def write_report(run):
     lines += ["", "## Usage readings", ""]
     lines += [f"- before {r['step']}: {r['codex']}; {r['claude']}"
               for r in report["readings"]] or ["None."]
-    lines += ["", "## Refused builder calls", ""]
+    lines += ["", "## Refused calls", ""]
     lines += [f"- {r['step']}: {r['tool']} {r.get('detail', '')}: {r['reason']}"
               for r in report["refusals"]] or ["None."]
+    if report["turn_checks"]:
+        lines += ["", "## Check after every builder turn", ""]
+        lines += [f"- {c['step']}: {c['seconds']} s, "
+                  + ("nothing found" if not c["changes"] else "; ".join(c["changes"]))
+                  for c in report["turn_checks"]]
     lines += ["", "## Price alarm", ""]
     lines += [f"- {a['step']} ({a['role']}): {a['tokens']} tokens, more than twice the "
               f"median {a['median']} of earlier runs" for a in report["price_alarm"]] \
@@ -857,9 +1038,14 @@ def write_report(run):
 # ------------------------------------------------------------ start, resume, stop
 
 
-def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, settings=None):
+def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, settings=None,
+              builder=None):
     """Every read-only check a run makes before it creates anything. Returns what the
-    run needs; raises RunRefused with every reason it cannot start."""
+    run needs; raises RunRefused with every reason it cannot start.
+
+    ``builder`` is the provider the user named to build (``--builder``); the other
+    reviews (the chunk (d) short plan, 11.1). A caller passing ``settings`` that already
+    carry ``roles`` may leave it out; the settings file itself never holds them."""
     deps = deps or Deps()
     problems = []
     if not ITEM.match(item or ""):
@@ -867,6 +1053,11 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
                         "underscores, as in memory/<item>_review_packet.md")
     try:
         settings = settings or load_settings()
+        if builder is not None:
+            settings = assign_roles(settings, builder)
+        elif "roles" not in settings:
+            problems.append("no builder named: start a run with --builder claude or "
+                            "--builder codex, and the other provider reviews")
     except Exception as exc:
         problems.append(f"settings: {exc}")
     try:
@@ -892,6 +1083,15 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
                             "would show as the run's: " + ", ".join(dirty[:10])
                             + (" ..." if len(dirty) > 10 else "")
                             + "; commit them first")
+    try:
+        loose = unignored_env_files(root)
+    except worktree.GitError as exc:
+        loose = []
+        problems.append(f"the check for unignored `.env` files failed: {exc}")
+    for name in loose:
+        problems.append(f"{name} is a `.env`-named file that git neither tracks nor "
+                        "ignores, so a folder search could read it; add it to "
+                        ".gitignore")
     if not Path(git_dir).is_dir():
         problems.append(f"--git-dir {git_dir} is not a folder")
     else:
@@ -914,21 +1114,24 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
     credits = credit_snapshot(reading)
     reason = untrackable(credits)
     if reason is not None:
-        raise RunRefused([f"Codex credits cannot be tracked: {reason}"])
+        raise RunRefused([f"Codex credits cannot be tracked: {reason} "
+                          f"({reading.summary()})"])
     return {"settings": settings, "brief": brief, "credits": credits,
             "reading": reading, "category_a": category_a}
 
 
 def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LOG_PATH,
           runs_dir=runrecord.RUNS_DIR, inject=None, dry_run=False, wait=False,
-          settings=None, python=None):
+          settings=None, python=None, builder=None):
     """Preflight, then create the run record and take the run as far as it goes.
-    Returns the Run (or None on a dry run)."""
+    Returns the Run (or None on a dry run). The run's roles are written into its
+    ``settings.json``, so a resume keeps the pairing the run started with."""
     deps = deps or Deps()
     if inject is not None and not STEP.match(inject):
         raise RunRefused([f"--inject-limit {inject!r} is not a step name (build, "
                           "review-R<n>, fix-R<n>)"])
-    ready = preflight(brief_arg, item, git_dir, root=root, deps=deps, settings=settings)
+    ready = preflight(brief_arg, item, git_dir, root=root, deps=deps, settings=settings,
+                      builder=builder)
     settings, brief = ready["settings"], ready["brief"]
     if dry_run:
         # The clean-start check is not run here: the close-out verifier writes its own
@@ -938,7 +1141,8 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
               " NOT checked: the close-out verifier's clean-start check, which writes its "
               "own log and so cannot run in a dry run; a real start runs it first and "
               "refuses the run if the checks are not clean. If it passes, the run would "
-              f"create a run record for item {item} with edit paths "
+              f"create a run record for item {item}, {settings['roles']['builder']} "
+              f"building and {settings['roles']['reviewer']} reviewing, with edit paths "
               f"{', '.join(brief['edit_paths'])}, then build and review up to "
               f"{settings['round_caps']['build_review']} round(s).", file=sys.stderr)
         return None
@@ -1011,8 +1215,8 @@ def resume(run, rounds=None, dry_run=False):
     credits = credit_snapshot(reading)
     reason = untrackable(credits)
     if reason is not None:
-        raise RunRefused([f"Codex credits cannot be tracked: {reason}; the run is "
-                          "unchanged"])
+        raise RunRefused([f"Codex credits cannot be tracked: {reason} "
+                          f"({reading.summary()}); the run is unchanged"])
     if dry_run:
         # Every check above has run and nothing has changed (review finding R3-3).
         last_round = max([f["round"] for f in run.ledger.findings.values()] or [0])

@@ -1,0 +1,35 @@
+# Read commands an orchestrated Codex builder may run (short chunk (d) plan, section
+# 3.7). A Codex builder has no read tools of its own: it reads files through the shell.
+#
+# Same format as verify-commands.txt: one Python regular expression per line, blank
+# lines and lines starting with # ignored. A command is a read command only when the
+# whole trimmed command matches one line, or several lines joined by `; `. Nothing is
+# split or parsed out of the command.
+#
+# Two tokens are replaced in every line before it is compiled:
+#
+#   PATH    a project-relative path, bare or single-quoted, that cannot start with
+#           `/`, `~` or `-` and cannot hold a drive letter.
+#   QUOTED  a quoted search pattern that cannot begin with `-`; a double-quoted one
+#           cannot hold a backtick or `$`, which the shell would expand.
+#
+# Nothing the builder supplies, path or pattern, may begin with `-`: the only flags a
+# command can carry are the ones a line spells out. The last line is not a file read:
+# it gives the builder the real time for a LOG.md entry.
+#
+# The lines are for PowerShell, the shell Codex uses on Windows. On another system,
+# edit them. The approver's shell checks still apply to any match: one line, no `..`
+# path component, no `.env` file named.
+#
+# Get-Content must name both encodings (short plan 3.7 and 11.5). Windows PowerShell
+# 5.1 reads a UTF-8 file with no byte-order mark as Windows-1252 unless given
+# -Encoding UTF8, and hands its output to Codex through the console's code page (850
+# here), which swaps characters it lacks for look-alikes unless
+# [Console]::OutputEncoding is UTF-8. Measured on 2026-10-04: either half alone came
+# back wrong. So the line accepts only the form that sets both.
+\[Console\]::OutputEncoding = \[System\.Text\.Encoding\]::UTF8; Get-Content -LiteralPath PATH -Encoding UTF8( -TotalCount \d+| -Tail \d+)?( \| Select-Object( -Skip \d+)?( -First \d+)?)?
+rg( -n| -i| -F| -l| -C \d+)* QUOTED( PATH)+
+git status --short( -- PATH)?
+git diff( --check)? -- PATH( PATH)*
+git ls-files PATH( PATH)*
+Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"

@@ -11,6 +11,7 @@ For each finding, do exactly one of these:
     reason in the note. If the reviewer raises it again, the run ends for the user
     to rule.
 
+$tool_rules
 THE OPEN FINDINGS
 $findings
 

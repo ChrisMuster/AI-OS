@@ -547,7 +547,9 @@ class RoleSettingsTests(unittest.TestCase):
 
     def test_positive_the_shipped_file_holds_the_plan_defaults(self):
         loaded = settings.load_settings()
-        self.assertEqual(loaded["roles"], {"builder": "claude", "reviewer": "codex"})
+        self.assertNotIn("roles", loaded)  # named per run (the chunk (d) short plan, 11.1)
+        self.assertNotIn("roles", json.loads(settings.SETTINGS_PATH.read_text(
+            encoding="utf-8")))
         self.assertEqual(loaded["round_caps"], {"build_review": 3, "plan_review": 2})
         self.assertEqual(loaded["models"], settings.DEFAULT_MODELS)
         self.assertEqual(settings.model_for(loaded, "codex", "reviewer"),
@@ -557,7 +559,7 @@ class RoleSettingsTests(unittest.TestCase):
 
     def test_positive_an_empty_file_takes_every_default(self):
         loaded = self.load({})
-        self.assertEqual(loaded["roles"], settings.DEFAULT_ROLES)
+        self.assertNotIn("roles", loaded)
         self.assertEqual(loaded["round_caps"], settings.DEFAULT_ROUND_CAPS)
         self.assertEqual(loaded["models"], settings.DEFAULT_MODELS)
 
@@ -571,33 +573,74 @@ class RoleSettingsTests(unittest.TestCase):
         self.assertEqual(settings.DEFAULT_MODELS["codex"]["reviewer"]["model"], "gpt-6-sol",
                          "the defaults must not be changed by an override")
 
-    def test_positive_swapped_roles_load_once_the_new_pairs_have_models(self):
-        loaded = self.load({
-            "roles": {"builder": "codex", "reviewer": "claude"},
-            "models": {"codex": {"builder": {"model": "gpt-6-sol", "effort": "high"}},
-                       "claude": {"reviewer": {"model": "claude-opus-5-5",
-                                               "effort": "high"}}}})
-        self.assertEqual(loaded["roles"], {"builder": "codex", "reviewer": "claude"})
+    def test_positive_each_named_builder_gets_the_other_as_reviewer(self):
+        # The chunk (d) short plan, 11.1: the user names the builder for each run.
+        loaded = self.load({})
+        for builder, reviewer in (("claude", "codex"), ("codex", "claude")):
+            with self.subTest(builder=builder):
+                assigned = settings.assign_roles(loaded, builder)
+                self.assertEqual(assigned["roles"],
+                                 {"builder": builder, "reviewer": reviewer})
+        self.assertNotIn("roles", loaded, "assign_roles must not change its input")
 
-    def test_rejection_swapped_roles_without_the_new_pairs(self):
+    def test_rejection_a_builder_that_is_not_a_provider(self):
+        for builder in ("gemini", "", None, "Claude"):
+            with self.subTest(builder=builder):
+                with self.assertRaisesRegex(settings.SettingsError,
+                                            "the builder must be one of: claude, codex"):
+                    settings.assign_roles(self.load({}), builder)
+
+    def test_rejection_a_file_that_still_holds_roles(self):
+        # A stale file is refused, not ignored, so it cannot quietly decide the pairing.
+        for roles in ({"builder": "codex", "reviewer": "claude"}, {}, None):
+            with self.subTest(roles=roles):
+                with self.assertRaisesRegex(settings.SettingsError,
+                                            r"holds roles, which are no longer a "
+                                            r"setting: name the builder .*--builder"):
+                    self.load({"roles": roles})
+
+    def test_positive_swapped_roles_run_on_the_defaults_alone(self):
+        # Chunk (d): the defaults hold the two pairs the swapped roles need, the rows
+        # of plan section 11 item 3.
+        loaded = settings.assign_roles(self.load({}), "codex")
+        self.assertEqual(loaded["roles"], {"builder": "codex", "reviewer": "claude"})
+        self.assertEqual(settings.model_for(loaded, "codex", "builder"),
+                         {"model": "gpt-6-sol", "effort": "high"})
+        self.assertEqual(settings.model_for(loaded, "claude", "reviewer"),
+                         {"model": "claude-opus-5-5", "effort": "high"})
+        shipped = json.loads(settings.SETTINGS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(shipped["models"]["codex"]["builder"],
+                         {"model": "gpt-6-sol", "effort": "high"})
+        self.assertEqual(shipped["models"]["claude"]["reviewer"],
+                         {"model": "claude-opus-5-5", "effort": "high"})
+
+    def test_rejection_a_role_with_no_model_is_named(self):
+        # Every role either provider can hold has a default, so the coverage rule is
+        # tested on models with an entry taken out.
+        for swapped in (False, True):
+            roles = ({"builder": "codex", "reviewer": "claude"} if swapped
+                     else {"builder": "claude", "reviewer": "codex"})
+            for provider, role in ((roles["builder"], "builder"),
+                                   (roles["reviewer"], "reviewer")):
+                with self.subTest(roles=roles, role=role):
+                    models = json.loads(json.dumps(settings.DEFAULT_MODELS))
+                    del models[provider][role]
+                    with self.assertRaisesRegex(
+                            settings.SettingsError,
+                            rf"models\.{provider}\.{role} is required when "
+                            rf"{roles['builder']} builds"):
+                        settings._check_coverage(roles, models)
+
+    def test_rejection_a_named_builder_with_no_model_for_its_role(self):
+        loaded = self.load({})
+        del loaded["models"]["codex"]["builder"]
         with self.assertRaisesRegex(settings.SettingsError,
                                     r"models\.codex\.builder is required when codex builds"):
-            self.load({"roles": {"builder": "codex", "reviewer": "claude"}})
-        with self.assertRaisesRegex(settings.SettingsError,
-                                    r"models\.claude\.reviewer is required"):
-            self.load({"roles": {"builder": "codex", "reviewer": "claude"},
-                       "models": {"codex": {"builder": {"model": "m", "effort": "high"}}}})
+            settings.assign_roles(loaded, "codex")
 
-    def test_rejection_one_provider_in_both_roles(self):
-        with self.assertRaisesRegex(settings.SettingsError, "must be different providers"):
-            self.load({"roles": {"builder": "codex"}})
-
-    def test_rejection_bad_roles_caps_and_models(self):
+    def test_rejection_bad_caps_and_models(self):
         good = {"model": "m", "effort": "high"}
         cases = [
-            ({"roles": {"builder": "gemini"}}, r"roles\.builder must be one of"),
-            ({"roles": {"writer": "claude"}}, r"roles has unknown key\(s\): writer"),
-            ({"roles": []}, "roles must be a JSON object"),
             ({"round_caps": {"build_review": 0}}, r"round_caps\.build_review must be"),
             ({"round_caps": {"build_review": True}}, r"round_caps\.build_review must be"),
             ({"round_caps": {"build_review": 2.5}}, r"round_caps\.build_review must be"),
@@ -626,8 +669,10 @@ class RoleSettingsTests(unittest.TestCase):
         self.assertEqual(loaded["models"]["codex"]["reviewer"]["effort"], "ultra")
 
     def test_rejection_model_for_an_unset_pair(self):
+        loaded = self.load({})
+        del loaded["models"]["codex"]["builder"]
         with self.assertRaisesRegex(settings.SettingsError, r"models\.codex\.builder is not set"):
-            settings.model_for(self.load({}), "codex", "builder")
+            settings.model_for(loaded, "codex", "builder")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,9 @@ SDK inside it, so the provider that talks to an SDK only has to translate the an
 What is allowed:
 
   read tools      Read, Grep, Glob, TodoWrite and ToolSearch, which change nothing.
-  edit tools      Edit, Write, MultiEdit and NotebookEdit, when the file resolves
+                  Read, Grep and Glob are subject to the read rules (``read_rules``):
+                  none may name a ``.env`` file, and a Grep may not carry a ``glob``.
+  edit tools     Edit, Write, MultiEdit and NotebookEdit, when the file resolves
                   inside the project, inside one of the brief's edit paths, and is not
                   under ``.git`` or a ``.env`` file.
   the shell       Bash, when the whole command matches one line of
@@ -26,6 +28,11 @@ default, so a tool nobody listed is never allowed by accident.
 Edit paths are compared the way the brief checker compares them (``brief.py``):
 without case, ignoring trailing dots and spaces, since that is how Windows compares
 names.
+
+Two functions are shared with the other sessions of a run, so each rule has one
+implementation: ``read_rules`` (also called by the Claude reviewer's hook) and
+``shell_checks`` (also applied to a Codex builder's read commands by
+``codex_rules.py``).
 """
 
 import re
@@ -38,6 +45,8 @@ _WORKFLOW_DIR = Path(__file__).resolve().parent.parent
 VERIFY_COMMANDS_PATH = _WORKFLOW_DIR / "config" / "verify-commands.txt"
 
 READ_TOOLS = frozenset({"Read", "Grep", "Glob", "TodoWrite", "ToolSearch"})
+# The read tools that take a file, a folder or a search: the read rules bind these.
+FILE_READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path",
               "NotebookEdit": "notebook_path"}
 SHELL_TOOL = "Bash"
@@ -57,6 +66,58 @@ class Decision:
 
     allowed: bool
     reason: str = ""
+
+
+def shell_checks(command):
+    """Why a one-string shell command is refused whatever list it matches, or None.
+
+    The checks every shell command gets: one line, no ``..`` path component, no
+    ``.env`` file named. ``command`` is already trimmed.
+    """
+    if "\n" in command or "\r" in command:
+        return "Refused by the orchestrator: one command per call, on one line."
+    if _PARENT_COMPONENT.search(command):
+        return ("Refused by the orchestrator: a `..` path component is not allowed; "
+                "name the path from the project root.")
+    if _ENV_FILE.search(command):
+        return "Refused by the orchestrator: a command may not name a `.env` file."
+    return None
+
+
+def _strings(value):
+    """Every string inside a tool input, however nested."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+
+
+def read_rules(tool_name, tool_input):
+    """Why a Read, Grep or Glob call is refused, or None.
+
+    Rule 1: no string value in the input names a ``.env`` file, by the test the shell
+    checks use. A Grep call's ``pattern`` is exempt: it is the text searched for, not a
+    file. Rule 2: a Grep call may not carry a ``glob`` key, whatever its value, since
+    an explicit file wildcard overrides the ignore rules that keep a ``.env`` file out
+    of a folder search, and no list of unsafe wildcards can be complete.
+    """
+    if tool_name not in FILE_READ_TOOLS:
+        return None
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    if tool_name == "Grep" and "glob" in tool_input:
+        return ("Refused by the orchestrator: a search may not carry a file wildcard "
+                "(`glob`). Search by folder, file or file type instead.")
+    for key, value in tool_input.items():
+        if tool_name == "Grep" and key == "pattern":
+            continue
+        if any(_ENV_FILE.search(text) for text in _strings(value)):
+            return ("Refused by the orchestrator: a read or search may not name a "
+                    "`.env` file.")
+    return None
 
 
 def load_verify_commands(path=VERIFY_COMMANDS_PATH):
@@ -110,7 +171,8 @@ class Approver:
 
     def _decide(self, tool_name, tool_input):
         if tool_name in READ_TOOLS:
-            return Decision(True)
+            reason = read_rules(tool_name, tool_input)
+            return Decision(True) if reason is None else Decision(False, reason)
         if tool_name in EDIT_TOOLS:
             return self._edit(tool_input.get(EDIT_TOOLS[tool_name]))
         if tool_name == SHELL_TOOL:
@@ -136,15 +198,9 @@ class Approver:
         if tool_input.get("dangerouslyDisableSandbox"):
             return Decision(False, "Refused by the orchestrator: commands in this run "
                                    "may not leave the sandbox.")
-        if "\n" in command or "\r" in command:
-            return Decision(False, "Refused by the orchestrator: one command per call, "
-                                   "on one line.")
-        if _PARENT_COMPONENT.search(command):
-            return Decision(False, "Refused by the orchestrator: a `..` path component "
-                                   "is not allowed; name the path from the project root.")
-        if _ENV_FILE.search(command):
-            return Decision(False, "Refused by the orchestrator: a command may not name "
-                                   "a `.env` file.")
+        reason = shell_checks(command)
+        if reason is not None:
+            return Decision(False, reason)
         if any(pattern.fullmatch(command) for pattern in self.verify_patterns):
             return Decision(True)
         allowed = "; ".join(pattern.pattern for pattern in self.verify_patterns)
@@ -217,6 +273,9 @@ def _detail(tool_name, tool_input):
     """What the refusal was about, short enough for a report line."""
     if tool_name in EDIT_TOOLS:
         value = tool_input.get(EDIT_TOOLS[tool_name])
+    elif tool_name in FILE_READ_TOOLS:
+        value = {key: tool_input[key] for key in ("file_path", "path", "pattern", "glob")
+                 if key in tool_input} or None
     elif tool_name == SHELL_TOOL:
         value = tool_input.get("command")
     elif isinstance(tool_name, str) and tool_name.startswith(BIBLIO_PREFIX):

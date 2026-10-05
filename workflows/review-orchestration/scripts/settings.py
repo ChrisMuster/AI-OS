@@ -7,17 +7,19 @@ It holds:
 
   usage_ceiling_percent  plan section 10.10: before each step, a provider reporting
                          usage at or above it stops the run. Default 80.
-  roles                  which provider builds and which reviews (plan section 3: the
-                         user assigns them). Default Claude builds, Codex reviews.
   round_caps             plan section 11 item 5: 3 build-review rounds, 2 plan-review
                          rounds.
   models                 plan section 11 item 3: for each provider, the model and
                          effort it uses in each role it can hold.
 
-Roles are named by what they do, never by provider, so swapping who builds and who
-reviews is a change to ``roles`` plus a model entry for each new pairing, not a code
-change. The synthesiser has no entry of its own: plan section 11 makes it the builder's
-provider on the builder's model.
+Which provider builds is not a setting. The user names it for each run
+(``run.py --run --builder claude|codex``) and the other provider reviews;
+``assign_roles`` gives a run's settings that pairing (the chunk (d) short plan, 11.1).
+A file that still holds ``roles`` is refused rather than ignored, so a stale file
+cannot quietly decide the pairing. Roles are named by what they do, never by
+provider, and the defaults hold a model for every role either provider can hold, so
+either pairing runs on the defaults. The synthesiser has no entry of its own: plan
+section 11 makes it the builder's provider on the builder's model.
 
 Anything missing takes its default, and a ``models`` entry given overrides only that
 provider's role. A settings file that cannot be read, is not a JSON object, or holds a
@@ -44,20 +46,20 @@ EFFORTS = {
     "codex": ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
 }
 
-DEFAULT_ROLES = {"builder": "claude", "reviewer": "codex"}
 DEFAULT_ROUND_CAPS = {"build_review": 3, "plan_review": 2}
 
-# Plan section 11 item 3, as settled on 2026-09-24. Only the pairs that table names:
-# Codex has no builder entry and Claude no reviewer entry, so swapping the roles means
-# adding those two to the settings file first.
+# Plan section 11 item 3: the pairs that table names. It gives each provider a builder
+# and a reviewer entry, so either pairing has a model for every role it holds.
 DEFAULT_MODELS = {
     "claude": {
         "builder": {"model": "claude-opus-5-5", "effort": "medium"},
         "planner": {"model": "claude-opus-5-5", "effort": "medium"},
         "plan_reviewer": {"model": "claude-opus-5-5", "effort": "high"},
+        "reviewer": {"model": "claude-opus-5-5", "effort": "high"},
         "intent_checker": {"model": "claude-opus-5-5", "effort": "medium"},
     },
     "codex": {
+        "builder": {"model": "gpt-6-sol", "effort": "high"},
         "planner": {"model": "gpt-6-astra", "effort": "medium"},
         "plan_reviewer": {"model": "gpt-6-sol", "effort": "high"},
         "reviewer": {"model": "gpt-6-sol", "effort": "high"},
@@ -91,6 +93,10 @@ def load_settings(path=SETTINGS_PATH):
                             f"{exc.lineno}") from exc
     if not isinstance(data, dict):
         raise SettingsError(f"{path.name} must hold a JSON object")
+    if "roles" in data:
+        raise SettingsError(f"{path.name} holds roles, which are no longer a setting: "
+                            "name the builder for each run with run.py --run "
+                            "--builder claude|codex, and remove roles from the file")
 
     ceiling = data.get("usage_ceiling_percent", DEFAULT_USAGE_CEILING)
     # bool is an int in Python, and true is not a percentage.
@@ -101,11 +107,22 @@ def load_settings(path=SETTINGS_PATH):
 
     settings = dict(data)
     settings["usage_ceiling_percent"] = ceiling
-    settings["roles"] = _roles(data.get("roles", {}))
     settings["round_caps"] = _round_caps(data.get("round_caps", {}))
     settings["models"] = _models(data.get("models", {}))
-    _check_coverage(settings["roles"], settings["models"])
     return settings
+
+
+def assign_roles(settings, builder):
+    """A copy of ``settings`` with one run's roles: ``builder`` is the provider the user
+    named to build, and the other provider reviews. Every role the pairing will use
+    must have a model."""
+    if builder not in PROVIDERS:
+        raise SettingsError(f"the builder must be one of: {', '.join(PROVIDERS)}")
+    reviewer = next(provider for provider in PROVIDERS if provider != builder)
+    assigned = copy.deepcopy(settings)
+    assigned["roles"] = {"builder": builder, "reviewer": reviewer}
+    _check_coverage(assigned["roles"], assigned["models"])
+    return assigned
 
 
 def model_for(settings, provider, role):
@@ -131,19 +148,6 @@ def _unknown(value, allowed, name):
     if extra:
         raise SettingsError(f"{name} has unknown key(s): {', '.join(extra)} "
                             f"(allowed: {', '.join(allowed)})")
-
-
-def _roles(value):
-    value = _object(value, "roles")
-    _unknown(value, tuple(DEFAULT_ROLES), "roles")
-    roles = {**DEFAULT_ROLES, **value}
-    for role, provider in roles.items():
-        if provider not in PROVIDERS:
-            raise SettingsError(f"roles.{role} must be one of: {', '.join(PROVIDERS)}")
-    if roles["builder"] == roles["reviewer"]:
-        raise SettingsError("roles.builder and roles.reviewer must be different "
-                            "providers: one AI builds while the other reviews")
-    return roles
 
 
 def _round_caps(value):

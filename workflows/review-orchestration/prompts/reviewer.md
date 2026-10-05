@@ -10,8 +10,7 @@ would be the cheaper fix, and report only defects that survive that.
 Check that the change does what the brief asks and nothing it rules out, that it is
 correct, that nothing it touches is broken (other references, tests, imports,
 documentation), and that the AGENTS.md maintenance rules were met for every changed
-directory (CONTEXT.md Last modified and Revision History, LOG.md entries). You may run
-read-only commands, such as the tests.
+directory (CONTEXT.md Last modified and Revision History, LOG.md entries). $reviewer_tools
 
 THE BRIEF
 $brief

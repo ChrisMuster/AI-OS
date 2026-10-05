@@ -94,16 +94,22 @@ class RunRecordTests(unittest.TestCase):
         self.assertFalse(self.runs.exists())
         self.assertIn("[DRY RUN] would create 20260925-090507-0a1f/", err.getvalue())
 
-    def test_positive_state_rewrites_atomically_with_lf_and_utf8(self):
+    def test_positive_state_rewrites_atomically_with_lf_and_non_ascii_escaped(self):
+        # The chunk (d) short plan, 11.4: a run record's JSON escapes every non-ASCII
+        # character, including garbled text a tool printed, and reads back unchanged.
         run_dir = runrecord.create_run("20260925-090507-0a1f", runs_dir=self.runs, now=NOW)
         state = runrecord.read_state(run_dir)
         state["step"] = "review R1"
-        state["note"] = "café"
+        # Built with chr() so this source file stays ASCII: an e-acute, an em dash, and
+        # the three characters an em dash becomes when UTF-8 is read as Windows-1252.
+        state["note"] = ("caf" + chr(0xE9) + " " + chr(0x2014) + " and garbled "
+                         + chr(0xE2) + chr(0x20AC) + chr(0x201D))
         runrecord.write_state(run_dir, state)
         raw = (run_dir / "state.json").read_bytes()
         self.assertNotIn(b"\r", raw)
-        self.assertIn("café".encode("utf-8"), raw)
-        self.assertEqual(json.loads(raw.decode("utf-8"))["step"], "review R1")
+        self.assertTrue(raw.isascii(), "every non-ASCII character is escaped")
+        self.assertIn(b"caf" + b"\\" + b"u00e9 " + b"\\" + b"u2014", raw)
+        self.assertEqual(runrecord.read_state(run_dir), state)
         self.assertFalse((run_dir / "state.json.tmp").exists())
 
 

@@ -17,6 +17,7 @@ outside it is touched. The verification commands are the shipped file's.
     python workflows/review-orchestration/tests/test_approver.py
 """
 
+import asyncio
 import importlib.util
 import os
 import sys
@@ -38,6 +39,12 @@ def _load(name):
 
 brief = _load("brief")
 approver = _load("approver")
+# The read rules have one implementation and three users; the reviewer's hook is the
+# one outside this module, so it is loaded to be driven here too.
+limits = _load("limits")
+settings = _load("settings")
+codex_rules = _load("codex_rules")
+providers = _load("providers")
 
 EDIT_PATHS = ["workflows/doc-sync-guard/", "notes/plan.md"]
 
@@ -74,6 +81,7 @@ class ApproverTestCase(unittest.TestCase):
 class ReadToolTests(ApproverTestCase):
 
     def test_positive_read_tools_are_allowed(self):
+        # Allowed subject to the read rules (ReadRuleTests): these calls break neither.
         for tool in ("Read", "Grep", "Glob", "TodoWrite", "ToolSearch"):
             with self.subTest(tool=tool):
                 self.allowed(tool, {"file_path": "AGENTS.md"})
@@ -84,6 +92,83 @@ class ReadToolTests(ApproverTestCase):
                      "mcp__other__tool", "", None):
             with self.subTest(tool=tool):
                 self.refused(tool, {}, "is not permitted in this run")
+
+
+class ReadRuleTests(ApproverTestCase):
+    """The read rules (short chunk (d) plan, 5.1 rules 1 and 2), through both of their
+    callers: ``Approver.decide``, which binds a builder, and the Claude reviewer's
+    hook."""
+
+    def setUp(self):
+        super().setUp()
+        self.reviewer = providers.ClaudeReviewer("claude-opus-5-5", "high", cwd=self.root)
+
+    def hook(self, tool, tool_input):
+        return asyncio.run(self.reviewer.pre_tool_use(
+            {"tool_name": tool, "tool_input": tool_input}, "use-1", None))
+
+    def both_refuse(self, tool, tool_input, reason):
+        self.refused(tool, tool_input, reason)
+        before = len(self.reviewer.refusals)
+        specific = self.hook(tool, tool_input)["hookSpecificOutput"]
+        self.assertEqual(specific["permissionDecision"], "deny")
+        self.assertIn(reason, specific["permissionDecisionReason"])
+        self.assertEqual(len(self.reviewer.refusals), before + 1)
+        self.assertEqual(self.reviewer.refusals[-1]["tool"], tool)
+
+    def both_allow(self, tool, tool_input):
+        self.allowed(tool, tool_input)
+        self.assertEqual(self.hook(tool, tool_input), {}, f"{tool} {tool_input}")
+
+    def test_rejection_a_read_or_search_that_names_an_env_file(self):
+        for tool, tool_input in (
+                ("Read", {"file_path": ".env"}),
+                ("Read", {"file_path": "workflows/x/.ENV"}),
+                ("Read", {"file_path": "sub/.env.local"}),
+                ("Read", {"file_path": str(self.root / ".env")}),
+                ("Grep", {"pattern": "KEY", "path": ".env"}),
+                ("Grep", {"pattern": "KEY", "path": "sub/.Env.Local"}),
+                ("Glob", {"pattern": ".env"}),
+                ("Glob", {"pattern": "**/.env"}),
+                ("Glob", {"pattern": "**/.ENV.local"}),
+                ("Glob", {"pattern": "*.py", "path": "sub/.env"})):
+            with self.subTest(tool=tool, tool_input=tool_input):
+                self.both_refuse(tool, tool_input, "may not name a `.env` file")
+
+    def test_positive_searching_for_the_word_is_not_naming_the_file(self):
+        # A Grep's pattern is the text searched for. A reviewer must be able to search
+        # the code for the word, and a folder search cannot return the file's contents.
+        self.both_allow("Grep", {"pattern": ".env", "path": "workflows"})
+        self.both_allow("Grep", {"pattern": "\\.env\\.local"})
+
+    def test_rejection_a_search_with_a_file_wildcard_whatever_its_value(self):
+        # An explicit wildcard overrides the ignore rules that keep a .env file out of
+        # a folder search, a bare * included, so the field itself is refused.
+        for glob in (".env*", "**/.env*", "*", "*.py"):
+            with self.subTest(glob=glob):
+                self.both_refuse("Grep", {"pattern": "KEY", "glob": glob},
+                                 "may not carry a file wildcard")
+        decision = self.approver.decide("Grep", {"pattern": "KEY", "glob": "*.py"})
+        self.assertIn("Search by folder, file or file type", decision.reason)
+
+    def test_positive_a_search_by_folder_or_type_and_a_listing(self):
+        self.both_allow("Grep", {"pattern": "KEY", "path": "workflows"})
+        self.both_allow("Grep", {"pattern": "KEY", "type": "py"})
+        self.both_allow("Grep", {"pattern": "KEY", "path": "notes/plan.md", "-i": True})
+        self.both_allow("Glob", {"pattern": "**/*.py"})
+        self.both_allow("Read", {"file_path": "AGENTS.md"})
+
+    def test_negative_names_that_only_look_like_an_env_file(self):
+        self.both_allow("Read", {"file_path": "workflows/x/.venv/site.py"})
+        self.both_allow("Read", {"file_path": "docs/.environment"})
+        self.both_allow("Glob", {"pattern": "**/*.env.md"})
+
+    def test_positive_the_shell_checks_are_one_function(self):
+        # The Codex builder's read commands pass through the same three checks.
+        self.assertIsNone(approver.shell_checks("rg -n \"x\" workflows"))
+        self.assertIn("one line", approver.shell_checks("a\nb"))
+        self.assertIn("`..` path component", approver.shell_checks("rg \"x\" ../y"))
+        self.assertIn("`.env` file", approver.shell_checks("Get-Content -LiteralPath .env"))
 
 
 class EditTests(ApproverTestCase):

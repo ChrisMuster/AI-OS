@@ -74,12 +74,13 @@ def create_run(run_id=None, *, runs_dir=RUNS_DIR, now=None, dry_run=False):
 
 def write_state(run_dir, state):
     """Write ``state.json`` atomically: a temporary file in the same folder, then a
-    replace, so a reader never sees half a file."""
+    replace, so a reader never sees half a file. Non-ASCII characters are escaped, as
+    in every JSON file of a run record (the chunk (d) short plan, 11.4)."""
     run_dir = Path(run_dir)
     target = run_dir / STATE_FILE
     temporary = run_dir / f"{STATE_FILE}.tmp"
     with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(state, handle, indent=2, ensure_ascii=False)
+        json.dump(state, handle, indent=2)
         handle.write("\n")
     os.replace(temporary, target)
 

@@ -268,6 +268,108 @@ def review_diff(root, edit_paths, public_head, personal_head=None, git_dir=None,
                    for part in parts)
 
 
+# ------------------------------------------------- the check after every turn
+
+
+def _git_state(root, git_dir=None):
+    """One repository's own state: the staged contents, every ref, and where HEAD
+    points. The raw index file is not hashed, since ``git status`` rewrites it to
+    refresh timestamps."""
+    state = {"index": git(root, "ls-files", "-s", git_dir=git_dir),
+             "refs": git(root, "for-each-ref", "--format=%(refname) %(objectname)",
+                         git_dir=git_dir)}
+    for name, args in (("head_ref", ("symbolic-ref", "-q", "HEAD")),
+                       ("head", ("rev-parse", "HEAD"))):
+        try:
+            state[name] = git(root, *args, git_dir=git_dir).strip()
+        except GitError:  # a detached HEAD has no symbolic ref; an empty one no commit
+            state[name] = None
+    return state
+
+
+def inventory(root, git_dir, category_a):
+    """What the check after every Codex builder turn compares (plan 10.4, chunk (d)).
+
+    ``files``: a SHA-256 for every file the public repository tracks, every new file
+    it does not ignore, and the whole Category A selection. ``git``: both
+    repositories' own state, so a ``git add``, a commit, a branch change or a stash is
+    seen. Category B and C paths (bulk data, caches, generated output) are out of
+    scope, as the plan states.
+    """
+    root = Path(root)
+    # -z: names come back whole, never quoted, whatever characters they hold.
+    paths = set(git(root, "ls-files", "-z").split("\0"))
+    paths |= set(git(root, "ls-files", "-z", "--others", "--exclude-standard").split("\0"))
+    paths |= set(category_a)
+    paths.discard("")
+    files = {}
+    for relative in sorted(paths):
+        target = root / relative
+        if target.is_file():
+            files[relative] = hashlib.sha256(target.read_bytes()).hexdigest()
+    return {"files": files,
+            "git": {"public": _git_state(root),
+                    "personal": _git_state(root, git_dir=git_dir)}}
+
+
+def _inside(relative, prefixes):
+    folded = relative.lower()
+    return any(folded == prefix or folded.startswith(prefix + "/") for prefix in prefixes)
+
+
+# The run-record files the orchestrator itself writes during a Codex builder turn: the
+# session copies its hook's decisions file (``codex_rules.DECISIONS_FILE``) into the
+# record after each turn. Only these are exempt from the check after the turn; any other
+# change to the record, such as the run's saved settings, is reported (code review
+# finding R3-1).
+TURN_RECORD_WRITES = ("hook-decisions.jsonl",)
+
+
+def compare_inventory(before, after, edit_paths, run_dir, root=None):
+    """Every change between two inventories that a builder turn may not make, as a
+    list of lines naming it (empty when there is none).
+
+    A path added, removed or with a changed hash is reported unless it lies inside the
+    brief's edit paths. Run records are judged first, whatever the edit paths say: inside
+    the folder that holds them, only the current run's ``TURN_RECORD_WRITES`` may change,
+    so an edit path that covers this workflow does not cover its records (code review
+    finding R5-1, re-raising R3-1). Any change at all in either repository's git state is
+    reported: section 3 bans git side effects, so none is ever in scope.
+    """
+    allowed = [edit.rstrip("/").lower() for edit in edit_paths]
+    exact, records = set(), None
+    if root is not None:
+        try:
+            record = (Path(run_dir).resolve().relative_to(Path(root).resolve())
+                      .as_posix().lower())
+            exact = {f"{record}/{name}" for name in TURN_RECORD_WRITES}
+            records = record.rpartition("/")[0] or None
+        except ValueError:  # a run record kept outside the project is not in the inventory
+            pass
+    problems = []
+    old, new = before["files"], after["files"]
+    for relative in sorted(set(old) | set(new)):
+        if old.get(relative) == new.get(relative):
+            continue
+        what = ("added" if relative not in old
+                else "removed" if relative not in new else "changed")
+        if records is not None and _inside(relative, [records]):
+            if relative.lower() not in exact:
+                problems.append(f"{relative} was {what} in a run record")
+            continue
+        if _inside(relative, allowed):
+            continue
+        problems.append(f"{relative} was {what} outside the edit paths")
+    for repository in ("public", "personal"):
+        then, now = before["git"][repository], after["git"][repository]
+        for name, label in (("index", "the staged contents"), ("refs", "a ref"),
+                            ("head_ref", "the branch HEAD points to"),
+                            ("head", "the HEAD commit")):
+            if then.get(name) != now.get(name):
+                problems.append(f"{label} changed in the {repository} repository")
+    return problems
+
+
 def record_start(run_dir, root, edit_paths, git_dir):
     """Write ``start/``: both commits, and ``git diff HEAD`` of the edit paths with
     any untracked file under them in full. Returns the heads."""
