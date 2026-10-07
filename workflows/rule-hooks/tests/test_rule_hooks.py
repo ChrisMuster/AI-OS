@@ -1260,6 +1260,8 @@ class TestA3RoundThree(unittest.TestCase):
             shell_style._is_recursive(["grep", "--", "-rpattern", "f"]))
         self.assertTrue(shell_style._is_recursive(["grep", "-rn", "p"]))
 
+    @unittest.skipUnless(sys.platform == "win32",
+                         "a backslash is a folder separator only on Windows")
     def test_a_windows_path_does_not_buy_the_byte_level_allowance(self):
         """The marker was matched anywhere in any word, and on this platform a
         path is full of backslashes: `workflows\\rule-hooks\\CONTEXT.md`
@@ -1269,6 +1271,19 @@ class TestA3RoundThree(unittest.TestCase):
             'cat "workflows\\rule-hooks\\CONTEXT.md"'))
         self.assertIsNotNone(block)
         self.assertEqual(block.rule, "A3")
+
+    def test_a_byte_escape_inside_a_word_does_not_buy_the_allowance(self):
+        """The any-system half of the Windows test above: a `\\r` inside a
+        word, with a forward-slash path to a file that exists, is an ordinary
+        read. A byte pattern is the whole argument, so each anchor is tested on
+        its own (code review R2-1): `\\rx` fails if only the end anchor is lost,
+        `x\\r` if only the match from the start is, and `x\\ry` if both are."""
+        for pattern in ("x\\ry", "\\rx", "x\\r"):
+            with self.subTest(pattern=pattern):
+                block, _ = decision_for(shell_ctx(
+                    f"grep -c '{pattern}' workflows/rule-hooks/CONTEXT.md"))
+                self.assertIsNotNone(block)
+                self.assertEqual(block.rule, "A3")
 
     def test_control_a_real_byte_pattern_still_holds_the_allowance(self):
         block, warns = decision_for(shell_ctx("grep -c $'\\r' README.md"))

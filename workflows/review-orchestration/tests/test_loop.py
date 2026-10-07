@@ -1524,7 +1524,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual((folder / "rounds/R1/diff.patch").read_text(encoding="utf-8"),
                          "the diff")
         # No live copy of the project is left for project tools to walk into.
-        self.assertEqual([p.name for p in (folder / "rounds/R1").iterdir()],
+        self.assertEqual(sorted(p.name for p in (folder / "rounds/R1").iterdir()),
                          sorted(["diff.patch", "files.zip"]))
 
     def test_positive_a_round_written_again_replaces_its_record(self):

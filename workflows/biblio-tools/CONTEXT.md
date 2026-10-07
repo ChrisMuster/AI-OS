@@ -1,6 +1,6 @@
 # Biblio Tools
 
-**Last modified:** 2026-10-05
+**Last modified:** 2026-10-07
 
 ## Purpose
 Provides Book Dragon's canonical Python runtime, setup verification, cross-platform workflow launcher, and MCP (Model Context Protocol) server. The same project commands work for every AI; MCP-capable clients additionally receive typed tools, while other clients run the underlying scripts directly.
@@ -8,7 +8,7 @@ Provides Book Dragon's canonical Python runtime, setup verification, cross-platf
 ## Contents
 - scripts/ - `workflows/biblio-tools/scripts/` [[workflows/biblio-tools/scripts/CONTEXT]] - Shared runtime setup and hand-off helpers, MCP server, per-AI verification, launcher, protocol smoke tests, and lifecycle checks.
 - tests/ - `workflows/biblio-tools/tests/` [[workflows/biblio-tools/tests/CONTEXT]] - Unit tests for the server's pure helpers (the knowledge-graph query dispatcher's argv assembly and the `_run_json_script` failure paths) and for the Python floor checks and the Codex hook output and trust checks in verify.py and setup.py.
-- requirements.txt - `workflows/biblio-tools/requirements.txt` - MCP dependency included by the root project manifest.
+- requirements.txt - `workflows/biblio-tools/requirements.txt` - MCP dependency included by the root project manifest, pinned below version 2.
 - archived/ - `workflows/biblio-tools/archived/` [[workflows/biblio-tools/archived/CONTEXT]] - Holds the gitignored CODEX-MCP-AVAILABILITY-PLAN.md investigation notes; local-only.
 
 ## Inputs
@@ -35,7 +35,7 @@ Each tool returns structured output: success status, stdout, stderr, and return 
 - `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]] - Called by the `build_knowledge_graph` and `query_knowledge_graph` tools.
 - `AGENT-SETUP.md` [[AGENT-SETUP]] (root) - Human-readable setup documentation; verify.py points users to it for remediation.
 - `.codex/plugins/plugins/biblio-tools/CONTEXT.md` [[.codex/plugins/plugins/biblio-tools/CONTEXT]] - Codex plugin wrapper used to expose Biblio Tools through Codex's plugin-backed MCP path.
-- Python `mcp` package (>= 1.0.0) - The MCP SDK providing FastMCP; a required project dependency. verify.py itself is standard-library only, so it runs before the project environment exists.
+- Python `mcp` package (>= 1.0.0, < 2) - The MCP SDK providing FastMCP; a required project dependency. Held below 2 because a fresh install otherwise gets 2.x, which the server and its tests do not run on. verify.py itself is standard-library only, so it runs before the project environment exists.
 - `workflows/create-wiki/scripts/extract_pdf.py` [[workflows/create-wiki/scripts/CONTEXT]] - verify.py confirms that shared PDF ingestion is installed for every AI.
 - Codex (optional, external) - verify.py starts the installed Codex's app-server to ask whether it will run the project's Codex hooks defined for `workflows/rule-hooks/` [[workflows/rule-hooks/CONTEXT]]. Absent Codex, that one check is skipped with a quiet WARN.
 
@@ -48,8 +48,7 @@ Each tool returns structured output: success status, stdout, stderr, and return 
 - Codex raw `mcp_servers` registration can appear in `codex mcp list` while failing to expose tools to agents. Codex now uses the project-local `biblio_tools` plugin-backed MCP server; existing sessions must be restarted before that tool palette is available.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-06-17.
-- 2026-06-17 - Hardened orphan-process lifecycle handling: launch.py now owns parent-death cleanup with Windows-safe liveness checks, server.py focuses on stdin/idle shutdown, and lifecycle_check.py verifies cleanup behaviour.
+Earlier history archived to LOG.md on 2026-10-07.
 - 2026-06-20 - Phase 3: exposed the knowledge graph as two MCP tools (`build_knowledge_graph`, `query_knowledge_graph`), which shell out to `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]]. Added a `tests/` directory with a unit test for the dispatcher's argv helper; extended mcp_smoke.py to the ten-tool inventory.
 - 2026-06-21 - Knowledge-graph Phase 4: added tests/test_run_json_script.py covering the `_run_json_script` helper's failure paths (no change to server.py).
 - 2026-06-24 - Hardened setup verification: mcp_smoke.py now uses the saved knowledge-graph index for fast stats when available and falls back to a lightweight argument-validation check when no index exists; verify.py's smoke timeout increased to 90 seconds as a safety margin.
@@ -63,3 +62,4 @@ Earlier history archived to LOG.md on 2026-06-17.
 - 2026-09-23 - Repaired the two findings from Codex's review of the floor change. The above-floor WARN now carries `"surface": true` and AGENTS.md step 6c reports such results, where before startup's silence on WARN-only results hid it. The project `.venv` interpreter is now checked against the floor: verify.py gained a "Project runtime Python version" check, and setup.py refuses a below-floor `.venv` in both `--check` and repair. Added `tests/test_verify_floor.py`. Known Issues rewritten for both.
 - 2026-09-23 - Setup verification now asks the installed Codex, for every AI's session, whether it will run the project's Codex hooks, and fails visibly if it will not. Added after Codex was found to have run without them for eight weeks, because editing a hook voids its stored approval and Codex then skips it silently. Added `tests/test_verify_codex_hooks.py`; Codex is listed as an optional external dependency.
 - 2026-10-05 - verify.py gained the "Codex hook output" check: the Codex SessionStart and Stop hooks must print the JSON Codex accepts, which they did not until this date, while the trust check passed. Tests entry updated.
+- 2026-10-07 - `requirements.txt` pins `mcp` below 2 (orchestrator isolation build, stage S1). A fresh install was getting `mcp` 2.x, which failed this workflow's tests in a clean Linux container; the project `.venv` already holds 1.27.2, so nothing changes on an existing machine. Contents and Dependencies updated.

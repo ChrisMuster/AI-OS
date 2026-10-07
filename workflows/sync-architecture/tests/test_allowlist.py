@@ -51,6 +51,17 @@ def load_module():
 allowlist = load_module()
 
 
+def _load_live_data():
+    path = Path(__file__).resolve().parent / "live_data.py"
+    spec = importlib.util.spec_from_file_location("sync_tests_live_data", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+live_data = _load_live_data()
+
+
 def _git(cwd, *args):
     subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True,
                    text=True, encoding="utf-8", check=False)
@@ -161,6 +172,7 @@ class LabelledBlockTests(unittest.TestCase):
         doc = "```allowlist-old\n:(glob)stale/**\n```\n"
         self.assertIsNone(allowlist.extract_block(doc, "allowlist"))
 
+    @live_data.needs_live_data
     def test_the_live_plan_carries_all_four_blocks(self):
         """The document itself, not a fixture: a block deleted from the plan is a
         build blocker for boundary.py and must not pass silently here."""
@@ -194,10 +206,12 @@ class PositiveInversionTests(unittest.TestCase):
             with self.subTest(spec=spec):
                 self.assertEqual(allowlist.positive(spec), spec)
 
+    @live_data.needs_live_data
     def test_rejection_control_the_inversion_changes_what_git_returns(self):
         """The whole point, proved against git rather than asserted as string
         surgery: the written form and the inverted form must not select the same
-        set, or the inversion is doing nothing."""
+        set, or the inversion is doing nothing. Asked of the live tree, whose
+        `.obsidian` folders are gitignored."""
         spec = ":(exclude,glob)**/.obsidian/**"
         as_written = allowlist.public_selection([spec])
         inverted = allowlist.public_selection([allowlist.positive(spec)])
@@ -669,16 +683,20 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("All self-tests passed", result.stdout)
 
+    # The three below read the live plan before anything else.
+    @live_data.needs_live_data
     def test_positive_control_list_returns_a_selection(self):
         result = self._run("--list")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("file(s)", result.stderr)
 
+    @live_data.needs_live_data
     def test_rejection_control_stage_without_a_git_dir_is_refused(self):
         result = self._run("--stage")
         self.assertEqual(result.returncode, 1)
         self.assertIn("--git-dir", result.stdout)
 
+    @live_data.needs_live_data
     def test_rejection_control_a_missing_repository_is_named(self):
         result = self._run("--stage", "--git-dir", "no/such/repo.git", "--dry-run")
         self.assertEqual(result.returncode, 1)

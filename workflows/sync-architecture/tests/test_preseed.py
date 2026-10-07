@@ -48,6 +48,17 @@ def load_module():
 preseed = load_module()
 
 
+def _load_live_data():
+    path = Path(__file__).resolve().parent / "live_data.py"
+    spec = importlib.util.spec_from_file_location("sync_tests_live_data", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+live_data = _load_live_data()
+
+
 def _write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
@@ -178,7 +189,9 @@ class PreseedSmokeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("All self-tests passed.", proc.stdout)
 
+    @live_data.needs_live_data
     def test_rejection_control_a_missing_repository_is_refused(self):
+        # The gate reads the live plan before it looks for the repository.
         # An unanswerable question must block. A gate that treats "I could not
         # tell" as a pass is not a gate.
         proc = self._run("--git-dir", "no/such/repository.git")

@@ -41,6 +41,17 @@ def load_module():
 runner = load_module()
 
 
+def _load_live_data():
+    path = Path(__file__).resolve().parent / "live_data.py"
+    spec = importlib.util.spec_from_file_location("sync_tests_live_data", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+live_data = _load_live_data()
+
+
 # ------------------------------------------------------------------ declaration
 
 class ExtractPlannedTests(unittest.TestCase):
@@ -284,8 +295,83 @@ class BuildFreezeTests(unittest.TestCase):
         self.assertEqual(self._levels(findings), ["FAIL"])
 
 
+# ------------------------------------------------------------ the live-data skip
+
+class LiveDataSkipTests(unittest.TestCase):
+    """Subject: the shared skip rule in live_data.py, which must skip only inside
+    the clean copy with the plan absent. A skip that fired on the host would hide
+    a plan that went missing on the user's machine."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.present = Path(tmp.name) / "plan.md"
+        self.present.write_bytes(b"plan\n")
+        self.absent = Path(tmp.name) / "missing.md"
+
+    def test_positive_control_marker_and_absent_plan_skip(self):
+        self.assertTrue(live_data.clean_copy_without_plan(
+            {"BOOK_DRAGON_CLEAN_COPY": "1"}, self.absent))
+
+    def test_rejection_control_no_marker_never_skips(self):
+        self.assertFalse(live_data.clean_copy_without_plan({}, self.absent))
+
+    def test_rejection_control_a_present_plan_never_skips(self):
+        self.assertFalse(live_data.clean_copy_without_plan(
+            {"BOOK_DRAGON_CLEAN_COPY": "1"}, self.present))
+
+    def test_negative_control_another_marker_value_is_not_the_marker(self):
+        for value in ("0", "", "true", "yes"):
+            with self.subTest(value=value):
+                self.assertFalse(live_data.clean_copy_without_plan(
+                    {"BOOK_DRAGON_CLEAN_COPY": value}, self.absent))
+
+    # The decorator the suites use, not only its condition (code review R1-1): a
+    # decorator that skipped unconditionally would pass every control above.
+    def _decorated_skips(self, marker, plan):
+        """Apply needs_live_data to a dummy method and a dummy class under the given
+        marker and plan, run both, and return how many of the two unittest skipped."""
+        env = dict(os.environ)
+        env.pop("BOOK_DRAGON_CLEAN_COPY", None)
+        if marker is not None:
+            env["BOOK_DRAGON_CLEAN_COPY"] = marker
+        saved_env, saved_plan = dict(os.environ), live_data.PLAN_PATH
+        os.environ.clear()
+        os.environ.update(env)
+        live_data.PLAN_PATH = plan
+        try:
+            class Method(unittest.TestCase):
+                @live_data.needs_live_data
+                def test_it(self):
+                    pass
+
+            @live_data.needs_live_data
+            class Whole(unittest.TestCase):
+                def test_it(self):
+                    pass
+        finally:
+            os.environ.clear()
+            os.environ.update(saved_env)
+            live_data.PLAN_PATH = saved_plan
+        result = unittest.TestResult()
+        Method("test_it").run(result)
+        Whole("test_it").run(result)
+        self.assertEqual(result.testsRun, 2)
+        return len(result.skipped)
+
+    def test_positive_control_the_decorator_skips_inside_the_clean_copy(self):
+        self.assertEqual(self._decorated_skips("1", self.absent), 2)
+
+    def test_rejection_control_the_decorator_never_skips_on_the_host(self):
+        self.assertEqual(self._decorated_skips(None, self.absent), 0)
+
+    def test_rejection_control_the_decorator_never_skips_with_the_plan_present(self):
+        self.assertEqual(self._decorated_skips("1", self.present), 0)
+
+
 # ------------------------------------------------------- boundary.py's two blocks
 
+@live_data.needs_live_data
 class BoundaryInputTests(unittest.TestCase):
     """Subject: the two blocks boundary.py reads beyond the three category blocks.
 

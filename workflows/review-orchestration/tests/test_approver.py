@@ -185,9 +185,18 @@ class EditTests(ApproverTestCase):
     def test_positive_a_file_edit_path_itself(self):
         self.allowed("Write", {"file_path": "notes/plan.md"})
 
+    @unittest.skipUnless(sys.platform == "win32",
+                         "a backslash is a folder separator only on Windows")
     def test_positive_windows_spelling_is_folded(self):
         self.allowed("Edit", {"file_path": "Workflows\\Doc-Sync-Guard\\CONTEXT.md"})
         self.allowed("Edit", {"file_path": "notes/PLAN.md"})
+
+    def test_positive_case_is_folded_on_any_system(self):
+        # The any-system half of the Windows test above: case is folded everywhere.
+        self.allowed("Edit", {"file_path": "Workflows/Doc-Sync-Guard/CONTEXT.md"})
+        self.allowed("Edit", {"file_path": "notes/PLAN.md"})
+        self.refused("Edit", {"file_path": "Workflows/Audit/scripts/run.py"},
+                     "outside this run's edit paths")
 
     def test_rejection_outside_the_edit_paths(self):
         self.refused("Edit", {"file_path": "workflows/audit/scripts/run.py"},
