@@ -74,7 +74,31 @@ except Exception:
     pass
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
+
+# BOOK_DRAGON_ROOT names the project to check when this script runs from a copy
+# outside it (the review orchestrator's trusted host copy). The project, its git
+# repository and its CONTEXT.md and LOG.md files follow it; the output inventory
+# is configuration shipped beside this script and is still read from there.
+# Written out here rather than shared, because a trusted copy holds this
+# workflow's folder and nothing else.
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+
+
+def project_root(script_dir=SCRIPT_DIR):
+    """BOOK_DRAGON_ROOT when set, else three folders above this script. A set
+    value that is not an existing folder holding AGENTS.md exits 2."""
+    value = os.environ.get(ROOT_ENV)
+    if value is None:
+        return script_dir.parent.parent.parent
+    root = Path(value)
+    if not value or not root.is_dir() or not (root / "AGENTS.md").is_file():
+        sys.stderr.write(f"{ROOT_ENV} is set to {value!r}, which is not an "
+                         "existing folder holding AGENTS.md.\n")
+        sys.exit(2)
+    return root.resolve()
+
+
+PROJECT_ROOT = project_root()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import context_parse  # noqa: E402

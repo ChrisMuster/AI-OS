@@ -341,8 +341,12 @@ def main():
     # silently skip for want of PyYAML. Hand off to the canonical .venv where the
     # parser is guaranteed present; if the runtime is not set up,
     # ensure_project_runtime() fails loudly and names the setup.py fix.
-    from runtime import ensure_project_runtime  # noqa: E402
-    ensure_project_runtime()
+    # BOOK_DRAGON_CLEAN_COPY=1 is set only inside the review orchestrator's offline
+    # container, whose copy has no .venv: its own interpreter, built from the .venv
+    # versions, is the runtime there, and PyYAML still fails loudly if missing.
+    if os.environ.get("BOOK_DRAGON_CLEAN_COPY") != "1":
+        from runtime import ensure_project_runtime  # noqa: E402
+        ensure_project_runtime()
 
     if args.since is not None:
         since = args.since

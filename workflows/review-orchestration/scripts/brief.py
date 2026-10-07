@@ -33,8 +33,31 @@ from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _WORKFLOW_DIR = _SCRIPTS_DIR.parent
-PROJECT_ROOT = _WORKFLOW_DIR.parent.parent
-LOG_PATH = _WORKFLOW_DIR / "LOG.md"
+
+# BOOK_DRAGON_ROOT names the project when the orchestrator runs from a copy of its
+# starting commit outside it (plan 7.0). Every module takes the project root from
+# here. Run data follows it: this workflow's LOG.md (LOG_PATH) and its run records
+# (runrecord.RUNS_DIR). Code and configuration (config/, prompts/) are read from
+# beside the running modules, so they are the copy's.
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+
+
+def project_root(workflow_dir=_WORKFLOW_DIR):
+    """BOOK_DRAGON_ROOT when set, else two folders above this workflow. A set
+    value that is not an existing folder holding AGENTS.md exits 2."""
+    value = os.environ.get(ROOT_ENV)
+    if value is None:
+        return workflow_dir.parent.parent
+    root = Path(value)
+    if not value or not root.is_dir() or not (root / "AGENTS.md").is_file():
+        sys.stderr.write(f"{ROOT_ENV} is set to {value!r}, which is not an "
+                         "existing folder holding AGENTS.md.\n")
+        sys.exit(2)
+    return root.resolve()
+
+
+PROJECT_ROOT = project_root()
+LOG_PATH = PROJECT_ROOT / "workflows" / "review-orchestration" / "LOG.md"
 
 HEADINGS = (
     "Goal",

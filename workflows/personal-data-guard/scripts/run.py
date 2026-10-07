@@ -51,7 +51,30 @@ except Exception:
     pass
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
+
+# BOOK_DRAGON_ROOT names the project to scan when this script runs from a copy
+# outside it (the review orchestrator's trusted host copy). Every path below that
+# is project data follows it: the files scanned, USER.md, .env and the denylist.
+# Written out here rather than shared, because a trusted copy holds this
+# workflow's folder and nothing else.
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+
+
+def project_root(script_dir=SCRIPT_DIR):
+    """BOOK_DRAGON_ROOT when set, else three folders above this script. A set
+    value that is not an existing folder holding AGENTS.md exits 2."""
+    value = os.environ.get(ROOT_ENV)
+    if value is None:
+        return script_dir.parent.parent.parent
+    root = Path(value)
+    if not value or not root.is_dir() or not (root / "AGENTS.md").is_file():
+        sys.stderr.write(f"{ROOT_ENV} is set to {value!r}, which is not an "
+                         "existing folder holding AGENTS.md.\n")
+        sys.exit(2)
+    return root.resolve()
+
+
+PROJECT_ROOT = project_root()
 WORKFLOW_DIR = PROJECT_ROOT / "workflows" / "personal-data-guard"
 DENYLIST_FILE = WORKFLOW_DIR / "config" / "denylist.txt"
 USER_MD = PROJECT_ROOT / "USER.md"
@@ -71,14 +94,16 @@ class Finding(tuple):
     Still a plain three-item tuple to every caller that unpacks or compares it
     (the audit hook, rule-hooks B3, the tests); the two extra fields ride along
     as attributes. Run-level notes (INFO: scan skipped and the like) are about no
-    file and carry ``None`` for both.
+    file and carry ``None`` for both. A note saying no file was scanned carries
+    ``skipped=True``, which ``--json`` reports as ``"scanned": false``, so a
+    caller never has to read the message to know the scan did not run.
     """
 
-    def __new__(cls, severity, label, message, file=None, kind=None):
+    def __new__(cls, severity, label, message, file=None, kind=None, skipped=False):
         if kind is not None and kind not in KINDS:
             raise ValueError(f"unknown personal-data kind: {kind}")
         self = super().__new__(cls, (severity, label, message))
-        self.file, self.kind = file, kind
+        self.file, self.kind, self.skipped = file, kind, skipped
         return self
 
 # ---------------------------------------------------------------------------
@@ -329,11 +354,12 @@ def committable_files(root):
             capture_output=True, encoding="utf-8", cwd=str(root),
         )
     except Exception as exc:  # git missing
-        return [], [("INFO", LABEL, f"scan skipped - could not run git ({exc})")]
+        return [], [Finding("INFO", LABEL, f"scan skipped - could not run git ({exc})",
+                            skipped=True)]
     if result.returncode != 0:
         reason = (result.stderr or "").strip().splitlines()
         reason = reason[-1] if reason else f"git exited {result.returncode}"
-        return [], [("INFO", LABEL, f"scan skipped - {reason}")]
+        return [], [Finding("INFO", LABEL, f"scan skipped - {reason}", skipped=True)]
 
     paths = []
     for rel in result.stdout.split("\0"):
@@ -389,7 +415,8 @@ def print_report(findings):
 def findings_json(findings):
     """Each finding as severity, label and message; a hit in a file also carries
     ``file`` (project-relative) and ``kind`` (one of KINDS). Run-level notes
-    carry neither."""
+    carry neither. ``scanned`` is false when a note says no file was scanned
+    (git could not list them), true otherwise."""
     out = []
     for f in findings:
         s, lab, m = f
@@ -397,7 +424,8 @@ def findings_json(findings):
         if getattr(f, "kind", None) is not None:
             row["file"], row["kind"] = f.file, f.kind
         out.append(row)
-    return json.dumps({"findings": out}, ensure_ascii=False)
+    scanned = not any(getattr(f, "skipped", False) for f in findings)
+    return json.dumps({"findings": out, "scanned": scanned}, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ Run: python workflows/rule-hooks/tests/test_rule_hooks.py
 """
 
 import ast
+import importlib.util
 import io
 import json
 import os
@@ -5456,6 +5457,106 @@ class TestReinjectForCodex(unittest.TestCase):
                 done = self.run_reinject(*extra)
                 self.assertEqual(done.returncode, 0)
                 self.assertEqual(done.stdout.strip(), run_mod.REMINDER)
+
+
+class TestRootOverride(unittest.TestCase):
+    """BOOK_DRAGON_ROOT (orchestrator isolation S3, plan 4.2, the user's choice C):
+    set, it beats the AI channel and git; set to anything but an existing folder
+    holding AGENTS.md, the hook exits 2 in every mode, which Claude Code reads as
+    a block, so a bad value fails closed instead of checking another folder."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.fixture = Path(tmp.name) / "project"
+        self.fixture.mkdir()
+        (self.fixture / "AGENTS.md").write_bytes(b"# fixture\n")
+        self.no_agents = Path(tmp.name) / "no-agents"
+        self.no_agents.mkdir()
+
+    def test_positive_a_set_root_beats_the_channel_and_git(self):
+        event = {"tool_name": "Bash", "tool_input": {"command": "echo hi"},
+                 "cwd": str(PROJECT_ROOT)}
+        with mock.patch.dict(os.environ, {"BOOK_DRAGON_ROOT": str(self.fixture),
+                                          "CLAUDE_PROJECT_DIR": str(PROJECT_ROOT)}):
+            got = run_mod.resolve_project_root("claude", event)
+        self.assertEqual(got, self.fixture.resolve())
+
+    def test_negative_unset_the_channel_still_decides(self):
+        # The channel names a folder that is neither git's answer nor the
+        # script's own project, and git gives no answer, so only the channel can
+        # produce it (code review R8-1).
+        event = {"tool_name": "Bash", "tool_input": {"command": "echo hi"},
+                 "cwd": str(self.fixture)}
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(self.fixture)}), \
+                mock.patch.object(run_mod, "_git_toplevel", return_value=None):
+            os.environ.pop("BOOK_DRAGON_ROOT", None)
+            got = run_mod.resolve_project_root("claude", event)
+        self.assertEqual(Path(got).resolve(), self.fixture.resolve())
+        self.assertNotEqual(self.fixture.resolve(), PROJECT_ROOT.resolve())
+
+    def test_positive_the_precommit_gate_checks_the_set_root(self):
+        with mock.patch.dict(os.environ, {"BOOK_DRAGON_ROOT": str(self.fixture)}), \
+                mock.patch.object(run_mod, "_precommit_personal_data",
+                                  return_value=0) as personal, \
+                mock.patch.object(run_mod, "_precommit_doc_sync") as doc_sync:
+            self.assertEqual(run_mod.run_precommit(), 0)
+        personal.assert_called_once_with(self.fixture.resolve())
+        doc_sync.assert_called_once_with(self.fixture.resolve())
+
+    def run_hook(self, root, *args, stdin=""):
+        env = dict(os.environ, BOOK_DRAGON_ROOT=root)
+        return subprocess.run([sys.executable, str(RUN_PY), *args], input=stdin,
+                              capture_output=True, text=True, encoding="utf-8",
+                              env=env, timeout=60)
+
+    BAD = ("does-not-exist", "no-agents", "")
+    MODES = (("--ai", "claude"), ("--precommit",), ("--reinject",))
+
+    def bad_value(self, kind):
+        return {"does-not-exist": str(self.fixture / "missing"),
+                "no-agents": str(self.no_agents), "": ""}[kind]
+
+    def test_rejection_a_bad_value_exits_2_in_every_mode(self):
+        event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo hi"},
+                            "cwd": str(PROJECT_ROOT)})
+        for kind in self.BAD:
+            for mode in self.MODES:
+                with self.subTest(value=kind, mode=mode):
+                    done = self.run_hook(self.bad_value(kind), *mode, stdin=event)
+                    self.assertEqual(done.returncode, 2)
+                    self.assertIn("BOOK_DRAGON_ROOT", done.stderr)
+                    self.assertEqual(done.stdout, "")
+
+    def test_negative_control_a_valid_root_lets_the_same_call_through(self):
+        # The exit 2 above comes from the root, not from the event: the same
+        # harmless call under a valid root is allowed.
+        event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo hi"},
+                            "cwd": str(PROJECT_ROOT)})
+        done = self.run_hook(str(self.fixture), "--ai", "claude", stdin=event)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def load_fresh(self, env):
+        """Import run.py afresh under ``env``, since FIRE_LOG is set at import."""
+        spec = importlib.util.spec_from_file_location("rule_hooks_run_root_probe",
+                                                      RUN_PY)
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, env):
+            if "BOOK_DRAGON_FIRE_LOG" not in env:
+                del os.environ["BOOK_DRAGON_FIRE_LOG"]  # restored on exit
+            spec.loader.exec_module(module)
+        return module
+
+    def test_positive_the_default_fire_log_is_the_set_roots(self):
+        module = self.load_fresh({"BOOK_DRAGON_ROOT": str(self.fixture)})
+        self.assertEqual(Path(module.FIRE_LOG), self.fixture.resolve()
+                         / "workflows" / "rule-hooks" / "fire-log.jsonl")
+
+    def test_negative_the_fire_log_override_still_wins(self):
+        sink = self.fixture / "elsewhere.jsonl"
+        module = self.load_fresh({"BOOK_DRAGON_ROOT": str(self.fixture),
+                                  "BOOK_DRAGON_FIRE_LOG": str(sink)})
+        self.assertEqual(Path(module.FIRE_LOG), sink)
 
 
 if __name__ == "__main__":

@@ -26,10 +26,12 @@ Usage:
 {"dead_links": [{"file": ..., "target": ...}]} in place of the Markdown report.
 """
 
+import os
 import re
 import sys
 import json
 import argparse
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -41,7 +43,29 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 # Paths
 # ---------------------------------------------------------------------------
 SCRIPT_DIR   = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
+
+# BOOK_DRAGON_ROOT names the project to check when this script runs from a copy
+# outside it (the review orchestrator's trusted host copy). Every path below that
+# is project data follows it. Written out here rather than shared, because a
+# trusted copy holds this workflow's folder and nothing else.
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+
+
+def project_root(script_dir: Path = SCRIPT_DIR) -> Path:
+    """BOOK_DRAGON_ROOT when set, else three folders above this script. A set
+    value that is not an existing folder holding AGENTS.md exits 2."""
+    value = os.environ.get(ROOT_ENV)
+    if value is None:
+        return script_dir.parent.parent.parent
+    root = Path(value)
+    if not value or not root.is_dir() or not (root / "AGENTS.md").is_file():
+        sys.stderr.write(f"{ROOT_ENV} is set to {value!r}, which is not an "
+                         "existing folder holding AGENTS.md.\n")
+        sys.exit(2)
+    return root.resolve()
+
+
+PROJECT_ROOT = project_root()
 WORKFLOW_DIR = PROJECT_ROOT / "workflows" / "link-check"
 WORKFLOW_LOG = WORKFLOW_DIR / "LOG.md"
 ROOT_LOG     = PROJECT_ROOT / "LOG.md"
@@ -350,7 +374,41 @@ def link_resolves(target: str) -> bool:
     return (PROJECT_ROOT / (target + ".md")).exists()
 
 
-LinkFinding = tuple[str, str, str]  # (file_rel, target, "ok"|"dead")
+# BOOK_DRAGON_CLEAN_COPY=1 is set only inside the review orchestrator's offline
+# container, over a copy of the project that holds no gitignored file. A link to
+# a gitignored file (USER.md, a memory file) cannot resolve there, and is checked
+# by the run on the host instead.
+CLEAN_COPY_ENV = "BOOK_DRAGON_CLEAN_COPY"
+HOST = "host"  # a link status: absent here, ignored by git, checked on the host
+
+
+def clean_copy() -> bool:
+    return os.environ.get(CLEAN_COPY_ENV) == "1"
+
+
+def target_ignored(target: str) -> bool:
+    """Whether git ignores [[target]]'s file in this project. A git that cannot
+    answer counts as not ignored, so the link stays dead."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--", target + ".md"],
+            cwd=str(PROJECT_ROOT), capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def link_status(target: str) -> str:
+    """"ok", "dead", or, only in the clean copy, HOST for an absent target that
+    git ignores there."""
+    if link_resolves(target):
+        return "ok"
+    if clean_copy() and target_ignored(target):
+        return HOST
+    return "dead"
+
+
+LinkFinding = tuple[str, str, str]  # (file_rel, target, "ok"|"dead"|HOST)
 
 
 def audit_links() -> list[LinkFinding]:
@@ -369,8 +427,7 @@ def audit_links() -> list[LinkFinding]:
             if key in seen:
                 continue
             seen.add(key)
-            status = "ok" if link_resolves(target) else "dead"
-            findings.append((file_rel, target, status))
+            findings.append((file_rel, target, link_status(target)))
     return findings
 
 
@@ -407,6 +464,7 @@ def run_audit_mode(fix: bool, dry_run: bool) -> tuple[str, int, int]:
     """
     findings = audit_links()
     dead = [(f, t) for f, t, s in findings if s == "dead"]
+    on_host = [(f, t) for f, t, s in findings if s == HOST]
     ok_count = sum(1 for _, _, s in findings if s == "ok")
     dead_count = len(dead)
     fixed_count = 0
@@ -440,8 +498,10 @@ def run_audit_mode(fix: bool, dry_run: bool) -> tuple[str, int, int]:
         f"**Links checked:** {len(findings)}",
         f"**OK:** {ok_count}",
         f"**Dead:** {dead_count}",
-        "",
     ]
+    if on_host:
+        report_lines.append(f"**Checked on the host:** {len(on_host)}")
+    report_lines.append("")
 
     if not dead:
         report_lines.append("All project links resolve correctly.")
@@ -464,6 +524,15 @@ def run_audit_mode(fix: bool, dry_run: bool) -> tuple[str, int, int]:
                     "target was deleted (remove the link) or renamed ambiguously (update manually).",
                     "",
                 ] + manual_lines + [""]
+
+    if on_host:
+        report_lines += [
+            "## Checked on the host",
+            "",
+            "Clean copy: these targets are gitignored and absent here, so the run",
+            "checks them on the host. They are not counted as dead.",
+            "",
+        ] + [f"- `{file_rel}` - `[[{target}]]`" for file_rel, target in on_host] + [""]
 
     return "\n".join(report_lines), dead_count, fixed_count
 

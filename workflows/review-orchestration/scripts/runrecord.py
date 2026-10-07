@@ -23,8 +23,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-_WORKFLOW_DIR = Path(__file__).resolve().parent.parent
-RUNS_DIR = _WORKFLOW_DIR / "runs"
+from brief import PROJECT_ROOT
+
+# Run records are run data, so they live under the project root, which follows
+# BOOK_DRAGON_ROOT (brief.PROJECT_ROOT), never beside a copy of this module.
+RUNS_DIR = PROJECT_ROOT / "workflows" / "review-orchestration" / "runs"
 STATE_FILE = "state.json"
 
 RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")

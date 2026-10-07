@@ -76,6 +76,12 @@ TEST_TIMEOUT = 600  # seconds per test file
 # Re-exec guard: set on the child so the venv interpreter never loops back.
 REEXEC_MARKER = "BOOK_DRAGON_CLOSE_OUT_REEXEC"
 
+# Set to "1" only inside the review orchestrator's offline container, over a copy
+# of the project holding no gitignored file. The audit and link gates read it
+# themselves; the JSON result says it was set, so a reader can tell a clean-copy
+# pass (some checks left to the host) from a full one.
+CLEAN_COPY_ENV = "BOOK_DRAGON_CLEAN_COPY"
+
 
 # ---------------------------------------------------------------------------
 # Interpreter
@@ -520,6 +526,7 @@ def main():
         # one without parsing the human report.
         "clean": status == "pass",
         "status": status,
+        "clean_copy": os.environ.get(CLEAN_COPY_ENV) == "1",
         "degraded": degraded,
         "repair_note": repair_note,
         "gates": gates,

@@ -258,6 +258,39 @@ class ReadOnlyTests(unittest.TestCase):
                              "close-out")
 
 
+class CleanCopyResultTests(unittest.TestCase):
+    """The JSON result says whether BOOK_DRAGON_CLEAN_COPY=1 was set (orchestrator
+    isolation S3, plan 4.3), so a reader can tell a clean-copy pass, with some
+    checks left to the host, from a full one. Only "1" is the marker."""
+
+    invoke = ReadOnlyTests.invoke  # the helpers only, not ReadOnlyTests' tests
+    gates = ReadOnlyTests.gates
+
+    def payload(self, marker):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(run, "LOG_FILE", Path(folder) / "LOG.md"), \
+                mock.patch.object(run, "RESULT_FILE", Path(folder) / "r.json"), \
+                mock.patch.dict(os.environ):
+            os.environ.pop("BOOK_DRAGON_CLEAN_COPY", None)
+            if marker is not None:
+                os.environ["BOOK_DRAGON_CLEAN_COPY"] = marker
+            code, printed, _calls = self.invoke(
+                ["--read-only", "--json", "--scope", "close-out"], self.gates())
+        self.assertEqual(code, 0)
+        return json.loads(printed)
+
+    def test_positive_with_the_marker_the_result_says_clean_copy(self):
+        self.assertIs(self.payload("1")["clean_copy"], True)
+
+    def test_rejection_without_the_marker_it_says_not(self):
+        self.assertIs(self.payload(None)["clean_copy"], False)
+
+    def test_rejection_only_1_is_the_marker(self):
+        for value in ("0", "true", ""):
+            with self.subTest(value=value):
+                self.assertIs(self.payload(value)["clean_copy"], False)
+
+
 class TestRunnerTests(unittest.TestCase):
     def _write(self, folder, name, body):
         path = Path(folder) / name

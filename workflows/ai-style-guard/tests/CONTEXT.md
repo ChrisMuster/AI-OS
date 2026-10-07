@@ -1,12 +1,13 @@
 # Tests
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-07
 
 ## Purpose
 Unit tests for the AI-style guard. They exercise the fiddly diff hunk parser with fixture diffs, the tier-1 and tier-2 detectors, the config loader, and the self-exemption guarantee. Trigger characters are built from code points rather than written literally, so this tracked source never carries the markers it tests for.
 
 ## Contents
 - test_ai_style_guard.py - `workflows/ai-style-guard/tests/test_ai_style_guard.py` [[workflows/ai-style-guard/tests/CONTEXT]] - Tests for `parse_diff` (single and multi-hunk, multi-file, deletions, file-deletion skip, header handling), `scan_line` (typographic, phrase, and word detection with severity mapping), `_eligible` (self-directory and binary exclusion), `load_config` (code-point parsing, phrase compilation, missing-file degrade, and that the shipped config parses), and the bootstrap guarantee (the guard hands off to the `.venv` via `ensure_project_runtime()` rather than degrading on missing PyYAML).
+- test_clean_copy_runtime.py - `workflows/ai-style-guard/tests/test_clean_copy_runtime.py` [[workflows/ai-style-guard/tests/CONTEXT]] - Tests for the clean-copy runtime rule, with a stand-in `runtime` module recording the hand-off and the check stubbed: with `BOOK_DRAGON_CLEAN_COPY=1` the check runs and the hand-off is not made; without it, or with any other value, the hand-off is made.
 - run_tests.py - `workflows/ai-style-guard/tests/run_tests.py` [[workflows/ai-style-guard/tests/CONTEXT]] - One-command unittest discovery runner; bootstraps into the project `.venv` via `ensure_project_runtime()` before discovery (the config-loader tests read the tells config through PyYAML), then exits non-zero on any failure.
 
 ## Inputs
@@ -34,3 +35,4 @@ Unit tests for the AI-style guard. They exercise the fiddly diff hunk parser wit
 - 2026-07-05 - `run_tests.py` now bootstraps into the project `.venv` via `ensure_project_runtime()` before discovery, so the documented `python workflows/ai-style-guard/tests/run_tests.py` command passes under a plain interpreter that lacks PyYAML (the config-loader tests import the guard and call `load_config`, which reads the config through PyYAML). No test-count change. Codex review-fix pass on the runtime-bootstrap work.
 - 2026-08-04 - The one fixture write in `test_ai_style_guard.py` converted from `Path.write_text(..., encoding="utf-8")` to `write_bytes`, so it stops writing a CRLF fixture on Windows and stops breaking the newline half of the AGENTS.md text-I/O rule. `write_bytes` rather than `Path.write_text(newline=...)`, which is a 3.10 API against the stated 3.9 floor. Part of the pass clearing the last 50 sites project-wide; `encoding` became a close-out blocking label in the same change, so the next one fails a gate instead of being reported and ignored. Test count unchanged at 20; no assertion touched.
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.
+- 2026-10-07 - Added test_clean_copy_runtime.py (3 tests) for the clean-copy runtime rule (orchestrator isolation S3, decision 23). With the hand-off always skipped, never skipped, and the marker read loosely, a test fails each time.

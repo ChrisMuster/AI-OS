@@ -16,7 +16,10 @@ Design notes:
   - Fail mode: a detected violation -> block; ANY hook/tool failure (unparseable
     event, a rule crash, a missing adapter) -> allow + fire-log. A tooling bug
     must never freeze the agent, and the git pre-commit + audit are the durable
-    backstop. No rule fails closed on a hook error.
+    backstop. No rule fails closed on a hook error. The one exception is not a
+    rule: a BOOK_DRAGON_ROOT set to anything but a folder holding AGENTS.md
+    exits 2 (block) in every mode, before the fail-safe, since checking some
+    other folder than the one meant would be a silent allow.
   - It is infrastructure, not a logged workflow run: blocks and trial-rule warns
     go to a gitignored fire-log, never to LOG.md (which records workflow
     changes, not per-fire activity).
@@ -49,6 +52,39 @@ from rules import rules_for  # noqa: E402
 WORKFLOW_DIR = SCRIPT_DIR.parent
 # Script-relative fallback root: scripts -> rule-hooks -> workflows -> project.
 SCRIPT_RELATIVE_ROOT = SCRIPT_DIR.parent.parent.parent
+
+# BOOK_DRAGON_ROOT names the project when this script runs from a copy outside it
+# (the review orchestrator's trusted host copy). Set, it beats the AI channel and
+# git; set to anything but an existing folder holding AGENTS.md, main() exits 2,
+# which a Claude Code hook reads as a block, so a bad value fails closed rather
+# than checking some other folder. Written out here rather than shared, because a
+# trusted copy holds this workflow's folder and nothing else.
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+
+
+def root_override():
+    """(root, None) for a valid BOOK_DRAGON_ROOT, (None, None) when it is unset,
+    (None, message) when it is set to anything else. Never raises or exits, so
+    it is safe at import time; main() turns the message into exit 2."""
+    value = os.environ.get(ROOT_ENV)
+    if value is None:
+        return None, None
+    root = Path(value)
+    try:
+        valid = bool(value) and root.is_dir() and (root / "AGENTS.md").is_file()
+    except OSError:
+        valid = False
+    if not valid:
+        return None, (f"{ROOT_ENV} is set to {value!r}, which is not an existing "
+                      "folder holding AGENTS.md.")
+    return root.resolve(), None
+
+
+# The fire-log is project data, so with a valid override it is the overridden
+# project's; BOOK_DRAGON_FIRE_LOG (below) beats both.
+_OVERRIDE_ROOT = root_override()[0]
+_DEFAULT_FIRE_LOG = ((_OVERRIDE_ROOT / "workflows" / "rule-hooks" / "fire-log.jsonl")
+                     if _OVERRIDE_ROOT else WORKFLOW_DIR / "fire-log.jsonl")
 # Overridable so a test that runs this file as a SUBPROCESS can redirect it. An
 # in-process test monkeypatches this constant; a child process has its own
 # memory and re-resolves it from the script's location, so the patch cannot
@@ -57,8 +93,7 @@ SCRIPT_RELATIVE_ROOT = SCRIPT_DIR.parent.parent.parent
 # An environment variable rather than a CLI flag because it is read at import,
 # before any writer can fire: one of the four writers is the crash handler in
 # main(), which can fire before argument parsing has happened.
-FIRE_LOG = Path(os.environ.get("BOOK_DRAGON_FIRE_LOG")
-                or WORKFLOW_DIR / "fire-log.jsonl")
+FIRE_LOG = Path(os.environ.get("BOOK_DRAGON_FIRE_LOG") or _DEFAULT_FIRE_LOG)
 
 REMINDER = """[Book Dragon - rule reminders re-injected at session start]
 - Permission gate: present your plan and wait for an explicit "go ahead" before
@@ -134,8 +169,13 @@ def _same_path(a, b):
 
 
 def resolve_project_root(ai_id, event):
-    """Resolve the project root: AI channel -> git -> script-relative, with a
-    read-only signature test adjudicating when the channel and git disagree."""
+    """Resolve the project root: a valid BOOK_DRAGON_ROOT first, then AI channel
+    -> git -> script-relative, with a read-only signature test adjudicating when
+    the channel and git disagree. (An invalid BOOK_DRAGON_ROOT never gets here:
+    main() has already exited 2.)"""
+    override, _problem = root_override()
+    if override is not None:
+        return override
     adapter = adapters.get(ai_id)
     channel = None
     if adapter is not None:
@@ -355,7 +395,7 @@ def run_precommit():
     close-out is the deterministic gate. If the commit is already blocked for
     personal data, the doc-sync advisory is skipped.
     """
-    root = _git_toplevel() or SCRIPT_RELATIVE_ROOT
+    root = root_override()[0] or _git_toplevel() or SCRIPT_RELATIVE_ROOT
     code = _precommit_personal_data(root)
     if code != 0:
         return code
@@ -375,6 +415,13 @@ def main():
     parser.add_argument("--precommit", action="store_true",
                         help="Run the git pre-commit personal-data gate.")
     args = parser.parse_args()
+
+    # Before the fail-safe below, which allows on any error: a bad root override
+    # is refused in every mode, never allowed through (fails closed).
+    _override, problem = root_override()
+    if problem:
+        sys.stderr.write(f"[rule-hooks] {problem}\n")
+        return 2
 
     try:
         if args.reinject:

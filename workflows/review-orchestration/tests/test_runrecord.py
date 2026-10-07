@@ -34,6 +34,7 @@ def _load(name):
     return module
 
 
+brief = _load("brief")  # runrecord takes the project root from brief
 runrecord = _load("runrecord")
 
 NOW = datetime(2026, 9, 25, 9, 5, 7, tzinfo=timezone(timedelta(hours=1)))

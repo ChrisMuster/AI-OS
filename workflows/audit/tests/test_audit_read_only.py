@@ -10,6 +10,7 @@ ones being written.
 """
 
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -65,7 +66,12 @@ class RunAuditReadOnlyTests(unittest.TestCase):
         keyword arguments and how often each advisory check ran."""
         stubs = {name: mock.patch.object(run, name, return_value=[])
                  for name in ("collect_dirs", "check_python_scripts", *ADVISORY_CHECKS)}
-        with mock.patch.object(run, "run_graph_validation", return_value=[]) as graph:
+        # Without the clean-copy marker, whatever the environment running the suite
+        # holds: under it two of the five checks are left to the host by design
+        # (tests/test_root_and_clean_copy.py), which is not what this counts.
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(run, "run_graph_validation", return_value=[]) as graph:
+            os.environ.pop("BOOK_DRAGON_CLEAN_COPY", None)
             mocks = {name: patcher.start() for name, patcher in stubs.items()}
             try:
                 run.run_audit(with_graph=True, **kw)

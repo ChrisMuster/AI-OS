@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-07
 
 ## Purpose
 Holds the AI-style guard's entry point and its pure, unit-tested helpers. The script collects added or changed lines from `git diff` (plus new untracked files), then runs the tier-1 and tier-2 detectors against each added line, reporting file:line locations. It is read-only by design. `main()` bootstraps into the project `.venv` (via `ensure_project_runtime()`) before scanning, so PyYAML is guaranteed and this guard runs rather than silently skipping.
@@ -11,6 +11,7 @@ Holds the AI-style guard's entry point and its pure, unit-tested helpers. The sc
 ## Inputs
 - `git diff` output and new untracked files under the project root.
 - `workflows/ai-style-guard/config/ai-tells.yaml` [[workflows/ai-style-guard/config/CONTEXT]] for the tells definition.
+- Optionally `BOOK_DRAGON_CLEAN_COPY` (orchestrator isolation S3, decision 23): set to `1` only inside the review orchestrator's offline container, whose copy of the project has no `.venv`. `main()` then skips the hand-off and runs under the interpreter it was started with, the container image's, which is built from the `.venv` versions; PyYAML still fails loudly if missing. Any other value, or none, keeps the hand-off.
 
 ## Outputs
 - A human report or `--json` payload on stdout. No files written.
@@ -33,3 +34,4 @@ Holds the AI-style guard's entry point and its pure, unit-tested helpers. The sc
 - 2026-06-25 - Initial creation. `run.py` with the diff hunk parser, change collector, config loader, tier-1/tier-2 detectors, and the CLI flag set.
 - 2026-07-04 - `main()` now bootstraps into the project `.venv` via `ensure_project_runtime()` and `load_config` imports PyYAML unconditionally, so the guard runs rather than silently skipping when PyYAML is absent (a guard that skips reports a false clean).
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.
+- 2026-10-07 - With `BOOK_DRAGON_CLEAN_COPY=1` only, `main()` skips the `.venv` hand-off (orchestrator isolation S3, the user's decision 23), so the guard runs in the review orchestrator's offline container instead of reporting DEGRADED. Scoped to this guard; the shared `runtime.ensure_project_runtime` is unchanged. Inputs updated; tested in `tests/test_clean_copy_runtime.py`.

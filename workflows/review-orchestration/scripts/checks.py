@@ -29,16 +29,54 @@ Four checks, run by the script under the project's Python, never by a model:
 A check that cannot run at all is a finding too: a check that did not run has not
 passed. Every finding carries the reviewer's fields (title, severity, file, evidence,
 fix), so the ledger labels both kinds the same way.
+
+Every process started here runs on the host, so none is given the clean-copy marker
+(``BOOK_DRAGON_CLEAN_COPY``) whatever the orchestrator's own environment holds:
+with it, the audit and link checks would leave the personal-file checks to "the
+host", which is where they are already running (plan 4.3).
+
+Trusted host copies (plan 4.4). ``write_trusted_copies`` writes ``git archive`` of
+the four host checks' workflow folders, at the run's start commit, into a folder
+outside the project; ``trusted_host_checks`` runs them from there against the live
+project (``BOOK_DRAGON_ROOT``), with bytecode off, and reads their results: the
+targeted audit and doc-sync as above, ``personal_data`` (the file and the kind of
+each hit, never the matched text) and ``link_check`` (each dead link). Built in
+stage S3; the loop starts calling them in S6 (the user's decision A, 2026-10-07).
 """
 
+import io
 import json
+import os
 import shlex
 import subprocess
 import sys
+import tarfile
+from pathlib import Path
 
 CHECK_TIMEOUT = 1800
 EVIDENCE_TAIL = 1500
 PYTHON_NAMES = {"python", "python3", "py", "python.exe"}
+
+CLEAN_COPY_ENV = "BOOK_DRAGON_CLEAN_COPY"
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+
+# The host checks run from trusted copies, each a whole workflow folder.
+TRUSTED_WORKFLOWS = ("workflows/audit", "workflows/doc-sync-guard",
+                     "workflows/personal-data-guard", "workflows/link-check")
+
+# How an AI is told what a personal-data hit is: the guard's `kind`, in words. The
+# matched text itself never leaves the round's personal-data.json.
+PERSONAL_DATA_KINDS = {
+    "email": "an email address",
+    "home_path": "a personal home path",
+    "os_username": "the OS username",
+    "personal_name": "a personal name",
+    "denylisted_term": "a denylisted term",
+}
+
+
+class TrustedCopyError(Exception):
+    """The trusted copies could not be written."""
 
 
 def _finding(title, severity, file, evidence, fix):
@@ -46,10 +84,20 @@ def _finding(title, severity, file, evidence, fix):
             "evidence": evidence[-EVIDENCE_TAIL:], "fix": fix}
 
 
-def _run(root, argv, timeout=CHECK_TIMEOUT):
+def host_env(extra=None):
+    """The orchestrator's environment without the clean-copy marker, plus
+    ``extra``. Every process the orchestrator starts on the host gets this."""
+    env = {key: value for key, value in os.environ.items()
+           if key.upper() != CLEAN_COPY_ENV}
+    env.update(extra or {})
+    return env
+
+
+def _run(root, argv, timeout=CHECK_TIMEOUT, env=None):
     try:
         result = subprocess.run(argv, cwd=str(root), capture_output=True,
-                                encoding="utf-8", errors="replace", timeout=timeout)
+                                encoding="utf-8", errors="replace", timeout=timeout,
+                                env=env if env is not None else host_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, "", f"{type(exc).__name__}: {exc}"
     return result.returncode, result.stdout, result.stderr
@@ -126,13 +174,22 @@ def close_out(root, python):
     return findings, lines
 
 
-def doc_sync(root, python, edit_paths):
-    code, out, err = _run(root, [python, "workflows/doc-sync-guard/scripts/run.py",
-                                 "--json"])
+def doc_sync(root, python, edit_paths, trusted=None):
+    """``trusted``: run the trusted copy in that folder rather than the live tree's."""
+    if trusted is None:
+        code, out, err = _run(root, [python, "workflows/doc-sync-guard/scripts/run.py",
+                                     "--json"])
+    else:
+        code, out, err = _trusted_run(root, python, trusted, "workflows/doc-sync-guard",
+                                      ["--json"])
     try:
+        # Without --strict the guard exits 0 whenever it finishes, so any other
+        # exit is a check that did not finish, whatever it printed (R7-1).
+        if code != 0:
+            raise ValueError(f"exit {code}")
         reported = json.loads(out).get("findings", [])
     except (ValueError, AttributeError):
-        detail = (out + err).strip() or f"exit {code}"
+        detail = f"exit {code}: " + ((out + err).strip() or "no output")
         return ([_finding("doc-sync did not run", "blocker", "(doc-sync)", detail,
                           "Make doc-sync run.")],
                 [f"doc-sync: could not read its result ({detail[-300:]})"])
@@ -162,11 +219,17 @@ def doc_sync(root, python, edit_paths):
     return findings, lines
 
 
-def audit(root, python, directories):
+def audit(root, python, directories, trusted=None):
+    """``trusted``: run the trusted copy in that folder, read-only, rather than the
+    live tree's."""
     if not directories:
         return [], ["targeted audit: no changed directory to check"]
-    code, out, err = _run(root, [python, "workflows/audit/scripts/run.py", "--context",
-                                 *directories])
+    if trusted is None:
+        code, out, err = _run(root, [python, "workflows/audit/scripts/run.py",
+                                     "--context", *directories])
+    else:
+        code, out, err = _trusted_run(root, python, trusted, "workflows/audit",
+                                      ["--context", *directories, "--read-only"])
     if code is None:
         return ([_finding("targeted audit did not run", "blocker", "(audit)", err,
                           "Make the audit run.")], [f"targeted audit: {err}"])
@@ -210,6 +273,162 @@ def acceptance(root, python, commands):
                                      (out + err).strip() or f"exit {code}",
                                      "Make the acceptance check exit 0."))
     return findings, lines
+
+
+# ---------------------------------------------------------------------------
+# Trusted host copies (plan 4.4)
+# ---------------------------------------------------------------------------
+def write_trusted_copies(root, head, dest, workflows=TRUSTED_WORKFLOWS):
+    """Write ``git archive <head>`` of each workflow folder into ``dest``, keeping
+    project paths (``dest/workflows/audit/...``). Refuses a workflow folder that
+    already exists under ``dest`` (a trusted copy is never overwritten) and one
+    the commit does not hold. Returns ``dest``."""
+    dest = Path(dest)
+    existing = [w for w in workflows if (dest / w).exists()]
+    if existing:
+        raise TrustedCopyError(f"trusted copy already exists: {', '.join(existing)}")
+    try:
+        result = subprocess.run(["git", "archive", "--format=tar", head, "--", *workflows],
+                                cwd=str(root), capture_output=True, timeout=120,
+                                env=host_env())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise TrustedCopyError(f"git archive could not run: {exc}") from exc
+    if result.returncode != 0:
+        raise TrustedCopyError("git archive failed: "
+                               + result.stderr.decode("utf-8", "replace").strip())
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(result.stdout)) as archive:
+        archive.extractall(dest, filter="data")
+    missing = [w for w in workflows if not (dest / w / "scripts" / "run.py").is_file()]
+    if missing:
+        raise TrustedCopyError(f"the commit holds no {', '.join(missing)} run.py")
+    return dest
+
+
+def trusted_env(root):
+    """A trusted host check's environment: the project named by BOOK_DRAGON_ROOT,
+    no bytecode written (in the copy or the project), and no clean-copy marker."""
+    return host_env({ROOT_ENV: str(root), "PYTHONDONTWRITEBYTECODE": "1"})
+
+
+def _trusted_run(root, python, trusted, workflow, args):
+    script = Path(trusted) / workflow / "scripts" / "run.py"
+    return _run(root, [python, str(script), *args], env=trusted_env(root))
+
+
+def personal_data(root, python, trusted, round_dir):
+    """The trusted personal-data guard. A FAIL is a blocker and a WARN major, each
+    naming the file and the kind of hit from the guard's ``file`` and ``kind``
+    fields, never the matched text, and never parsing the message. The guard's
+    whole output goes to ``round_dir/personal-data.json`` and nowhere else; a
+    result that cannot be read, or a hit missing either field, is a blocker
+    naming only the check."""
+    code, out, err = _trusted_run(root, python, trusted, "workflows/personal-data-guard",
+                                  ["--check", "--json"])
+    round_dir = Path(round_dir)
+    round_dir.mkdir(parents=True, exist_ok=True)
+    with open(round_dir / "personal-data.json", "w", encoding="utf-8",
+              newline="\n") as handle:
+        handle.write(json.dumps({"exit_code": code, "stdout": out, "stderr": err},
+                                indent=2) + "\n")
+    where = "The guard's output is in this round's personal-data.json."
+    try:
+        payload = json.loads(out)
+        reported = payload["findings"]
+        if not isinstance(reported, list):
+            raise TypeError("findings is not a list")
+    except (ValueError, KeyError, TypeError):
+        return ([_finding("personal-data check did not run", "blocker", "(personal-data)",
+                          f"Its result could not be read (exit {code}). {where}",
+                          "Make the personal-data check run.")],
+                [f"personal-data check: could not read its result (exit {code})"])
+    # The guard exits 0 with no FAIL and 1 with at least one; any other pairing is
+    # a check that did not finish as it reports (R7-1).
+    has_fail = any(isinstance(item, dict) and item.get("severity") == "FAIL"
+                   for item in reported)
+    if (code, has_fail) not in ((0, False), (1, True)):
+        return ([_finding("personal-data check did not run", "blocker", "(personal-data)",
+                          f"It exited {code}, which does not match its result. {where}",
+                          "Make the personal-data check run.")],
+                [f"personal-data check: exit {code} does not match its result"])
+    # A pass needs the guard's own statement that it scanned the files (R9-1): a
+    # scan git could not list files for exits 0 with no finding but a note.
+    if payload.get("scanned") is not True:
+        return ([_finding("personal-data check did not run", "blocker", "(personal-data)",
+                          f"It does not report a completed scan. {where}",
+                          "Make the personal-data check scan the project's files.")],
+                ["personal-data check: no completed scan reported"])
+    findings, lines, incomplete = [], [], 0
+    for item in reported:
+        severity = item.get("severity") if isinstance(item, dict) else None
+        if severity not in ("FAIL", "WARN"):
+            continue
+        file, kind = item.get("file"), item.get("kind")
+        if not isinstance(file, str) or not file or kind not in PERSONAL_DATA_KINDS:
+            incomplete += 1
+            continue
+        what = PERSONAL_DATA_KINDS[kind]
+        lines.append(f"personal-data {severity}: {what} in {file}")
+        findings.append(_finding(
+            f"personal data: {what} in {file}",
+            "blocker" if severity == "FAIL" else "major", file,
+            f"The personal-data guard reports {what} in {file} ({severity}). The "
+            f"matched text is not shown. {where}",
+            f"Remove {what} from {file}, or keep it only in a gitignored file."))
+    if incomplete:
+        lines.append(f"personal-data check: {incomplete} hit(s) without a file or kind")
+        findings.append(_finding(
+            "personal-data check reported a hit it did not place", "blocker",
+            "(personal-data)",
+            f"{incomplete} hit(s) carried no file or no known kind. {where}",
+            "Make the personal-data check name the file and kind of every hit."))
+    if not findings:
+        lines.append("personal-data: clean")
+    return findings, lines
+
+
+def link_check(root, python, trusted):
+    """The trusted link check: each dead link is a major finding naming its file
+    and target; a result that cannot be read is a blocker."""
+    code, out, err = _trusted_run(root, python, trusted, "workflows/link-check",
+                                  ["--audit", "--no-log", "--json"])
+    try:
+        # The link check exits 0 whenever it finishes; dead links are in the JSON.
+        # Any other exit is a check that did not finish (R7-1).
+        if code != 0:
+            raise ValueError(f"exit {code}")
+        dead = json.loads(out)["dead_links"]
+        if not isinstance(dead, list) or not all(
+                isinstance(d, dict) and isinstance(d.get("file"), str)
+                and isinstance(d.get("target"), str) for d in dead):
+            raise TypeError("dead_links is not a list of file and target")
+    except (ValueError, KeyError, TypeError):
+        detail = f"exit {code}: " + ((out + err).strip() or "no output")
+        return ([_finding("link check did not run", "blocker", "(link check)", detail,
+                          "Make the link check run.")],
+                [f"link check: could not read its result ({detail[-300:]})"])
+    findings = [_finding(f"dead link: [[{d['target']}]] in {d['file']}", "major",
+                         d["file"], f"{d['file']} links to [[{d['target']}]], which "
+                         "points to no file.",
+                         "Point the link at an existing file, or remove it.")
+                for d in dead]
+    lines = ([f"link check: dead [[{d['target']}]] in {d['file']}" for d in dead]
+             or ["link check: clean"])
+    return findings, lines
+
+
+def trusted_host_checks(root, python, trusted, edit_paths, directories, round_dir):
+    """The four trusted host checks, in plan 4.4's order: the targeted audit,
+    doc-sync, the personal-data guard and the link check. Returns (findings, text)
+    as run_all does."""
+    findings, lines = [], []
+    for part in (audit(root, python, directories, trusted=trusted),
+                 doc_sync(root, python, edit_paths, trusted=trusted),
+                 personal_data(root, python, trusted, round_dir),
+                 link_check(root, python, trusted)):
+        findings += part[0]
+        lines += part[1]
+    return findings, "\n".join(lines)
 
 
 def run_all(root, edit_paths, directories, commands, python=None):

@@ -53,7 +53,29 @@ except Exception:
 # Paths
 # ---------------------------------------------------------------------------
 SCRIPT_DIR   = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
+
+# BOOK_DRAGON_ROOT names the project to audit when this script runs from a copy
+# outside it (the review orchestrator's trusted host copy). Every path below that
+# is project data follows it. Written out here rather than shared, because a
+# trusted copy holds this workflow's folder and nothing else.
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+
+
+def project_root(script_dir: Path = SCRIPT_DIR) -> Path:
+    """BOOK_DRAGON_ROOT when set, else three folders above this script. A set
+    value that is not an existing folder holding AGENTS.md exits 2."""
+    value = os.environ.get(ROOT_ENV)
+    if value is None:
+        return script_dir.parent.parent.parent
+    root = Path(value)
+    if not value or not root.is_dir() or not (root / "AGENTS.md").is_file():
+        sys.stderr.write(f"{ROOT_ENV} is set to {value!r}, which is not an "
+                         "existing folder holding AGENTS.md.\n")
+        sys.exit(2)
+    return root.resolve()
+
+
+PROJECT_ROOT = project_root()
 WORKFLOW_DIR = PROJECT_ROOT / "workflows" / "audit"
 WORKFLOW_LOG = WORKFLOW_DIR / "LOG.md"
 ROOT_LOG     = PROJECT_ROOT / "LOG.md"
@@ -95,6 +117,27 @@ ARCHIVE_REFERENCE_RE = re.compile(
     re.MULTILINE,
 )
 MAX_REVISION_HISTORY_ENTRIES = 15
+
+# BOOK_DRAGON_CLEAN_COPY=1 is set only inside the review orchestrator's offline
+# container, over a copy of the project that holds no gitignored file. There a
+# missing LOG.md is expected, and the personal-data and doc-sync checks, which
+# need the personal files, run on the host instead.
+CLEAN_COPY_ENV = "BOOK_DRAGON_CLEAN_COPY"
+
+
+def clean_copy() -> bool:
+    return os.environ.get(CLEAN_COPY_ENV) == "1"
+
+
+def git_ignores(path: Path) -> bool:
+    """Whether git ignores ``path`` in this project. A git that cannot answer
+    counts as not ignored, so the finding stays a FAIL."""
+    try:
+        result = subprocess.run(["git", "check-ignore", "-q", "--", rel(path)],
+                                cwd=str(PROJECT_ROOT), capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -863,7 +906,13 @@ def audit_directory(directory: Path, subdirs: list[Path] | None = None) -> list[
 
     # --- Structural: required files ---
     if not context_path.exists():
-        findings.append(("FAIL", label, "Missing CONTEXT.md"))
+        # In the clean copy a CONTEXT.md git ignores (a personal folder's, such as
+        # wikis/) is absent by design; one git does not ignore is still missing.
+        if clean_copy() and git_ignores(context_path):
+            findings.append(("INFO", label,
+                             "CONTEXT.md is checked on the host, not in the clean copy"))
+        else:
+            findings.append(("FAIL", label, "Missing CONTEXT.md"))
     else:
         content = context_path.read_text(encoding="utf-8")
 
@@ -923,7 +972,11 @@ def audit_directory(directory: Path, subdirs: list[Path] | None = None) -> list[
                         ))
 
     if not log_path.exists():
-        findings.append(("FAIL", label, "Missing LOG.md"))
+        if clean_copy():
+            findings.append(("INFO", label,
+                             "LOG.md is checked on the host, not in the clean copy"))
+        else:
+            findings.append(("FAIL", label, "Missing LOG.md"))
 
     return findings
 
@@ -1112,16 +1165,26 @@ def run_audit(with_graph: bool = True,
     # Encoding hygiene check (full mode only; always runs, advisory)
     findings.extend(run_encoding_check())
 
-    # Personal-data leak check (full mode only; always runs, advisory)
-    findings.extend(run_personal_data_check())
+    # Personal-data leak check (full mode only; advisory). In the clean copy it
+    # is not run and not reported as passed: it runs on the host.
+    if clean_copy():
+        findings.append(("INFO", "personal-data",
+                         "personal-data check runs on the host, not in the clean copy"))
+    else:
+        findings.extend(run_personal_data_check())
 
     # AI-style tell check (full mode only; always runs, advisory)
     findings.extend(run_ai_style_check())
 
     # CONTEXT.md / LOG.md drift check (full mode only; advisory here, working-tree
     # scope; close-out hard-fails on a doc-sync WARN, while a doc-sync DEGRADED
-    # is non-blocking and routes down its DEGRADED path)
-    findings.extend(run_doc_sync_check())
+    # is non-blocking and routes down its DEGRADED path). Not run in the clean
+    # copy, where LOG.md files are absent: it runs on the host.
+    if clean_copy():
+        findings.append(("INFO", "doc-sync",
+                         "doc-sync check runs on the host, not in the clean copy"))
+    else:
+        findings.extend(run_doc_sync_check())
 
     # SKILL.md Hardening-section check (full mode only; advisory here; close-out
     # hard-fails on a skill-hardening WARN, while a skill-hardening DEGRADED is
