@@ -241,10 +241,11 @@ BLOCKING_LABELS = {"doc-sync": "drift", "skill-hardening": "gap",
                    "encoding": "violation"}
 
 
-def gate_audit():
+def gate_audit(read_only=False):
     try:
         mod = load_module(AUDIT_RUN, "closeout_audit")
-        findings, dir_count = mod.run_audit(with_graph=True)
+        # read_only: the graph validation the audit starts writes no LOG.md entry.
+        findings, dir_count = mod.run_audit(with_graph=True, read_only=read_only)
         fails = sum(1 for f in findings if f[0] == "FAIL")
         # The single in-process audit call is reused: its findings are just
         # inspected for the blocking labels. Each label's blocking messages are
@@ -470,13 +471,21 @@ def main():
         print("--read-only and --repair cannot be combined.")
         sys.exit(2)
 
+    if args.read_only:
+        # Before the re-exec and before anything is imported or started: every
+        # process this run starts (the re-exec, the audit's guards and graph
+        # validation, the test suites) inherits it, so none writes a bytecode
+        # cache under the project. No subprocess call here replaces the env.
+        os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+        sys.dont_write_bytecode = True
+
     reexec_under_venv()
 
     if not args.read_only:
         append_log("started", f"Close-out verifier started (scope: {args.scope}).")
 
     selected, scope_label = select_suites(args.scope)
-    gates = [gate_audit(), gate_link(), gate_tests(selected)]
+    gates = [gate_audit(read_only=args.read_only), gate_link(), gate_tests(selected)]
     degraded = collect_degraded(gates)
 
     # A DEGRADED finding means some check scope was skipped. --repair can fix

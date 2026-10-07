@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-08-05
+**Last modified:** 2026-10-07
 
 ## Purpose
 Contains the audit script for the audit workflow. run.py can walk the full project or validate only named context directories.
@@ -13,26 +13,27 @@ No required inputs. Optional flags:
 - `--save` — Saves the report to `workflows/audit/last-report.md` [[workflows/audit/last-report]].
 - `--no-graph` — Skips the structural knowledge-graph validation in a full audit (no effect in `--context` mode).
 - `--context <directory> [<directory> ...]` — Checks only the named project-relative directories or CONTEXT.md files.
+- `--read-only` - Writes nothing: no LOG.md entry here, and a full audit passes `--no-log` to the knowledge-graph validation so it writes none either; `--save` is refused. `run_audit(with_graph, read_only)` takes the same switch for in-process callers (the read-only close-out verifier).
 
 ## Outputs
 - Audit report printed to stdout.
 - Optionally: `workflows/audit/last-report.md` [[workflows/audit/last-report]] (when --save is passed).
-- Updated `workflows/audit/LOG.md` — started and completed entries appended.
-- Updated root `LOG.md` — completed entry appended.
+- Updated `workflows/audit/LOG.md` - started and completed entries appended (not with `--read-only`).
+- Updated root `LOG.md` - completed entry appended (not with `--read-only`).
 
 ## Steps
 Run from anywhere:
 
 ```
-python workflows/audit/scripts/run.py [--save]
-python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
+python workflows/audit/scripts/run.py [--save] [--read-only]
+python workflows/audit/scripts/run.py --context <directory> [<directory> ...] [--read-only]
 ```
 
 ## Dependencies
 - All `CONTEXT.md` and `LOG.md` files in the project — the script reads these to perform its checks.
-- `workflows/audit/LOG.md` — Appended on every run.
-- `LOG.md` (root) — Appended on every run.
-- `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]] - A full audit shells out to its `validate --json --no-backrefs` command (structural graph only) and merges the WARN/FAIL findings. Subprocess, not import (both workflows ship a `common.py`/`parser.py`, so importing would risk a module-name collision); a missing or broken graph reports a DEGRADED finding.
+- `workflows/audit/LOG.md` - Appended on every run but a `--read-only` one.
+- `LOG.md` (root) - Appended on every run but a `--read-only` one.
+- `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]] - A full audit shells out to its `validate --json --no-backrefs` command (structural graph only; plus `--no-log` in read-only mode) and merges the WARN/FAIL findings. Subprocess, not import (both workflows ship a `common.py`/`parser.py`, so importing would risk a module-name collision); a missing or broken graph reports a DEGRADED finding.
 - `workflows/encoding-guard/scripts/run.py` [[workflows/encoding-guard/scripts/CONTEXT]] - A full audit shells out to its `--check --json` command and merges the WARN and FAIL findings under an `encoding` label, passing its own DEGRADED findings through. Subprocess, not import; a missing or broken checker reports a DEGRADED finding.
 - `workflows/personal-data-guard/scripts/run.py` [[workflows/personal-data-guard/scripts/CONTEXT]] - A full audit shells out to its `--check --json` command and merges the WARN/FAIL findings under a `personal-data` label. Subprocess, not import; a missing or broken guard reports a DEGRADED finding.
 - `workflows/ai-style-guard/scripts/run.py` [[workflows/ai-style-guard/scripts/CONTEXT]] - A full audit shells out to its `--check --json --base main` command and merges the WARN findings under an `ai-style` label. Subprocess, not import; a missing or broken guard reports a DEGRADED finding.
@@ -50,8 +51,7 @@ python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
 - The unlisted-subdirectory check depends on git for ignored child-directory suppression. If git is unavailable, ignored child directories may be reported until the audit is re-run in a normal repository checkout.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-08-04.
-- 2026-06-26 - Fed the unlisted-subdirectory check from `collect_dirs`' precomputed non-ignored set, eliminating the last per-directory `git check-ignore` spawn: `audit_directory` gained an optional `subdirs` parameter, and `run_audit` indexes the walk result by parent and passes each directory its immediate children. `get_immediate_subdirs` stays as the per-dir `--context` fallback. Full-audit `git check-ignore` spawns dropped from 26 to 4; audit report byte-for-byte identical. Extended `tests/test_audit_subdir_filter.py` (+3 tests).
+Earlier history archived to LOG.md on 2026-10-07.
 - 2026-07-04 - The four advisory hooks now return a first-class DEGRADED finding (was a dropped INFO) when they cannot run, via the new shared `degraded()` helper (`repairable` toggles a setup.py remediation vs a missing-workflow note). `format_report` counts DEGRADED and renders a `## Degraded (did not run)` section; the completion note reports the degraded count.
 - 2026-07-06 - Doc-sync-guard hook: a full audit now also runs the doc-sync guard (`--check --json`, default working-tree scope) and merges its WARN findings under a `doc-sync` label (subprocess, not import; degrades to a DEGRADED finding on failure). Added the `doc_sync_findings` merge helper and the `run_doc_sync_check` wrapper, and `tests/test_audit_doc_sync_hook.py`. Advisory here; close-out turns doc-sync findings into a hard fail via the label (Option B).
 - 2026-07-06 - Raised `MAX_REVISION_HISTORY_ENTRIES` from 10 to 15 (matching the AGENTS.md Revision History archiving rule). The doc-sync guard now requires an own-directory Revision History entry for every content change, so entries accumulate faster; 15 gives headroom without hurting readability. No test asserts the number, so only the constant and the AGENTS.md rule text changed.
@@ -65,3 +65,4 @@ Earlier history archived to LOG.md on 2026-08-04.
 - 2026-08-04 - Comment correction in `run.py`, no behaviour change: the encoding-hook section comment listed the three findings the hook merged and was left behind when encoding-guard gained a fourth (a text-mode write with no explicit `newline=`). Corrected by the same `*.py` sweep the entry above describes, which is the point of running it: this comment is the contract a reader of the hook sees, and it had gone stale within hours of the guard changing.
 - 2026-08-05 - The same comment corrected again, which is the point worth recording. The entry above fixed it by adding the fourth finding and stopped there, so it went stale twice more inside a day: it never gained the CR line-ending finding added the same afternoon, and it did not gain the value findings added on 2026-08-05. It now lists all six and, separately, names what happens downstream, since `encoding` joined close-out's `BLOCKING_LABELS` and a comment saying only "additive and advisory" now describes the audit's own behaviour while implying something false about the gate. A per-instance correction leaves a comment that goes stale on the next change; the durable form is to state what the hook merges and what consumes it, which is what this pass wrote.
 - 2026-08-05 - `encoding_findings` widened from WARN/FAIL to WARN/FAIL/DEGRADED, so the guard's new per-file DEGRADED (a `.py` it could not parse) reaches the report instead of being filtered out on the way in. Dropping it would make an unchecked file look identical to a clean one; mapping it to WARN would hard-fail close-out over a file nobody claims is broken. Passed through unwrapped rather than through `degraded()`, since it names a file the guard skipped rather than a runtime a reinstall would fix, and the repair hint would be wrong. INFO is still the one severity this helper drops. The hook's section comment was updated in the same edit to say that both a missing guard and an unparseable file report DEGRADED, and that DEGRADED stays non-blocking at close-out where WARN does not.
+- 2026-10-07 - Read-only mode (orchestrator isolation S2): `run.py` gained `--read-only` (no LOG.md entry, `--save` refused), `run_audit` a `read_only` argument and `run_graph_validation` a `no_log` argument, which adds `--no-log` to the knowledge-graph validator's command. Default behaviour unchanged. Inputs, Outputs, Steps and Dependencies updated; tested in `tests/test_audit_read_only.py`.

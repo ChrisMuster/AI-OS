@@ -1,6 +1,6 @@
 # Personal Data Guard
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-07
 
 ## Purpose
 Catches personal data before it can be committed. It is a deterministic, read-only checker that scans only committable files (everything git tracks plus new files git would add, so all gitignored personal content is excluded automatically) for personal markers: real email addresses, personal absolute home paths carrying a real username (for example `C:\Users\<name>`), the user's own name and OS username, and an optional denylist of personal nouns. It mirrors the encoding-guard pattern: a standalone CLI that the full audit also consumes as an additive, advisory hook, so a personal-data leak is caught mechanically at close-out rather than by eye. It enforces the personal-data isolation rules in `AGENTS.md` [[AGENTS]] that previously relied entirely on reviewer discipline. There is deliberately no fix mode, because a leak cannot be safely auto-redacted.
@@ -17,7 +17,7 @@ Catches personal data before it can be committed. It is a deterministic, read-on
 - `config/denylist.txt` (gitignored, optional) - extra personal nouns to flag as WARN.
 
 ## Outputs
-- A findings report on stdout (human text, or `--json` for the audit hook). FAIL for emails, personal home paths, the user's name/username; WARN for denylist nouns; INFO for degraded/skip notes.
+- A findings report on stdout (human text, or `--json` for the audit hook). FAIL for emails, personal home paths, the user's name/username; WARN for denylist nouns; INFO for degraded/skip notes. In `--json`, each hit in a file also carries `file` and `kind` (`email`, `home_path`, `os_username`, `personal_name` or `denylisted_term`), so a caller can say what was found where without repeating the matched value.
 - Exit code 0 when there is no FAIL, 1 when a FAIL exists, so a pre-commit hook or CI can gate on it.
 - No files are written and no LOG.md entry is made on a check run (the guard is read-only, like the audit and the encoding-guard check).
 
@@ -38,8 +38,9 @@ Catches personal data before it can be committed. It is a deterministic, read-on
 - File discovery depends on git. Outside a git checkout, or if git is unavailable, the guard scans nothing and emits a single INFO note - by design, since the gitignore-based scope is the whole point.
 - Detection is pattern- and marker-based, so it is not exhaustive: it catches emails, home paths, the USER.md name, the OS username, and the configured denylist. A personal noun not on the denylist (and not the user's own name) is not caught. The denylist is the tunable surface for project-specific terms.
 - Name markers include each name token of length 3+, so a common first name that doubles as an ordinary word could produce a WARN-grade false positive in tracked prose; such cases should be reworded (tracked files are not meant to carry the user's name in any form).
-- Findings messages quote the matched value, so a saved `--json` report or audit `last-report.md` will contain that value; both outputs are gitignored.
+- Findings messages quote the matched value, so a saved `--json` report or audit `last-report.md` will contain that value; both outputs are gitignored. A caller that must not pass the value on reads `file` and `kind` instead of the message.
 
 ## Revision History
 - 2026-06-25 - Initial creation. Read-only check script with git-scoped discovery, runtime marker derivation from USER.md/.env, email/home-path/name/username detectors with placeholder allowlists, an optional gitignored denylist (WARN), audit-hook integration, and unit tests. First live run flagged the user's name in two AGENTS.md isolation-rule examples; those examples were reworded to a bracketed placeholder.
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13; the scripts and tests CONTEXT files follow. No behaviour change.
+- 2026-10-07 - `--json` findings gained `file` and `kind` for each hit in a file (orchestrator isolation S2), for the review orchestrator's trusted host check, with `tests/test_json_fields.py`. Outputs and Known Issues updated.

@@ -1,6 +1,6 @@
 # Knowledge Graph
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-07
 
 ## Purpose
 Deterministic, script-driven indexer that parses the project's `CONTEXT.md` files and approved root files into a rebuildable node/edge graph, then validates and traverses it. It turns existing project structure and relationships - directory hierarchy, Contents references, Dependencies, and Obsidian `[[links]]` - into queryable indexes for traversal, impact analysis, orphan detection, duplicate detection, and broken-reference validation. The default build covers tracked structural content. Opt-in content layers can be added with repeatable `--layer` flags for memory, wiki, journal, and conversation content. The build and read-only query commands are also exposed to MCP-capable AI clients through the Biblio Tools `build_knowledge_graph` and `query_knowledge_graph` tools; the CLI remains the contract.
@@ -31,7 +31,8 @@ Deterministic, script-driven indexer that parses the project's `CONTEXT.md` file
 1. Build or rebuild the graph index:
    `python workflows/knowledge-graph/scripts/run.py build [--dry-run] [--layer memory] [--layer wiki] [--layer journal] [--layer conversation]`
 2. Validate the graph:
-   `python workflows/knowledge-graph/scripts/run.py validate [--save] [--json] [--no-backrefs]`
+   `python workflows/knowledge-graph/scripts/run.py validate [--save] [--json] [--no-backrefs] [--no-log]`
+   (`--no-log` writes no LOG.md entry; the audit passes it when the read-only close-out verifier runs.)
 3. Query and traverse the graph with read-only commands:
    `node`, `neighbors`, `impact`, `path`, `subtree`, `stats`, `orphans`, `broken`, and `sessions`.
 4. Append LOG.md with a completion or failure entry.
@@ -66,3 +67,4 @@ Earlier history archived to LOG.md on 2026-06-24.
 - 2026-08-12 - Guard-coverage stage 3c: `last-report.md` added to Outputs. It is written by `validate --save` and was described in Contents and Known Issues but not in the section a reader consults for what the workflow writes. Documentation gap rather than a privacy finding, since the path is gitignored and already carries a tracked inventory row. It matters because stage 3b's unregistered-output detection reads Outputs rather than prose.
 - 2026-08-23 - Documented the saved index as an optional cache rather than the graph, in Outputs and Known Issues, after its two-month-old `meta.json` was read as evidence that the graph itself had gone stale. It had not: every command rebuilds in memory from the current files, `--from-index` is opt-in and accepted only by `stats`, and the full audit's graph findings therefore come from a fresh build every run. The saved figures were 185 nodes and 571 edges against a live 317 and 1288, a gap wide enough to look like a fault, which is why the misreading is recorded as a Known Issue rather than only corrected in Outputs. The index was rebuilt in the same pass so the saved files match the current project. No behavioural change.
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13; the scripts and tests CONTEXT files follow. No behaviour change.
+- 2026-10-07 - `validate` gained `--no-log` (no LOG.md entry), with tests; Steps updated. Orchestrator isolation stage S2, for the read-only close-out verifier.

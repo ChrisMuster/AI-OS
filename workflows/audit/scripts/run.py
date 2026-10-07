@@ -21,13 +21,15 @@ cannot be validated. Use --no-graph to skip it; targeted --context mode never
 validates the graph.
 
 Usage (run from anywhere):
-    python workflows/audit/scripts/run.py [--save] [--no-graph]
-    python workflows/audit/scripts/run.py --context <directory> [<directory> ...]
+    python workflows/audit/scripts/run.py [--save] [--no-graph] [--read-only]
+    python workflows/audit/scripts/run.py --context <directory> [<directory> ...] [--read-only]
 
 Options:
-    --save     Save the full report to workflows/audit/last-report.md
-    --no-graph Skip the structural knowledge-graph validation (full mode only)
-    --context  Check only the named directories and their CONTEXT.md metadata
+    --save      Save the full report to workflows/audit/last-report.md
+    --no-graph  Skip the structural knowledge-graph validation (full mode only)
+    --context   Check only the named directories and their CONTEXT.md metadata
+    --read-only Write nothing: no LOG.md entry here or from the graph validation,
+                and --save is refused
 """
 
 import os
@@ -488,9 +490,10 @@ def graph_findings(payload: dict) -> list[Finding]:
     return findings
 
 
-def run_graph_validation() -> list[Finding]:
+def run_graph_validation(no_log: bool = False) -> list[Finding]:
     """Rebuild and validate the structural knowledge graph, returning its
-    actionable findings as audit Findings.
+    actionable findings as audit Findings. With ``no_log`` the validator is
+    told to write no LOG.md entry (``--no-log``), for a read-only audit.
 
     Shells out to the knowledge-graph CLI (the contract) rather than importing
     it — both workflows ship a ``common.py``/``parser.py``, so importing would
@@ -507,8 +510,11 @@ def run_graph_validation() -> list[Finding]:
         return [degraded("knowledge-graph", "knowledge-graph CLI not found",
                          repairable=False)]
     try:
+        argv = [sys.executable, str(KG_RUN_PY), "validate", "--json", "--no-backrefs"]
+        if no_log:
+            argv.append("--no-log")
         result = subprocess.run(
-            [sys.executable, str(KG_RUN_PY), "validate", "--json", "--no-backrefs"],
+            argv,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1065,7 +1071,10 @@ def collect_dirs() -> list[Path]:
     return sorted(out)
 
 
-def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
+def run_audit(with_graph: bool = True,
+              read_only: bool = False) -> tuple[list[Finding], int]:
+    """The full audit. ``read_only`` keeps the graph validation from writing its
+    LOG.md entries; the audit itself writes only from main()."""
     dirs = collect_dirs()
     findings: list[Finding] = []
 
@@ -1098,7 +1107,7 @@ def run_audit(with_graph: bool = True) -> tuple[list[Finding], int]:
 
     # Structural knowledge-graph validation (full mode only; opt out with --no-graph)
     if with_graph:
-        findings.extend(run_graph_validation())
+        findings.extend(run_graph_validation(no_log=read_only))
 
     # Encoding hygiene check (full mode only; always runs, advisory)
     findings.extend(run_encoding_check())
@@ -1225,9 +1234,21 @@ def main() -> None:
         help="Skip the structural knowledge-graph validation in a full audit "
              "(no effect in --context mode, which never validates the graph)",
     )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Write nothing: no LOG.md entry here or from the graph validation "
+             "(--save is refused)",
+    )
     args = parser.parse_args()
+    if args.read_only and args.save:
+        parser.error("--read-only and --save cannot be combined")
 
     ts = now_ts()
+
+    def log(path: Path, action: str, note: str) -> None:
+        if not args.read_only:
+            append_log(path, ts, action, note)
 
     if args.context:
         start_note = (
@@ -1237,17 +1258,18 @@ def main() -> None:
         )
     else:
         start_note = "Running structural audit of all project directories."
-    append_log(WORKFLOW_LOG, ts, "started", start_note)
+    log(WORKFLOW_LOG, "started", start_note)
 
     try:
         if args.context:
             findings, dir_count = run_context_audit(args.context)
         else:
-            findings, dir_count = run_audit(with_graph=not args.no_graph)
+            findings, dir_count = run_audit(with_graph=not args.no_graph,
+                                            read_only=args.read_only)
     except ValueError as exc:
         note = f"Audit failed: {exc}"
-        append_log(WORKFLOW_LOG, ts, "failed", note)
-        append_log(ROOT_LOG, ts, "failed", f"audit workflow failed. {exc}")
+        log(WORKFLOW_LOG, "failed", note)
+        log(ROOT_LOG, "failed", f"audit workflow failed. {exc}")
         parser.error(str(exc))
 
     report = format_report(findings, dir_count)
@@ -1269,8 +1291,8 @@ def main() -> None:
         f"{fails} failure(s), {warns} warning(s), {degradeds} degraded."
     )
 
-    append_log(WORKFLOW_LOG, ts, "completed", note)
-    append_log(ROOT_LOG, ts, "completed", f"audit workflow ran. {note}")
+    log(WORKFLOW_LOG, "completed", note)
+    log(ROOT_LOG, "completed", f"audit workflow ran. {note}")
 
 
 if __name__ == "__main__":

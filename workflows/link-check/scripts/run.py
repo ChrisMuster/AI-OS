@@ -20,10 +20,15 @@ Other flags:
 Usage:
   python workflows/link-check/scripts/run.py --link [--dry-run]
   python workflows/link-check/scripts/run.py [--audit] [--fix] [--save]
+  python workflows/link-check/scripts/run.py --audit --json [--no-log]
+
+--no-log writes no LOG.md entry in any mode. --json (with --audit only) prints
+{"dead_links": [{"file": ..., "target": ...}]} in place of the Markdown report.
 """
 
 import re
 import sys
+import json
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -463,6 +468,13 @@ def run_audit_mode(fix: bool, dry_run: bool) -> tuple[str, int, int]:
     return "\n".join(report_lines), dead_count, fixed_count
 
 
+def dead_links_json() -> str:
+    """--audit --json: the dead links as one JSON object, for trusted callers
+    that must not parse the Markdown report."""
+    dead = [{"file": f, "target": t} for f, t, s in audit_links() if s == "dead"]
+    return json.dumps({"dead_links": dead}, ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -475,20 +487,33 @@ def main() -> None:
     parser.add_argument("--fix",     action="store_true", help="Audit and auto-fix dead links where possible.")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing.")
     parser.add_argument("--save",    action="store_true", help="Save report to workflows/link-check/last-report.md.")
+    parser.add_argument("--no-log",  action="store_true", help="Write no LOG.md entry.")
+    parser.add_argument("--json",    action="store_true",
+                        help="With --audit: print the dead links as JSON instead of the report.")
     args = parser.parse_args()
 
     # Default to audit if no mode specified
     if not args.link and not args.fix:
         args.audit = True
+    if args.json and (args.link or args.fix or args.save):
+        parser.error("--json goes with --audit only")
 
     ts = now_ts()
+
+    def log(path: Path, action: str, note: str) -> None:
+        if not args.no_log:
+            append_log(path, ts, action, note)
+
     dry_label = " (dry run)" if args.dry_run else ""
     mode_label = "link" if args.link else ("fix" if args.fix else "audit")
-    append_log(WORKFLOW_LOG, ts, "started", f"Running link-check in {mode_label} mode{dry_label}.")
+    log(WORKFLOW_LOG, "started", f"Running link-check in {mode_label} mode{dry_label}.")
 
     if args.link:
         report, files_changed, links_added = run_link_mode(args.dry_run)
         note = f"Link mode{dry_label}: {links_added} link(s) added across {files_changed} file(s)."
+    elif args.json:
+        report = dead_links_json()
+        note = f"Audit mode: {len(json.loads(report)['dead_links'])} dead link(s) found."
     else:
         report, dead_count, fixed_count = run_audit_mode(fix=args.fix, dry_run=args.dry_run)
         if args.fix:
@@ -504,8 +529,8 @@ def main() -> None:
             fh.write(report)
         print(f"Report saved to workflows/link-check/last-report.md")
 
-    append_log(WORKFLOW_LOG, ts, "completed", note)
-    append_log(ROOT_LOG, ts, "completed", f"link-check workflow ran. {note}")
+    log(WORKFLOW_LOG, "completed", note)
+    log(ROOT_LOG, "completed", f"link-check workflow ran. {note}")
 
 
 if __name__ == "__main__":

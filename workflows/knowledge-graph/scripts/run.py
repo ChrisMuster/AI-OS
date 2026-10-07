@@ -221,7 +221,13 @@ def cmd_build(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 def cmd_validate(args: argparse.Namespace) -> int:
     ts = common.now_ts()
-    _append_log(WORKFLOW_LOG, ts, "started", "Validating knowledge graph.")
+
+    def log(path: Path, action: str, note: str) -> None:
+        # --no-log: the read-only verifier validates without writing any LOG.md.
+        if not getattr(args, "no_log", False):
+            _append_log(path, ts, action, note)
+
+    log(WORKFLOW_LOG, "started", "Validating knowledge graph.")
     try:
         graph = _load_graph(args)
         findings = validate_mod.run_checks(
@@ -232,8 +238,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
             findings, node_count=len(nodes), edge_count=len(edges), run_at=ts
         )
     except Exception as exc:
-        _append_log(WORKFLOW_LOG, ts, "failed", f"Knowledge graph validation failed: {exc}")
-        _append_log(ROOT_LOG, ts, "failed", f"knowledge-graph validate failed. {exc}")
+        log(WORKFLOW_LOG, "failed", f"Knowledge graph validation failed: {exc}")
+        log(ROOT_LOG, "failed", f"knowledge-graph validate failed. {exc}")
         print(f"ERROR: validation failed: {exc}", file=sys.stderr)
         return 1
 
@@ -268,8 +274,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
         f"Knowledge graph validated. {len(findings)} finding(s), "
         f"{warns} warning(s) across {len(nodes)} nodes."
     )
-    _append_log(WORKFLOW_LOG, ts, "completed", note)
-    _append_log(ROOT_LOG, ts, "completed", f"knowledge-graph validate ran. {note}")
+    log(WORKFLOW_LOG, "completed", note)
+    log(ROOT_LOG, "completed", f"knowledge-graph validate ran. {note}")
     return exit_code(findings)
 
 
@@ -702,6 +708,10 @@ def main(argv=None) -> int:
     p_validate.add_argument(
         "--no-backrefs", action="store_true",
         help="Skip the optional dependency back-reference gap check.",
+    )
+    p_validate.add_argument(
+        "--no-log", action="store_true",
+        help="Write no LOG.md entry (used by the read-only close-out verifier).",
     )
     p_validate.set_defaults(func=cmd_validate)
 

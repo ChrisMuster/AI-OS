@@ -1,6 +1,6 @@
 # Close-out - Tests
 
-**Last modified:** 2026-10-04
+**Last modified:** 2026-10-07
 
 ## Purpose
 Holds the test suite for the close-out verifier.
@@ -16,6 +16,7 @@ Holds the test suite for the close-out verifier.
   `# runtime-guard: launched via <mechanism>` marker. Pure helper modules
   (no `__main__`) are exempt. Standard-library only, plus hermetic fixture tests
   for the parser and each acceptance signal.
+- `test_read_only_writes.py` - what `--read-only` must not write. `ReadOnlySwitchTests` (in-process): `PYTHONDONTWRITEBYTECODE` and `sys.dont_write_bytecode` are set before the `.venv` re-exec, and read-only mode reaches the audit as `run_audit(read_only=True)`; the default leaves both alone. `BytecodeFixtureTests` (real runs): the live tree's tracked and unignored files are copied into a temporary git repository with no `__pycache__`, five LOG.md files are seeded, and the copy's own close-out runs on the link-check suite with `--json`, once in each mode (each in a fresh copy, shared by the class's tests); read-only, no file may be created or changed, caches included, while the default run must create a cache and write the knowledge-graph and close-out logs; and both modes must print a result with all three gates, the selected suite passing and the audit having walked the tree, with the same exit code, status and per-gate verdict and detail. The copy cannot pass (its LOG.md files and some link targets are gitignored), so the verdict is checked against the other mode's, not against a pass.
 
 ## Inputs
 - Run as `python workflows/close-out/tests/test_close_out.py`. Imports the verifier from `workflows/close-out/scripts/run.py` [[workflows/close-out/scripts/CONTEXT]].
@@ -31,15 +32,12 @@ N/A - this is a test directory, not a workflow.
 - Python standard library only (unittest, importlib, tempfile, pathlib).
 
 ## Known Issues
-- None. The tests are hermetic (they create throwaway test files in a temp dir) and do not run the full structural audit, so they stay fast and independent of repo state.
+- `test_close_out.py` is hermetic (throwaway test files in a temp dir) and does not run the full structural audit. `BytecodeFixtureTests` in `test_read_only_writes.py` is the exception: it copies the live tree and runs the copy's real close-out twice, so it takes roughly half a minute and its result depends on the tracked files being in a state the copy can run.
+- In that copy, `git add` was measured failing about one run in four with "unable to write file .git/objects/...: Permission denied", a file locked for a moment on Windows just after it was written. The test retries that one error up to three times, a second apart; any other git error, or a fourth lock, fails the test with git's message.
+- The copy has no `.venv`, so the re-exec itself is not exercised there; `ReadOnlySwitchTests` checks the setting is in place when the re-exec is called.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-10-04.
-- 2026-07-03 - Generalised `test_runtime_bootstrap.py` from PyYAML-only to the
-  whole `requirements.txt` package set (following `-r` includes), extended scope
-  to `skills/*/scripts/` and narrowed it to entry-point scripts, and replaced
-  the brittle degrade-string check with `# runtime-guard:` markers (degrade and
-  launched-via). 1 -> 9 tests.
+Earlier history archived to LOG.md on 2026-10-07.
 - 2026-07-04 - Added DegradedSurfacingTests and RepairTests to `test_close_out.py`
   for the new DEGRADED status and opt-in `--repair` flow (21 -> 26 tests).
 - 2026-07-05 - `test_runtime_bootstrap.py` now detects the `ensure_project_runtime()`
@@ -67,3 +65,4 @@ Earlier history archived to LOG.md on 2026-10-04.
 - 2026-10-04 - Added controls for complete failed output, no output field on a pass, launch and timeout reasons (built 2026-10-03 by the review-orchestration proof run), an undecodable byte in a test's output, and the report omitting the result-file pointer when the file was not written (49 -> 54 tests). The undecodable-byte test was checked against a control with the fix removed, which lost the output.
 - 2026-10-04 - Added main-entry controls for read-only output, unchanged or absent result and log files, failure exit code, refused repair, scoped JSON, all three gates, normal-run writes, and `.venv` flag forwarding.
 - 2026-10-04 - Corrected the Revision History archive reference and recorded the removed entries verbatim in LOG.md.
+- 2026-10-07 - Added `test_read_only_writes.py` (8 tests, 9 after code review R4-1, which found the copied-tree runs' results were ignored: both modes must now reach one verdict) for read-only mode writing nothing (orchestrator isolation S2). Single-change defects planted in memory (bytecode env not set, the flag not set, read-only not passed to the gate or to the audit) and in the copy's own files (no bytecode env, no `--no-log`) each fail a test. Known Issues rewritten: this suite now runs a real close-out in a copied tree, with the Windows lock retry.

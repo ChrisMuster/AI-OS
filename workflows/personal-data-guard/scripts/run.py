@@ -57,8 +57,29 @@ DENYLIST_FILE = WORKFLOW_DIR / "config" / "denylist.txt"
 USER_MD = PROJECT_ROOT / "USER.md"
 ENV_FILE = PROJECT_ROOT / ".env"
 
-Finding = tuple  # (severity, label, message)
 LABEL = "personal-data"
+
+# What a hit in a file is, as --json's `kind` field. A trusted caller names the
+# file and the kind to an AI without passing on the matched value, which only
+# the message carries.
+KINDS = ("email", "home_path", "os_username", "personal_name", "denylisted_term")
+
+
+class Finding(tuple):
+    """(severity, label, message), plus ``file`` and ``kind`` for a hit in a file.
+
+    Still a plain three-item tuple to every caller that unpacks or compares it
+    (the audit hook, rule-hooks B3, the tests); the two extra fields ride along
+    as attributes. Run-level notes (INFO: scan skipped and the like) are about no
+    file and carry ``None`` for both.
+    """
+
+    def __new__(cls, severity, label, message, file=None, kind=None):
+        if kind is not None and kind not in KINDS:
+            raise ValueError(f"unknown personal-data kind: {kind}")
+        self = super().__new__(cls, (severity, label, message))
+        self.file, self.kind = file, kind
+        return self
 
 # ---------------------------------------------------------------------------
 # What to scan
@@ -238,39 +259,44 @@ def scan_text(rel, text, markers):
     for m in EMAIL_RE.finditer(text):
         addr = m.group(0)
         if not _email_allowed(addr):
-            findings.append((
+            findings.append(Finding(
                 "FAIL", LABEL, f"{rel}: email address `{addr}`",
+                file=rel, kind="email",
             ))
 
     # Personal home paths carrying a real username.
     for m in HOME_PATH_RE.finditer(text):
         seg = m.group(1)
         if _is_real_username(seg):
-            findings.append((
+            findings.append(Finding(
                 "FAIL", LABEL,
                 f"{rel}: personal home path with username `{seg}` "
                 f"(`{m.group(0)}`)",
+                file=rel, kind="home_path",
             ))
 
     # OS username appearing literally (and not already reported as a path above).
     os_user = markers.get("os_user")
     if os_user and _word_re(os_user).search(text):
-        findings.append((
+        findings.append(Finding(
             "FAIL", LABEL, f"{rel}: OS username `{os_user}` present",
+            file=rel, kind="os_username",
         ))
 
     # The user's own name and its tokens.
     for term in markers.get("name_terms", []):
         if _word_re(term).search(text):
-            findings.append((
+            findings.append(Finding(
                 "FAIL", LABEL, f"{rel}: personal name `{term}` present",
+                file=rel, kind="personal_name",
             ))
 
     # Optional personal-noun denylist (advisory WARN: could be a real word).
     for term in markers.get("denylist", []):
         if _word_re(term).search(text):
-            findings.append((
+            findings.append(Finding(
                 "WARN", LABEL, f"{rel}: denylisted personal term `{term}` present",
+                file=rel, kind="denylisted_term",
             ))
 
     return _dedupe(findings)
@@ -361,11 +387,17 @@ def print_report(findings):
 
 
 def findings_json(findings):
-    return json.dumps({
-        "findings": [
-            {"severity": s, "label": lab, "message": m} for s, lab, m in findings
-        ]
-    }, ensure_ascii=False)
+    """Each finding as severity, label and message; a hit in a file also carries
+    ``file`` (project-relative) and ``kind`` (one of KINDS). Run-level notes
+    carry neither."""
+    out = []
+    for f in findings:
+        s, lab, m = f
+        row = {"severity": s, "label": lab, "message": m}
+        if getattr(f, "kind", None) is not None:
+            row["file"], row["kind"] = f.file, f.kind
+        out.append(row)
+    return json.dumps({"findings": out}, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # Knowledge Graph — Scripts
 
-**Last modified:** 2026-09-23
+**Last modified:** 2026-10-07
 
 ## Purpose
 Holds the Python implementation of the knowledge-graph indexer: the tolerant CONTEXT.md parser, the node/edge graph model with atomic serialisation plus adjacency and traversal, the gitignore-aware builder that resolves relationships into edges, the opt-in content layers (memory, wiki, journal, and conversation) with their shared parsing helpers, the validation checks, the shared report formatter, shared constants and path helpers, and the run.py command-line entry point.
@@ -25,14 +25,14 @@ None directly. The scripts read the project structure relative to the project ro
 ## Outputs
 - `index/nodes.json`, `index/edges.json`, `index/meta.json` written by run.py build.
 - A validation report printed to stdout, optionally saved to `workflows/knowledge-graph/last-report.md` via `validate --save` (gitignored).
-- LOG.md entries (workflow and root) on a real `build` or `validate` run. Pure read-only query commands do not log.
+- LOG.md entries (workflow and root) on a real `build` or `validate` run. Pure read-only query commands do not log, and neither does `validate --no-log`, which the audit passes when the read-only close-out verifier runs it.
 
 ## Steps
 1. `run.py build` calls `builder.build_graph()` to construct the graph from the project tree. With `--layer memory` it passes `include_memory=True` (memory layer via `memory.add_memory_layer`); with `--layer wiki` it passes `include_wiki=True` (wiki sub-graph layer via `wiki.add_wiki_layer`); with `--layer journal` it passes `include_journal=True` (journal layer via `journal.add_journal_layer`); with `--layer conversation` it passes `include_conversation=True` (conversation layer via `conversation.add_conversation_layer`). The flags are repeatable and combine; the included layers are recorded in `meta.json`.
 2. The resulting Graph is serialised deterministically and written atomically to `index/` via `graph.atomic_write_json`.
 3. `run.py validate` rebuilds the graph in memory (or loads it with `--from-index`), runs `validate.run_checks`, and prints a `report.format_report` summary.
 4. Query commands (`node`/`neighbors`/`impact`/`path`/`subtree`/`stats`/`orphans`/`broken`) rebuild the graph and traverse it; unknown ids produce a difflib-suggested error.
-5. A summary is printed; started/completed entries are appended to LOG.md (skipped on `--dry-run` and on read-only queries).
+5. A summary is printed; started/completed entries are appended to LOG.md (skipped on `--dry-run`, on read-only queries and on `validate --no-log`).
 6. Append LOG.md with a completion or failure entry.
 
 ## Dependencies
@@ -64,3 +64,4 @@ Earlier history archived to LOG.md on 2026-06-24.
 - 2026-06-24 — Session-search cross-reference: run.py gained the read-only `sessions <id>` command plus the pure `session_query_terms` helper (title-first FTS5 term derivation with a `--terms` override and id-segment fallback) and the `run_session_search` wrapper (subprocess call to `workflows/session-search/scripts/search.py` [[workflows/session-search/scripts/CONTEXT]] in `--json` mode, returning `[]` on any failure — script missing, non-zero exit, unparseable/non-list output — never raising). Exposes `--limit`/`--since`/`--ai`/`--source` passthroughs. Added `re`/`subprocess` imports and the `SESSION_SEARCH_PY` constant. Build/validate and the other nine query commands are untouched; nothing is persisted and no personal data reaches a tracked file.
 - 2026-08-04 - Line endings pinned on both text writes in `run.py` (the LOG.md append and the `--save` report), which now pass `newline="\n"` explicitly. Part of the project-wide pass closing this defect class at all 48 write sites.
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.
+- 2026-10-07 - `run.py validate` gained `--no-log`: with it, no LOG.md entry is written, on success or failure; the validation, its output and its exit code are unchanged. Orchestrator isolation stage S2, so the read-only close-out verifier writes nothing. Outputs and Steps updated.
