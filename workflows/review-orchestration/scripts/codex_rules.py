@@ -37,11 +37,20 @@ _WORKFLOW_DIR = Path(__file__).resolve().parent.parent
 READ_COMMANDS_PATH = _WORKFLOW_DIR / "config" / "codex-read-commands.txt"
 VERIFY_COMMANDS_PATH = _WORKFLOW_DIR / "config" / "codex-verify-commands.txt"
 
-# What a run's frozen folder holds besides hook.json and the decisions file.
-FROZEN_MODULES = ("codex_hook.py", "codex_rules.py", "approver.py", "brief.py")
-FROZEN_LISTS = ("codex-verify-commands.txt", "codex-read-commands.txt")
+# What a run's frozen folder holds besides hook.json and the two record files. The
+# check helper (check_server.py) and the container module it calls run from there too,
+# with the Claude builder's verification list, since the helper judges either builder
+# (orchestrator isolation plan 6, item 1). The first two lists keep their places:
+# callers index them.
+FROZEN_MODULES = ("codex_hook.py", "codex_rules.py", "approver.py", "brief.py",
+                  "check_server.py", "container.py")
+FROZEN_LISTS = ("codex-verify-commands.txt", "codex-read-commands.txt",
+                "verify-commands.txt")
 HOOK_CONFIG = "hook.json"
 DECISIONS_FILE = "hook-decisions.jsonl"
+# The check helper's one line per call, and the ignore floor it reads (plan 5.3, 6).
+CHECK_CALLS_FILE = "check-calls.jsonl"
+START_IGNORED = "start-ignored.txt"
 
 # The form runrecord.py issues; a test checks the two agree.
 RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")

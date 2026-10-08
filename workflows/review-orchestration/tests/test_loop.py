@@ -2101,6 +2101,22 @@ class TurnCheckTests(SwappedCase):
         run = self.planted(lambda: decisions.write_bytes(b'{"decision": "allow"}\n'))
         self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
 
+    def test_negative_the_check_calls_file_is_meant_to_change(self):
+        # The check helper writes it during a turn (isolation plan 6, item 5).
+        calls = self.h.frozen / "check-calls.jsonl"
+        run = self.planted(lambda: calls.write_bytes(b'{"allowed": true}\n'))
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+
+    def test_rejection_another_frozen_file_changing_beside_the_calls_file(self):
+        # Control for the test above: the calls file's exemption is that file only.
+        def both():
+            (self.h.frozen / "check-calls.jsonl").write_bytes(b"{}\n")
+            (self.h.frozen / "start-ignored.txt").write_bytes(b".env\n")
+        run = self.planted(both)
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertIn("start-ignored.txt", self.evidence(run))
+        self.assertNotIn("check-calls.jsonl", self.evidence(run))
+
     def test_negative_a_bytecode_cache_in_the_frozen_folder_is_not_a_change(self):
         # Running the hook writes one; the rules it runs from are what is compared.
         def cache():

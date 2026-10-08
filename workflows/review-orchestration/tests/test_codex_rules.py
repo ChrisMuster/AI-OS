@@ -441,15 +441,21 @@ class VerifyListTests(RulesCase):
                         self.no_shell(command)
 
     def test_rejection_the_audit_and_close_out_in_every_form_the_other_list_takes(self):
-        # Both write LOG.md files the check after every turn compares.
+        # Read-only, neither writes a log, but on the host the close-out verifier still
+        # reads personal files; the Codex list gains both only once its commands run in
+        # the container (isolation decision 27, stage S6).
         for command in (
-                "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard",
-                "python workflows/audit/scripts/run.py --context workflows/x workflows/y",
-                "python workflows/audit/scripts/run.py --context workflows/x --no-graph",
-                "python workflows/close-out/scripts/run.py",
-                "python workflows/close-out/scripts/run.py --scope all",
-                "python workflows/close-out/scripts/run.py --json",
-                "python workflows/close-out/scripts/run.py --scope doc-sync-guard --json"):
+                "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard "
+                "--read-only",
+                "python workflows/audit/scripts/run.py --context workflows/x workflows/y "
+                "--read-only",
+                "python workflows/audit/scripts/run.py --context workflows/x --no-graph "
+                "--read-only",
+                "python workflows/close-out/scripts/run.py --read-only",
+                "python workflows/close-out/scripts/run.py --read-only --scope all",
+                "python workflows/close-out/scripts/run.py --read-only --json",
+                "python workflows/close-out/scripts/run.py --read-only --scope doc-sync-guard "
+                "--json"):
             with self.subTest(command=command):
                 self.assertTrue(any(p.fullmatch(command) for p in self.claude),
                                 "the control needs a command the Claude list accepts")
@@ -688,12 +694,14 @@ class HookTests(unittest.TestCase):
                         .startswith("Refused by the orchestrator:"))
         self.assertIn(reason, specific["permissionDecisionReason"])
 
-    def test_positive_the_frozen_folder_holds_the_rules_and_nothing_of_claudes(self):
+    def test_positive_the_frozen_folder_holds_the_rules_and_the_check_helper(self):
+        # The check helper and the container module run from here, with the Claude
+        # list, since the helper judges either builder (isolation plan 6, item 1).
         names = {path.name for path in self.frozen.iterdir()}
         self.assertEqual(names, {"codex_hook.py", "codex_rules.py", "approver.py",
-                                 "brief.py", "codex-verify-commands.txt",
-                                 "codex-read-commands.txt", "hook.json"})
-        self.assertNotIn("verify-commands.txt", names)
+                                 "brief.py", "check_server.py", "container.py",
+                                 "codex-verify-commands.txt", "codex-read-commands.txt",
+                                 "verify-commands.txt", "hook.json"})
         config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
         self.assertEqual(config, {"run_id": RUN_ID, "edit_paths": EDIT_PATHS,
                                   "project_root": str(self.root)})

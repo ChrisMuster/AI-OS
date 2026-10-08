@@ -275,13 +275,14 @@ class ShellTests(ApproverTestCase):
                 "python -m py_compile workflows/doc-sync-guard/scripts/run.py",
                 "python workflows/doc-sync-guard/tests/test_run.py",
                 "python workflows/doc-sync-guard/tests/test_run.py -v",
-                "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard",
-                "python workflows/close-out/scripts/run.py",
-                "python workflows/close-out/scripts/run.py --scope all --json",
+                "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard "
+                "--read-only",
+                "python workflows/close-out/scripts/run.py --read-only",
+                "python workflows/close-out/scripts/run.py --read-only --scope all --json",
                 "python workflows/doc-sync-guard/scripts/run.py --check",
                 "python workflows/encoding-guard/scripts/run.py --check",
                 "python workflows/doc-sync-guard/scripts/run.py",
-                "  python workflows/close-out/scripts/run.py  "):
+                "  python workflows/close-out/scripts/run.py --read-only  "):
             with self.subTest(command=command):
                 self.allowed("Bash", {"command": command})
 
@@ -292,13 +293,26 @@ class ShellTests(ApproverTestCase):
             with self.subTest(command=command):
                 self.refused("Bash", {"command": command}, "only these verification commands")
 
+    def test_rejection_the_audit_and_close_out_without_read_only(self):
+        # Orchestrator isolation plan 6: both must write nothing, so the flag is
+        # required, not optional.
+        for command in (
+                "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard",
+                "python workflows/audit/scripts/run.py --context workflows/x --no-graph",
+                "python workflows/close-out/scripts/run.py",
+                "python workflows/close-out/scripts/run.py --scope all --json",
+                "python workflows/close-out/scripts/run.py --scope all --read-only"):
+            with self.subTest(command=command):
+                self.refused("Bash", {"command": command}, "only these verification commands")
+
     def test_positive_the_tightened_lines_still_take_their_arguments(self):
         for command in (
                 "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard "
-                "workflows/doc-sync-guard/scripts",
-                "python workflows/audit/scripts/run.py --context workflows/x --no-graph",
+                "workflows/doc-sync-guard/scripts --read-only",
+                "python workflows/audit/scripts/run.py --context workflows/x --no-graph "
+                "--read-only",
                 "python -m py_compile workflows/x/a.py workflows/x/b.py",
-                "python workflows/close-out/scripts/run.py --scope doc-sync-guard",
+                "python workflows/close-out/scripts/run.py --read-only --scope doc-sync-guard",
                 "python workflows/x/tests/test_run.py RunTests",
                 "python workflows/x/tests/test_run.py RunTests.test_one OtherTests -v"):
             with self.subTest(command=command):
@@ -312,8 +326,8 @@ class ShellTests(ApproverTestCase):
         base = {
             0: "python -m py_compile workflows/x/a.py",
             1: "python workflows/x/tests/test_run.py RunTests",
-            2: "python workflows/audit/scripts/run.py --context workflows/x",
-            3: "python workflows/close-out/scripts/run.py",
+            2: "python workflows/audit/scripts/run.py --context workflows/x --read-only",
+            3: "python workflows/close-out/scripts/run.py --read-only",
             4: "python workflows/x/scripts/run.py --check",
             5: "python workflows/encoding-guard/scripts/run.py --check",
             6: "python workflows/doc-sync-guard/scripts/run.py --check",

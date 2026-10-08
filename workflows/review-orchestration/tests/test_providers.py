@@ -679,8 +679,9 @@ class CodexBuilderTests(unittest.TestCase):
         self.assertEqual(builder.frozen_dir, self.frozen)
         names = {path.name for path in self.frozen.iterdir() if path.is_file()}
         self.assertEqual(names, {"codex_hook.py", "codex_rules.py", "approver.py",
-                                 "brief.py", "codex-verify-commands.txt",
-                                 "codex-read-commands.txt", "hook.json",
+                                 "brief.py", "check_server.py", "container.py",
+                                 "codex-verify-commands.txt", "codex-read-commands.txt",
+                                 "verify-commands.txt", "hook.json",
                                  "hook-decisions.jsonl"})
         config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
         self.assertEqual(config["edit_paths"], ["notes/"])

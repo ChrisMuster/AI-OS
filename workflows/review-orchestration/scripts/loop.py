@@ -250,16 +250,18 @@ def reviewer_tools(provider):
 
 
 def frozen_state(folder):
-    """A SHA-256 for every file in a Codex builder's frozen folder except the decisions
-    file, or None where there is no folder. Bytecode caches are left out: running the
-    hook writes them."""
+    """A SHA-256 for every file in a Codex builder's frozen folder except the hook's
+    decisions file and the check helper's calls file, or None where there is no
+    folder. Bytecode caches are left out: running the hook writes them. A check call
+    during a turn is not the folder changing (orchestrator isolation plan 6, item 5)."""
     if folder is None or not Path(folder).is_dir():
         return None
     folder = Path(folder)
     return {path.relative_to(folder).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(folder.rglob("*"))
             if path.is_file() and "__pycache__" not in path.parts
-            and path.name != codex_rules.DECISIONS_FILE}
+            and path.name not in (codex_rules.DECISIONS_FILE,
+                                  codex_rules.CHECK_CALLS_FILE)}
 
 
 def unignored_env_files(root):

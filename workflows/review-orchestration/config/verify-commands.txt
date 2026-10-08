@@ -12,10 +12,13 @@
 #
 # Whatever a line allows, the approver still refuses a command with a `..` path
 # component, a command naming `.env`, and anything spanning more than one line.
+#
+# The targeted audit and the close-out verifier must be run with `--read-only`, so
+# neither writes a log or a result file anywhere (orchestrator isolation plan 6).
 python -m py_compile( (?!-)[\w./\-]+)+
 python (workflows|skills)/[\w./\-]+/tests/[\w./\-]+\.py( (?!-)[\w.]+)*( -v)?
-python workflows/audit/scripts/run\.py --context( (?!-)[\w./\-]+)+( --no-graph)?
-python workflows/close-out/scripts/run\.py( --scope (?!-)[\w\-]+)?( --json)?
+python workflows/audit/scripts/run\.py --context( (?!-)[\w./\-]+)+( --no-graph)? --read-only
+python workflows/close-out/scripts/run\.py --read-only( --scope (?!-)[\w\-]+)?( --json)?
 python (workflows|skills)/[\w./\-]+/scripts/run\.py --check
 python workflows/encoding-guard/scripts/run\.py --check
 python workflows/doc-sync-guard/scripts/run\.py( --check)?
