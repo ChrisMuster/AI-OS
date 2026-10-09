@@ -47,6 +47,9 @@ approver = _load("approver")
 codex_rules = _load("codex_rules")
 providers = _load("providers")
 runrecord = _load("runrecord")
+checks = _load("checks")
+container = _load("container")
+frozen = _load("frozen")
 
 EDIT_PATHS = ["workflows/doc-sync-guard/", "notes/plan.md"]
 RUN_ID = "20261002-101500-ab12"
@@ -443,7 +446,7 @@ class VerifyListTests(RulesCase):
     def test_rejection_the_audit_and_close_out_in_every_form_the_other_list_takes(self):
         # Read-only, neither writes a log, but on the host the close-out verifier still
         # reads personal files; the Codex list gains both only once its commands run in
-        # the container (isolation decision 27, stage S6).
+        # the container (isolation decisions 27 and 28, stage S7).
         for command in (
                 "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard "
                 "--read-only",
@@ -530,6 +533,27 @@ class PatchTests(RulesCase):
                      "is under `.git/`")
         self.no_edit(patch(f"*** Add File: {self.root.parent / 'x.py'}", "+x"),
                      "is outside the project")
+
+    def test_rejection_the_starter_and_the_venv_whatever_the_edit_paths_say(self):
+        # Orchestrator isolation plan 7.0 item 2 and 7.7: a patch naming the starter is
+        # refused even when an edit path covers its folder, and so is one into .venv.
+        self.approver = approver.Approver(["workflows/review-orchestration/"],
+                                          codex_rules.load_verify_commands(),
+                                          root=self.root)
+        self.edit(patch("*** Update File: workflows/review-orchestration/scripts/run.py"))
+        for name in ("workflows/review-orchestration/scripts/start.py",
+                     "Workflows/Review-Orchestration/Scripts/START.py"):
+            with self.subTest(name=name):
+                self.no_edit(patch(f"*** Update File: {name}"), "the orchestrator's starter")
+        self.no_edit(patch("*** Update File: workflows/review-orchestration/scripts/run.py",
+                           "*** Move to: workflows/review-orchestration/scripts/start.py"),
+                     "the orchestrator's starter")
+        self.no_edit(patch("*** Add File: .venv/Lib/site-packages/x.py", "+x"),
+                     "project `.venv`")
+
+    def test_rejection_a_patch_into_a_frozen_folder(self):
+        frozen_file = self.root.parent / "book-dragon-orchestration" / "x" / "hook.json"
+        self.no_edit(patch(f"*** Update File: {frozen_file}"), "is outside the project")
 
     def test_rejection_an_unknown_header_line(self):
         self.no_edit(patch("*** Update File: workflows/doc-sync-guard/a.py",
@@ -651,7 +675,8 @@ class ApprovalTests(unittest.TestCase):
 
 class HookTests(unittest.TestCase):
     """codex_hook.py, run as Codex runs it: a subprocess from the run's frozen folder,
-    made by the builder session's own first launch."""
+    made as the orchestrator makes it (``frozen.populate``, isolation plan 6 item 1) and
+    checked by the builder session's own launch."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -664,7 +689,11 @@ class HookTests(unittest.TestCase):
         self.builder = providers.CodexBuilder(
             "gpt-6-sol", "high", approver.Approver(EDIT_PATHS, [], root=self.root),
             cwd=self.root, run_dir=base / "runs" / RUN_ID, temp_root=self.temp)
-        self.assertTrue(self.builder._freeze())
+        self.builder.frozen_dir.mkdir(parents=True)
+        frozen.populate(self.builder.frozen_dir, SCRIPTS, CONFIG,
+                        frozen.hook_config(RUN_ID, self.root, EDIT_PATHS, "codex",
+                                           "0" * 40))
+        self.builder._freeze()  # the launch's own check finds it whole
         self.frozen = self.builder.frozen_dir
         self.decisions = self.frozen / "hook-decisions.jsonl"
 
@@ -701,12 +730,28 @@ class HookTests(unittest.TestCase):
         self.assertEqual(names, {"codex_hook.py", "codex_rules.py", "approver.py",
                                  "brief.py", "check_server.py", "container.py",
                                  "codex-verify-commands.txt", "codex-read-commands.txt",
-                                 "verify-commands.txt", "hook.json"})
+                                 "verify-commands.txt", "hook.json", "tripwire"})
         config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
         self.assertEqual(config, {"run_id": RUN_ID, "edit_paths": EDIT_PATHS,
-                                  "project_root": str(self.root)})
+                                  "project_root": str(self.root),
+                                  "builder_provider": "codex", "public_head": "0" * 40})
         for name in codex_rules.FROZEN_MODULES:
             self.assertEqual((self.frozen / name).read_bytes(), (SCRIPTS / name).read_bytes())
+
+    def test_negative_the_hook_writes_only_its_decisions_file(self):
+        # Plan 7.0 item 3 and code review R20-1: no bytecode cache is written for the
+        # modules the hook imports, even with nothing in the environment asking.
+        def state():
+            return {p.relative_to(self.frozen).as_posix(): p.read_bytes()
+                    for p in sorted(self.frozen.rglob("*")) if p.is_file()}
+        before = state()
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+        self.run_hook(self.event(), env=env)
+        self.run_hook(self.event(tool_input={"command": "rm -rf x"}, call="exec-2"), env=env)
+        after = state()
+        changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
+        self.assertEqual(changed, {"hook-decisions.jsonl"})
+        self.assertEqual(list(self.frozen.rglob("__pycache__")), [])
 
     def test_positive_a_decision_line_escapes_non_ascii(self):
         # The file is copied into the run record (the chunk (d) short plan, 11.4).
@@ -830,6 +875,9 @@ class ProjectRulesFileTests(unittest.TestCase):
     short plan, measured, and live check 7."""
 
     RULES = WORKFLOW.parent.parent / ".codex" / "rules" / "review-orchestration.rules"
+    # Every rule names the starter (orchestrator isolation plan 7.0 item 2); the live
+    # run.py is matched by none.
+    STARTER = "workflows/review-orchestration/scripts/start.py"
     RUN_PY = "workflows/review-orchestration/scripts/run.py"
 
     def check(self, *tokens):
@@ -847,15 +895,18 @@ class ProjectRulesFileTests(unittest.TestCase):
                      ("--resume", "20261004-000000-abcd", "--rounds", "1"),
                      ("--stop", "20261004-000000-abcd")):
             with self.subTest(mode=argv[0]):
-                result = self.check("python", self.RUN_PY, *argv)
+                result = self.check("python", self.STARTER, *argv)
                 self.assertEqual(result.get("decision"), "allow", result)
 
     def test_rejection_nothing_else_is_matched(self):
-        for tokens in (("python", self.RUN_PY, "--check-brief", "BRIEF.md"),
-                       ("python", self.RUN_PY),
+        for tokens in (("python", self.STARTER, "--check-brief", "BRIEF.md"),
+                       ("python", self.STARTER),
+                       ("python", self.RUN_PY, "--run", "BRIEF.md"),
+                       ("python", self.RUN_PY, "--resume", "20261004-000000-abcd"),
+                       ("python", self.RUN_PY, "--stop", "20261004-000000-abcd"),
                        ("python", "workflows/audit/scripts/run.py", "--run"),
                        ("python", "-c", "print(1)"),
-                       ("py", self.RUN_PY, "--run", "BRIEF.md")):
+                       ("py", self.STARTER, "--run", "BRIEF.md")):
             with self.subTest(tokens=tokens):
                 result = self.check(*tokens)
                 self.assertEqual(result.get("matchedRules"), [], result)
@@ -866,7 +917,8 @@ class ProjectRulesFileTests(unittest.TestCase):
         patterns = re.findall(r"pattern = \[(.*?)\]", text)
         self.assertEqual(len(patterns), 3)
         for pattern in patterns:
-            self.assertTrue(pattern.startswith(f'"python", "{self.RUN_PY}", "--'), pattern)
+            self.assertTrue(pattern.startswith(f'"python", "{self.STARTER}", "--'), pattern)
+        self.assertNotIn(self.RUN_PY, text)
         self.assertEqual(text.count('decision = "allow"'), 3)
 
 

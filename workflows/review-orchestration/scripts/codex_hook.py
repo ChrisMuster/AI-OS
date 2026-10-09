@@ -22,6 +22,11 @@ import json
 import sys
 from pathlib import Path
 
+# The hook runs from the frozen folder, where nothing but its decisions file and the
+# check helper's calls file may be written after setup (orchestrator isolation plan 7.0
+# item 3), so it writes no bytecode cache for the modules it imports (code review R20-1).
+sys.dont_write_bytecode = True
+
 FOLDER = Path(__file__).resolve().parent
 
 

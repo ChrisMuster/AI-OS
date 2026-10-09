@@ -2,7 +2,7 @@
 Run brief for the review-orchestration workflow. Copy this file to
 workflows/review-orchestration/runs/<run-id>/brief.md, fill in every section, then
 check it with:
-  python workflows/review-orchestration/scripts/run.py --check-brief <path>
+  python workflows/review-orchestration/scripts/start.py --check-brief <path>
 Keep the seven headings exactly as written and in this order. Comments are ignored.
 A line that is only "...", only an angle-bracket placeholder, or that begins TODO or
 TBD counts as empty. No fenced code blocks anywhere in a section.

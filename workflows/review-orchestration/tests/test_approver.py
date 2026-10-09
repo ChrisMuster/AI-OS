@@ -235,6 +235,30 @@ class EditTests(ApproverTestCase):
     def test_negative_a_venv_folder_is_not_an_env_file(self):
         self.allowed("Write", {"file_path": "workflows/doc-sync-guard/.venv/x.py"})
 
+    def test_rejection_the_starter_whatever_the_edit_paths_say(self):
+        # Orchestrator isolation plan 7.0 item 2: an edit path covering the starter's
+        # folder still never lets a builder change it.
+        self.approver = approver.Approver(["workflows/review-orchestration/"],
+                                          approver.load_verify_commands(), root=self.root)
+        self.allowed("Edit", {"file_path": "workflows/review-orchestration/scripts/run.py"})
+        for name in ("workflows/review-orchestration/scripts/start.py",
+                     "Workflows/review-orchestration/SCRIPTS/Start.py",
+                     "workflows/review-orchestration/scripts/start.py.",
+                     str(self.root / "workflows/review-orchestration/scripts/start.py")):
+            with self.subTest(name=name):
+                self.refused("Write", {"file_path": name}, "the orchestrator's starter")
+        self.allowed("Write",
+                     {"file_path": "workflows/review-orchestration/scripts/start.py.bak"})
+
+    def test_rejection_the_project_venv_and_a_frozen_folder(self):
+        # Plan 7.7: the project .venv runs every check, so no edit lands there; a run's
+        # frozen folder is outside the project, so no edit lands there either.
+        for name in (".venv/Lib/site-packages/x.py", ".VENV/pyvenv.cfg", ".venv"):
+            with self.subTest(name=name):
+                self.refused("Write", {"file_path": name}, "project `.venv`")
+        frozen_file = self.root.parent / "book-dragon-orchestration" / "x" / "hook.json"
+        self.refused("Edit", {"file_path": str(frozen_file)}, "is outside the project")
+
     def test_rejection_alternate_data_stream(self):
         self.refused("Write", {"file_path": "workflows/doc-sync-guard/run.py:hidden"},
                      "alternate data stream")
@@ -257,7 +281,8 @@ class EditTests(ApproverTestCase):
                      "outside this run's edit paths")
 
     def test_rejection_a_bad_edit_path_refuses_to_build_the_approver(self):
-        for path in ("../x", "C:/x", "a/.env", "a\\b", ".git/"):
+        for path in ("../x", "C:/x", "a/.env", "a\\b", ".git/", ".venv/",
+                     "workflows/review-orchestration/scripts/start.py"):
             with self.subTest(path=path):
                 with self.assertRaises(approver.ApproverError):
                     approver.Approver([path], [], root=self.root)

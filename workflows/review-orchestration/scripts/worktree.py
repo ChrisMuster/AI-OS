@@ -88,14 +88,25 @@ def _skipped(relative):
             or (relative + "/").lower().startswith(RUNS_PREFIX))
 
 
-def category_a(root):
+# The sync classification's code, found beside this file's own workflow rather than in
+# the project: in a run's trusted copy that is the starting commit's, never the live
+# tree's (orchestrator isolation plan 7.0 item 4). Outside a run the two are the same.
+ALLOWLIST = (Path(__file__).resolve().parent.parent.parent / "sync-architecture"
+             / "scripts" / "allowlist.py")
+
+
+def category_a(root, allowlist=None):
     """The Category A selection, as a set of project-relative paths.
 
-    Calls the sync-architecture workflow's one implementation. Run from the project
-    root, as the workflow's scripts are. Raises GitError when the classification
-    cannot be read, so a run never guesses which gitignored files are work.
+    Calls the sync-architecture workflow's one implementation, loaded from beside this
+    module (``ALLOWLIST``) unless ``allowlist`` names it. It reads the project's
+    ``SYNC-ARCHITECTURE-PLAN.md`` as data from the working folder, so it is run from
+    the project root, as the workflow's scripts are. Raises GitError when the
+    classification cannot be read, so a run never guesses which gitignored files are
+    work. ``root`` is kept for the callers' signature; the selection is the working
+    folder's.
     """
-    path = Path(root) / "workflows" / "sync-architecture" / "scripts" / "allowlist.py"
+    path = Path(allowlist) if allowlist is not None else ALLOWLIST
     spec = importlib.util.spec_from_file_location("_sync_allowlist", path)
     if spec is None or not path.is_file():
         raise GitError(f"the sync classification cannot be read: {path.name} is missing")

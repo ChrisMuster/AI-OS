@@ -59,6 +59,7 @@ import approver as approver_mod
 import brief as brief_mod
 import checks as checks_mod
 import codex_rules
+import frozen as frozen_mod
 import limits
 import packet as packet_mod
 import providers
@@ -76,7 +77,12 @@ SDK_PACKAGES = ("claude-agent-sdk", "openai-codex")
 DIFF_LIMIT = 300_000
 WAIT_MARGIN_SECONDS = 60
 
-# Plan section 10.5: what the report recommends for each stop reason.
+# Resume and stop are entered through the starter, never the live run.py (orchestrator
+# isolation plan 7.0 item 3); the report and the pause message print these commands.
+STARTER = "python " + brief_mod.STARTER_PATH
+
+# Plan section 10.5: what the report recommends for each stop reason. ``<run-id>`` is
+# replaced by the run's own id when the report is written.
 RECOMMEND = {
     sr.CLEAN: "Commit.",
     sr.REVIEWED_CLEAN: "Read the diff against the brief, since nothing has checked it "
@@ -85,14 +91,27 @@ RECOMMEND = {
                       "knowingly.",
     sr.NO_CHANGE_MADE: "Check that the brief still asks for a change, then start a new "
                        "run from a corrected brief.",
-    sr.MAX_ROUNDS: "Approve more rounds: run.py --resume <run-id> --rounds N.",
+    sr.MAX_ROUNDS: f"Approve more rounds: {STARTER} --resume <run-id> --rounds N.",
     sr.REOPENED: "Re-plan with that finding as input.",
     sr.OUT_OF_SCOPE: "Widen the edit paths in the brief, or finish by hand.",
     sr.DISAGREEMENT: "Rule on the disputed finding, as under the triage rule.",
-    sr.USAGE_LIMIT: "Resume after the reset time given, or let --wait do it.",
+    sr.USAGE_LIMIT: f"Resume after the reset time given ({STARTER} --resume <run-id>), "
+                    "or let --wait do it.",
     sr.STOPPED_BY_USER: "Nothing; the run record is kept.",
-    sr.ERROR: "Fix the cause, then resume: run.py --resume <run-id>.",
+    sr.ERROR: f"Fix the cause, then resume: {STARTER} --resume <run-id>.",
 }
+
+
+def recommendation(reason, run_id):
+    """The report's recommendation for a stop reason, naming the run's own id."""
+    text = RECOMMEND.get(reason)
+    return None if text is None else text.replace("<run-id>", run_id)
+
+
+def pause_commands(run_id):
+    """How to continue or end a paused run, as the pause message prints them."""
+    return (f"Resume it with: {STARTER} --resume {run_id}; or end it with: "
+            f"{STARTER} --stop {run_id}")
 
 
 class RunRefused(Exception):
@@ -153,6 +172,7 @@ class Deps:
     category_a: Callable = None
     capture_problems: Callable = None
     inventory: Callable = None
+    setup_frozen: Callable = None
     claude_usage: Callable = limits.ClaudeUsage
     sleep: Callable = time.sleep
     now: Callable = time.time
@@ -177,6 +197,8 @@ class Deps:
             self.category_a = worktree.category_a
         if self.capture_problems is None:
             self.capture_problems = capture_problems
+        if self.setup_frozen is None:
+            self.setup_frozen = frozen_mod.setup
 
 
 # ------------------------------------------------------------------ small helpers
@@ -252,14 +274,16 @@ def reviewer_tools(provider):
 def frozen_state(folder):
     """A SHA-256 for every file in a Codex builder's frozen folder except the hook's
     decisions file and the check helper's calls file, or None where there is no
-    folder. Bytecode caches are left out: running the hook writes them. A check call
-    during a turn is not the folder changing (orchestrator isolation plan 6, item 5)."""
+    folder. A check call during a turn is not the folder changing (orchestrator
+    isolation plan 6, item 5). Bytecode caches count like any other file: every
+    program run from the folder writes none (code review R20-1), so one appearing is a
+    change."""
     if folder is None or not Path(folder).is_dir():
         return None
     folder = Path(folder)
     return {path.relative_to(folder).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(folder.rglob("*"))
-            if path.is_file() and "__pycache__" not in path.parts
+            if path.is_file()
             and path.name not in (codex_rules.DECISIONS_FILE,
                                   codex_rules.CHECK_CALLS_FILE)}
 
@@ -974,7 +998,8 @@ def write_report(run):
     findings = list(run.ledger.findings.values())
     report = {
         "run_id": state["run_id"], "item": state["item"], "stop_reason": last["reason"],
-        "evidence": evidence, "recommendation": RECOMMEND.get(last["reason"]),
+        "evidence": evidence,
+        "recommendation": recommendation(last["reason"], state["run_id"]),
         "stop_reasons": state["stop_reasons"], "last_step": state["step"],
         "rounds": state.get("rounds", []),
         "open": [f["label"] for f in findings if not packet_mod.is_addressed(f)],
@@ -999,7 +1024,7 @@ def write_report(run):
                   + " ".join(str(report["usage_source"].get("codex_reason")).split())
                   + ". The ceiling was not applied to Codex for this run.", ""]
     lines += [f"**Stop reason:** `{last['reason']}`", "",
-             f"**Recommended:** {RECOMMEND.get(last['reason'])}", ""]
+             f"**Recommended:** {report['recommendation']}", ""]
     if last["reason"] == sr.USAGE_LIMIT:
         resets = evidence.get("resets_at")
         lines += [f"**Provider:** {evidence.get('provider')}. {evidence.get('detail')}",
@@ -1164,7 +1189,22 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
                                                     ready["category_a"]),
                                   "the start-of-run close-out check")
     started_ns = time.time_ns()
-    run_dir = runrecord.create_run(runs_dir=runs_dir)
+    # The run's frozen folder, made by the orchestrator for either builder before
+    # anything else of the run exists (orchestrator isolation plan 6 item 1 and 7.1
+    # item 5): the run's code re-executes from its trusted/ copy (7.0).
+    run_id = runrecord.new_run_id()
+    try:
+        public_head = worktree.git(root, "rev-parse", "HEAD").strip()
+        frozen_dir = deps.setup_frozen(root, run_id, public_head=public_head,
+                                       edit_paths=brief["edit_paths"],
+                                       builder=settings["roles"]["builder"])
+    except (frozen_mod.FrozenError, worktree.GitError) as exc:
+        raise RunRefused([str(exc)]) from exc
+    try:
+        run_dir = runrecord.create_run(run_id, runs_dir=runs_dir)
+    except BaseException:
+        frozen_mod.remove(frozen_dir)
+        raise
     if start_writes:
         (run_dir / "start").mkdir(parents=True, exist_ok=True)
         (run_dir / "start" / "check-writes.patch").write_text(
@@ -1184,6 +1224,7 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
         "inject": {"step": inject, "fired": False} if inject else None,
         "baseline": baseline, "started_ns": started_ns, "usage_source": {},
         "check_writes": (["start/check-writes.patch"] if start_writes else []),
+        "frozen_dir": Path(frozen_dir).as_posix(),
         "step": "preflight",
     })
     run = Run(run_dir, state, settings, root=root, deps=deps, log_path=log_path,

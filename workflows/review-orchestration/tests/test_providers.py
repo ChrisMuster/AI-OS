@@ -50,6 +50,21 @@ approver = _load("approver")
 codex_rules = _load("codex_rules")
 stopreasons = _load("stopreasons")
 providers = _load("providers")
+checks = _load("checks")
+container = _load("container")
+frozen = _load("frozen")
+CONFIG = WORKFLOW / "config"
+
+
+def make_frozen(folder, root, edit_paths=("notes/",), run_id=None):
+    """The run's frozen folder, made as the orchestrator makes it (frozen.populate, from
+    the workflow's own files), since a builder session only checks it (isolation plan 6
+    item 1). Returns the folder."""
+    folder = Path(folder)
+    folder.mkdir(parents=True)
+    return frozen.populate(folder, SCRIPTS, CONFIG,
+                           frozen.hook_config(run_id or folder.name, root, edit_paths,
+                                              "codex", "0" * 40))
 
 try:
     from claude_agent_sdk import (AssistantMessage, PermissionResultAllow,
@@ -628,6 +643,7 @@ class CodexBuilderTests(unittest.TestCase):
         self.clients = []
         self.frozen = self.temp / providers.FROZEN_PARENT / RUN_ID
         self.decisions = self.frozen / "hook-decisions.jsonl"
+        make_frozen(self.frozen, self.root)
 
     def factory(self, overrides, handler):
         client = FakeCodexClient(self.world, overrides, handler)
@@ -674,28 +690,39 @@ class CodexBuilderTests(unittest.TestCase):
 
     # ---------------------------------------------------------- the frozen folder
 
-    def test_positive_a_first_launch_creates_the_frozen_folder(self):
+    def test_positive_a_first_launch_uses_the_orchestrators_folder_as_it_is(self):
+        # Isolation plan 6 item 1: the orchestrator made the folder; the session copies
+        # nothing into it, so a file the session would have copied stays as it was.
+        marker = self.frozen / "codex-verify-commands.txt"
+        marker.write_bytes(marker.read_bytes() + b"# as the orchestrator froze it\n")
+        before = {p.name: p.read_bytes() for p in self.frozen.iterdir() if p.is_file()}
         builder = self.started()
         self.assertEqual(builder.frozen_dir, self.frozen)
-        names = {path.name for path in self.frozen.iterdir() if path.is_file()}
-        self.assertEqual(names, {"codex_hook.py", "codex_rules.py", "approver.py",
-                                 "brief.py", "check_server.py", "container.py",
-                                 "codex-verify-commands.txt", "codex-read-commands.txt",
-                                 "verify-commands.txt", "hook.json",
-                                 "hook-decisions.jsonl"})
-        config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
-        self.assertEqual(config["edit_paths"], ["notes/"])
-        self.assertEqual(config["project_root"], str(self.root))
+        after = {p.name: p.read_bytes() for p in self.frozen.iterdir() if p.is_file()}
         # The self-test ran the real hook from the folder, and its line is gone.
-        self.assertEqual(self.decisions.read_text(encoding="utf-8"), "")
+        self.assertEqual(after.pop("hook-decisions.jsonl"), b"")
+        self.assertEqual(after, before)
 
-    def test_rejection_a_frozen_folder_that_exists_before_the_first_launch(self):
-        self.frozen.mkdir(parents=True)
-        (self.frozen / "codex_hook.py").write_bytes(b"someone else's rules\n")
-        self.refused_start("already\\s+exists before this run's first launch")
-        self.assertEqual((self.frozen / "codex_hook.py").read_bytes(),
-                         b"someone else's rules\n", "a folder it did not make is left")
+    def test_rejection_a_frozen_folder_that_is_missing_on_a_first_launch(self):
+        frozen.remove(self.frozen)
+        self.refused_start("frozen folder .* is missing")
+        self.assertFalse(self.frozen.exists(), "a launch never creates the folder")
         self.assertEqual(self.clients, [], "Codex is never started")
+
+    def test_rejection_a_frozen_folder_missing_any_file_names_it(self):
+        for name in ("codex_hook.py", "approver.py", "check_server.py",
+                     "codex-read-commands.txt", "verify-commands.txt", "hook.json"):
+            for resume in (None, THREAD):
+                with self.subTest(name=name, resume=resume):
+                    self.clients = []
+                    path = self.frozen / name
+                    kept = path.read_bytes()
+                    path.unlink()
+                    try:
+                        self.refused_start(f"lacks {re.escape(name)}", resume=resume)
+                    finally:
+                        path.write_bytes(kept)
+                    self.assertEqual(self.clients, [], "Codex is never started")
 
     def test_positive_a_resume_uses_the_folder_as_it_is(self):
         first = self.started()
@@ -718,23 +745,30 @@ class CodexBuilderTests(unittest.TestCase):
         self.assertEqual(again.session_id, THREAD)
 
     def test_rejection_a_resume_whose_frozen_folder_is_gone(self):
-        self.refused_start("frozen hook folder .* is missing", resume=THREAD)
+        frozen.remove(self.frozen)
+        self.refused_start("frozen folder .* is missing", resume=THREAD)
         self.assertFalse(self.frozen.exists(), "a resume never creates the folder")
         self.assertEqual(self.clients, [])
 
-    def test_positive_a_first_launch_that_fails_removes_the_folder_it_made(self):
+    def test_positive_a_first_launch_that_fails_leaves_the_folder(self):
+        # The folder is the run's: the next launch checks the same one (plan 6 item 1).
         self.world.search_off = False
         self.refused_start("web search is not switched off")
-        self.assertFalse(self.frozen.exists(), "so the next launch is a first launch")
+        self.assertTrue((self.frozen / "codex_hook.py").is_file())
         self.assertTrue(all(client.closed for client in self.clients))
+        self.world.search_off = True
+        self.started()  # and the next launch finds it whole
 
-    def test_positive_a_session_closed_before_any_turn_removes_its_folder(self):
+    def test_positive_a_session_closed_before_any_turn_leaves_its_folder(self):
         builder = self.started()
         self.assertIsNone(builder.session_id,
                           "a thread with no turn cannot be resumed, so it is not offered")
         asyncio.run(builder.close())
-        self.assertFalse(self.frozen.exists())
+        self.assertTrue((self.frozen / "codex_hook.py").is_file())
         self.assertTrue(self.clients[-1].closed)
+
+    def test_positive_the_frozen_parent_is_the_orchestrators(self):
+        self.assertEqual(providers.FROZEN_PARENT, frozen.FROZEN_PARENT)
 
     def test_negative_a_session_that_took_a_turn_keeps_its_folder(self):
         builder = self.started()
@@ -766,7 +800,8 @@ class CodexBuilderTests(unittest.TestCase):
                                    self_test=runner)
                 self.assertEqual(self.clients, [], "Codex is not started on a hook that "
                                                    "cannot answer")
-                self.assertFalse(self.frozen.exists())
+                self.assertTrue((self.frozen / "codex_hook.py").is_file(),
+                                "the run's folder stays for the next launch")
 
     def test_positive_the_self_test_runs_the_hook_as_codex_will(self):
         seen = []
@@ -921,9 +956,6 @@ class CodexBuilderTests(unittest.TestCase):
                     self.setUp()
                     if resume:
                         asyncio.run(self.started().close())
-                        self.frozen.mkdir(parents=True)
-                        (self.frozen / "codex_hook.py").write_bytes(
-                            (SCRIPTS / "codex_hook.py").read_bytes())
                         self.world.thread_reply = {**self.world.thread_reply, **change}
                         self.refused_start(f"{reason}.*|not as asked for", resume=resume,
                                            self_test=lambda *a: (0, json.dumps(
@@ -953,6 +985,7 @@ class CodexBuilderTests(unittest.TestCase):
                 self.assertEqual(self.clients, [])
         self.setUp()
         self.temp = self.temp.parent / "temp folder"
+        make_frozen(self.temp / providers.FROZEN_PARENT / RUN_ID, self.root)
         self.refused_start("cannot be written safely")
 
     # ------------------------------------------------------------------- a turn

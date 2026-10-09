@@ -1,6 +1,6 @@
 # Review Orchestration - Prompts
 
-**Last modified:** 2026-10-04
+**Last modified:** 2026-10-08
 
 ## Purpose
 Holds the text the review-orchestration workflow gives to people and to the AIs it runs: the run brief template, the prompts for the builder's first pass, its fix passes and the reviewer, and the parts of those prompts that differ by which AI holds the role.
@@ -22,7 +22,7 @@ None. A filled brief lives with its run, never here, and so does every filled pr
 
 ## Steps
 1. Copy `brief.md` to the run's brief path; do not edit it in place.
-2. Fill in every section, then check it with `python workflows/review-orchestration/scripts/run.py --check-brief <path>`.
+2. Fill in every section, then check it with `python workflows/review-orchestration/scripts/start.py --check-brief <path>`, the starter every orchestrator command goes through.
 3. Append LOG.md with a completion or failure entry when the template or a prompt is changed.
 
 ## Dependencies
@@ -46,3 +46,4 @@ None. A filled brief lives with its run, never here, and so does every filled pr
 - 2026-10-01 - `reviewer.md` now gives the exact lines the orchestrator's checks wrote, not whole files, and says any other change in those files is the builder's (R5-2).
 - 2026-10-02 - Stage A2, chunk (d): the builder and fix prompts take `$tool_rules` and the reviewer prompt `$reviewer_tools`, each filled in by the provider holding the role; added `builder-tools-claude.md`, `builder-tools-codex.md`, `reviewer-tools-claude.md` and `reviewer-tools-codex.md`. A Claude builder's and a Codex reviewer's wording is as it was.
 - 2026-10-04 - `builder-tools-codex.md` shows the one `Get-Content` form a Codex builder may read with, both encodings set, and why (a fix from the chunk (d) proof run, whose reads came back garbled).
+- 2026-10-08 - `brief.md`'s usage comment and Steps name the starter, `start.py --check-brief`, since a brief check now goes through it (orchestrator isolation S6a, code review R18-2).

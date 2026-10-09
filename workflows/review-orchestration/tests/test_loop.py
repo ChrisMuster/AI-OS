@@ -22,13 +22,17 @@ Same three controls as the other suites:
 """
 
 import asyncio
+import hashlib
 import importlib.util
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -57,6 +61,8 @@ runrecord = _load("runrecord")
 packet = _load("packet")
 worktree = _load("worktree")
 checks = _load("checks")
+container = _load("container")
+frozen = _load("frozen")
 loop = _load("loop")
 run_py = _load("run")
 
@@ -91,12 +97,21 @@ None
 """
 
 
+_spec = importlib.util.spec_from_file_location(
+    "fixture_git", Path(__file__).resolve().parent / "fixture_git.py")
+fixture_git = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fixture_git)
+FixtureGitError = fixture_git.FixtureGitError
+
+
 def git(root, *args, git_dir=None):
+    """Run a git command for a test's fixture, through the suites' one fixture runner
+    (`fixture_git.py`: git's own text on a failure, code review R18-1; an object-write
+    refusal retried, R22)."""
     command = ["git"]
     if git_dir:
         command += [f"--git-dir={git_dir}", "--work-tree=."]
-    subprocess.run(command + list(args), cwd=str(root), check=True,
-                   capture_output=True, encoding="utf-8")
+    fixture_git.run_git(command + list(args), root, shown=f"git {' '.join(args)}")
 
 
 def make_project(test):
@@ -118,8 +133,7 @@ def make_project(test):
     git(root, "add", ".gitignore", "work/a.txt", "brief.md")
     git(root, "commit", "-qm", "start")
     personal = base / "personal.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(personal)], check=True,
-                   capture_output=True)
+    git(base, "init", "-q", "--bare", str(personal))
     git(root, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "add", "-f",
         "memory/note.md", git_dir=str(personal))
     git(root, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm",
@@ -200,6 +214,10 @@ class Harness:
         self.given = []
         self.cat_a = set(CAT_A)
         self.frozen = None
+        self.frozen_calls = []
+        self.frozen_error = None
+        self.frozen_parent = None
+        self.on_frozen = None
         self.builder_refusals = []
         self.review_refusals = []
         self.during_review = None
@@ -223,7 +241,24 @@ class Harness:
                          category_a=lambda root: set(self.cat_a),
                          capture_problems=lambda root, git_dir: [],
                          inventory=self.inventory, claude_usage=lambda: self.usage,
+                         setup_frozen=self.setup_frozen,
                          sleep=self.slept.append, now=lambda: self.clock)
+
+    def setup_frozen(self, root, run_id, *, public_head, edit_paths, builder):
+        """Stands in for frozen.setup (its own tests are in test_frozen.py): records
+        what the loop asked for and gives the swapped builder's folder, or a fresh one
+        beside the project."""
+        self.frozen_calls.append({"root": root, "run_id": run_id, "public_head": public_head,
+                                  "edit_paths": list(edit_paths), "builder": builder})
+        if self.frozen_error is not None:
+            raise self.frozen_error
+        if self.frozen is not None:
+            return self.frozen
+        folder = (self.frozen_parent or Path(root).parent / "frozen") / run_id
+        folder.mkdir(parents=True)
+        if self.on_frozen is not None:
+            self.on_frozen(folder, root, run_id, edit_paths, builder, public_head)
+        return folder
 
     def inventory(self, root, git_dir, category_a):
         self.inventories += 1
@@ -946,6 +981,7 @@ class PreflightTests(LoopCase):
         self.assertIn("close-out gate failed: tests", text)
         self.assertFalse(self.runs.exists())
         self.assertEqual(self.h.builders, [])
+        self.assertEqual(self.h.frozen_calls, [], "no frozen folder for a refused start")
 
     def test_rejection_a_refused_resume_leaves_the_run_exactly_as_it_was(self):
         self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
@@ -1041,6 +1077,450 @@ class PreflightTests(LoopCase):
         (self.root / "memory" / "note.md").write_bytes(b"changed\n")
         problems = loop.capture_problems(self.root, str(self.personal))
         self.assertTrue(any("uncommitted" in p for p in problems))
+
+
+class FrozenFolderStartTests(LoopCase):
+    """Orchestrator isolation plan 6 item 1 and 7.1 item 5 (S6a): the orchestrator, not
+    a builder session, makes the run's frozen folder, for either builder."""
+
+    def test_positive_a_start_makes_the_frozen_folder_for_its_own_run(self):
+        for builder in ("claude", "codex"):
+            with self.subTest(builder=builder):
+                self.setUp()
+                self.h.swapped = builder == "codex"
+                if self.h.swapped:
+                    self.h.frozen = self.root.parent / "codex-frozen"
+                    self.h.frozen.mkdir()
+                self.h.builder_script = [edit(self.root, "x\n")]
+                self.h.reviews = [[]]
+                run = self.start()
+                head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.root),
+                                      capture_output=True, encoding="utf-8").stdout.strip()
+                call, = self.h.frozen_calls
+                self.assertEqual(call, {"root": self.root, "run_id": run.state["run_id"],
+                                        "public_head": head, "edit_paths": ["work/"],
+                                        "builder": builder})
+                self.assertTrue(run.state["frozen_dir"])
+                self.assertTrue(Path(run.state["frozen_dir"]).is_dir())
+
+    def test_rejection_a_frozen_folder_that_cannot_be_made_refuses_the_start(self):
+        self.h.frozen_error = frozen.FrozenError("the commit holds no workflows/audit run.py")
+        with self.assertRaises(loop.RunRefused) as caught:
+            self.start()
+        self.assertIn("the commit holds no workflows/audit run.py",
+                      " ".join(caught.exception.args[0]))
+        self.assertFalse(self.runs.exists(), "no run record")
+        self.assertFalse(self.log.exists(), "no started entry")
+        self.assertEqual(self.h.builders, [])
+
+    def test_rejection_an_unwritable_temp_folder_refuses_the_start(self):
+        # Code review R19-2: the real frozen.setup, its parent folder refused by the
+        # file system, reaches the start as a refusal, with nothing of the run made.
+        temp = self.root.parent / "temp"
+        refused = temp / frozen.FROZEN_PARENT
+        original = Path.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if Path(path) == refused:
+                raise PermissionError(13, "Access is denied", str(path))
+            return original(path, *args, **kwargs)
+        deps = self.h.deps()
+        deps.setup_frozen = lambda root, run_id, **kw: frozen.setup(
+            root, run_id, temp_root=temp, **kw)
+        settings = json.loads(json.dumps(self.settings))
+        with mock.patch.object(Path, "mkdir", mkdir), \
+                self.assertRaises(loop.RunRefused) as caught:
+            loop.start("brief.md", "demo", str(self.personal), root=self.root, deps=deps,
+                       log_path=self.log, runs_dir=self.runs, settings=settings,
+                       builder="claude")
+        text = " ".join(caught.exception.args[0])
+        self.assertIn("cannot be made", text)
+        self.assertIn("Access is denied", text)
+        self.assertFalse(self.runs.exists(), "no run record")
+        self.assertFalse(self.log.exists(), "no started entry")
+
+    def test_rejection_a_run_record_that_cannot_be_made_removes_the_frozen_folder(self):
+        def refuse(*args, **kwargs):
+            raise ValueError("refused")
+        original = runrecord.create_run
+        runrecord.create_run = refuse
+        try:
+            with self.assertRaises(ValueError):
+                self.start()
+        finally:
+            runrecord.create_run = original
+        call, = self.h.frozen_calls
+        self.assertFalse((self.root.parent / "frozen" / call["run_id"]).exists())
+
+    def test_negative_a_dry_run_makes_no_frozen_folder(self):
+        with redirect_stderr(io.StringIO()):
+            self.assertIsNone(loop.start("brief.md", "demo", str(self.personal),
+                                         root=self.root, deps=self.h.deps(),
+                                         log_path=self.log, runs_dir=self.runs,
+                                         dry_run=True, settings=self.settings))
+        self.assertEqual(self.h.frozen_calls, [])
+
+    def test_positive_resume_and_stop_commands_name_the_starter(self):
+        # Plan 7.0 item 3: the report and the pause message print the starter, with the
+        # run's own id, never the live run.py.
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[finding()]]
+        run = self.start(cap=1)
+        self.assertEqual(self.reason(run), sr.MAX_ROUNDS)
+        run_id = run.state["run_id"]
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn(f"python workflows/review-orchestration/scripts/start.py --resume "
+                      f"{run_id} --rounds N", report)
+        self.assertNotIn("run.py --resume", report)
+        self.assertEqual(loop.pause_commands(run_id),
+                         f"Resume it with: python workflows/review-orchestration/scripts/"
+                         f"start.py --resume {run_id}; or end it with: python workflows/"
+                         f"review-orchestration/scripts/start.py --stop {run_id}")
+        for reason, text in loop.RECOMMEND.items():
+            self.assertNotIn("run.py", text, reason)
+
+
+def make_trusted(folder, root, run_id, edit_paths, builder, public_head):
+    """A frozen folder as frozen.setup makes it, with trusted/ copied from this working
+    tree rather than git-archived (frozen.setup's own archive is tested in
+    test_frozen.py): the orchestrator's scripts, config and prompts, and the sync
+    classification's scripts."""
+    # What git archive would leave out: caches, run records and the gitignored logs.
+    skip = shutil.ignore_patterns("__pycache__", "runs", "LOG.md")
+    workflow = Path(folder) / "trusted" / "workflows" / "review-orchestration"
+    for sub in ("scripts", "config", "prompts"):
+        shutil.copytree(WORKFLOW / sub, workflow / sub, ignore=skip)
+    shutil.copytree(PROJECT / "workflows" / "sync-architecture" / "scripts",
+                    Path(folder) / "trusted" / "workflows" / "sync-architecture" / "scripts",
+                    ignore=skip)
+    frozen.populate(folder, workflow / "scripts", workflow / "config",
+                    frozen.hook_config(run_id, root, edit_paths, builder, public_head))
+
+
+class TrustedCopyTests(LoopCase):
+    """Orchestrator isolation plan 7.0 item 3 and 7.8 (S6a): a run started in the live
+    tree is handed to its frozen folder's trusted run.py, and a resume or stop runs
+    that copy, which arms the tripwire and takes the project root from hook.json before
+    it imports anything. The run record and the log live under the project root."""
+
+    def setUp(self):
+        super().setUp()
+        workflow = self.root / "workflows" / "review-orchestration"
+        self.runs = workflow / "runs"
+        self.log = workflow / "LOG.md"
+        (self.root / "AGENTS.md").write_bytes(b"# agents\n")
+        self.temp = self.root.parent / "temp"
+        self.h.frozen_parent = self.temp / frozen.FROZEN_PARENT
+        self.h.on_frozen = make_trusted
+        self.elsewhere = self.root.parent / "elsewhere"
+        self.elsewhere.mkdir()
+        # Side effects planted in the live tree's orchestrator: none may ever fire.
+        self.markers = self.root.parent / "fired"
+        live = workflow / "scripts"
+        live.mkdir(parents=True)
+        for name in ("run", "brief", "loop", "worktree"):
+            (live / f"{name}.py").write_text(
+                f"open(r'{self.markers}-{name}', 'w').close()\n", encoding="utf-8",
+                newline="\n")
+
+    def started(self):
+        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                         deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                         settings=self.settings, builder="claude")
+        return run, Path(run.state["frozen_dir"])
+
+    def paused(self):
+        run, folder = self.started()
+        run.state.update({"status": sr.PAUSED, "pause": "awaiting-user"})
+        run.save()
+        return run, folder
+
+    def trusted(self, folder, *argv, env=None):
+        # Without PYTHONDONTWRITEBYTECODE, so the trusted copy must turn bytecode
+        # writing off itself (code review R20-1).
+        environ = {k: v for k, v in os.environ.items()
+                   if k not in ("BOOK_DRAGON_ROOT", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE")}
+        environ.update(env or {})
+        return subprocess.run([sys.executable, str(frozen.trusted_run_py(folder)), *argv],
+                              capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=300, cwd=str(self.elsewhere), env=environ)
+
+    def fired(self):
+        return sorted(p.name for p in self.markers.parent.glob(self.markers.name + "-*"))
+
+    def test_positive_a_stop_runs_the_trusted_copy_against_the_project(self):
+        run, folder = self.paused()
+        done = self.trusted(folder, "--stop", run.state["run_id"])
+        self.assertIn(f"ended {sr.STOPPED_BY_USER}", done.stdout, done.stderr)
+        self.assertEqual(self.fired(), [], "nothing of the live tree ran")
+        self.assertIn(f"Run {run.state['run_id']} ended stopped-by-user",
+                      self.log.read_text(encoding="utf-8"))
+        state = runrecord.read_state(self.runs / run.state["run_id"])
+        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.STOPPED_BY_USER)
+        self.assertTrue((self.runs / run.state["run_id"] / "report.md").is_file())
+        # Nothing of the run's data lands in the frozen folder.
+        self.assertEqual([p for p in folder.rglob("*")
+                          if p.name in ("LOG.md", "runs", "report.md")], [])
+
+    def test_positive_a_dry_stop_with_a_matching_root_changes_nothing(self):
+        run, folder = self.paused()
+        before = (self.runs / run.state["run_id"] / "state.json").read_bytes()
+        done = self.trusted(folder, "--stop", run.state["run_id"], "--dry-run",
+                            env={"BOOK_DRAGON_ROOT": str(self.root)})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("[DRY RUN] would end run", done.stderr)
+        self.assertEqual((self.runs / run.state["run_id"] / "state.json").read_bytes(),
+                         before)
+        self.assertEqual(self.fired(), [])
+
+    def test_rejection_the_trusted_copy_refuses_what_it_cannot_trust(self):
+        run, folder = self.paused()
+        run_id = run.state["run_id"]
+        other = self.root.parent / "other"
+        other.mkdir()
+        (other / "AGENTS.md").write_bytes(b"# agents\n")
+        cases = [("a root that disagrees with hook.json", ["--stop", run_id],
+                  {"BOOK_DRAGON_ROOT": str(other)}, "disagree|names"),
+                 ("another run's id", ["--stop", "20261008-000000-ffff"], {},
+                  "belongs to run")]
+        for label, argv, env, reason in cases:
+            with self.subTest(label):
+                done = self.trusted(folder, *argv, env=env)
+                self.assertEqual(done.returncode, loop_refused(), done.stdout + done.stderr)
+                self.assertRegex(done.stdout + done.stderr, reason)
+        done = self.trusted(folder, "--run", "brief.md", "--builder", "claude",
+                            "--item", "x", "--git-dir", "x")
+        self.assertEqual(done.returncode, 2, "a run never starts from a trusted copy")
+        self.assertEqual(self.fired(), [])
+        self.assertEqual(runrecord.read_state(self.runs / run_id)["status"], sr.PAUSED)
+
+    def test_rejection_a_hook_json_root_without_agents_md(self):
+        run, folder = self.paused()
+        (self.root / "AGENTS.md").unlink()
+        done = self.trusted(folder, "--stop", run.state["run_id"])
+        self.assertEqual(done.returncode, loop_refused())
+        self.assertIn("not a folder holding AGENTS.md", done.stderr)
+
+    def test_rejection_a_missing_tripwire_loads_nothing(self):
+        run, folder = self.paused()
+        (folder / "tripwire" / "sitecustomize.py").unlink()
+        done = self.trusted(folder, "--stop", run.state["run_id"])
+        self.assertEqual(done.returncode, loop_refused())
+        self.assertIn("sitecustomize.py", done.stderr)
+        self.assertEqual(runrecord.read_state(self.runs / run.state["run_id"])["status"],
+                         sr.PAUSED)
+
+    def test_rejection_the_tripwire_is_armed_before_the_first_project_import(self):
+        # A live-tree file loaded from inside the trusted copy fails on the tripwire,
+        # and its code never runs.
+        run, folder = self.paused()
+        planted = self.root / "planted.py"
+        planted.write_text(f"open(r'{self.markers}-planted', 'w').close()\n",
+                           encoding="utf-8", newline="\n")
+        loop_copy = frozen.trusted_run_py(folder).parent / "loop.py"
+        with open(loop_copy, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write("\nimport importlib.util as _u\n"
+                         f"_s = _u.spec_from_file_location('planted', r'{planted}')\n"
+                         "_s.loader.exec_module(_u.module_from_spec(_s))\n")
+        done = self.trusted(folder, "--stop", run.state["run_id"])
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("TripwireError", done.stderr)
+        self.assertEqual(self.fired(), [])
+
+    def test_positive_advance_takes_a_started_runs_steps(self):
+        # Code review R19-1: the trusted copy's --advance mode, given a started run,
+        # takes its steps to their end (here with the suite's fake sessions).
+        run, folder = self.started()
+        self.h.builder_script = [edit(self.root, "done\n")]
+        self.h.reviews = [[]]
+        with redirect_stdout(io.StringIO()):
+            code = run_py.main(["--advance", run.state["run_id"]], root=self.root,
+                               log_path=self.log, deps=self.h.deps(), runs_dir=self.runs,
+                               frozen=folder)
+        self.assertEqual(code, 0)
+        state = runrecord.read_state(self.runs / run.state["run_id"])
+        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
+        self.assertEqual([s["step"] for s in state["steps"]], ["build", "review-R1"])
+        self.assertEqual((self.root / "work" / "a.txt").read_bytes(), b"done\n")
+
+    def test_positive_advance_as_a_process_reaches_the_runs_steps(self):
+        # Code review R19-1: the same mode as the real process a start hands over to,
+        # with the trusted copy's step-taking replaced by a stub that records it was
+        # reached for this run and ends the run, so no session is opened.
+        run, folder = self.started()
+        reached = self.root.parent / "advanced"
+        loop_copy = frozen.trusted_run_py(folder).parent / "loop.py"
+        with open(loop_copy, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n\nasync def _stub_advance(self):\n"
+                         f"    with open(r'{reached}', 'w', encoding='utf-8') as out:\n"
+                         "        out.write(self.state['run_id'])\n"
+                         "    self.end(sr.REVIEWED_CLEAN, {'stub': True})\n\n\n"
+                         "Run.advance = _stub_advance\n")
+        done = self.trusted(folder, "--advance", run.state["run_id"])
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(reached.read_text(encoding="utf-8"), run.state["run_id"])
+        state = runrecord.read_state(self.runs / run.state["run_id"])
+        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
+        self.assertIn(f"Run {run.state['run_id']} ended reviewed-clean",
+                      self.log.read_text(encoding="utf-8"))
+        self.assertEqual(self.fired(), [], "nothing of the live tree ran")
+
+    def end_as_the_trusted_copy_would(self, run, reason=sr.REVIEWED_CLEAN):
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        again.end(reason, {"by": "the trusted copy"})
+
+    @staticmethod
+    def folder_state(folder):
+        """A SHA-256 for every file in a frozen folder, bytecode caches included."""
+        return {p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in sorted(Path(folder).rglob("*")) if p.is_file()}
+
+    def test_negative_a_trusted_stop_and_advance_write_nothing_in_the_frozen_folder(self):
+        # Plan 7.0 item 3 and code review R20-1: after setup only the hook's decisions
+        # file and the helper's calls file may be written there; neither a stop nor an
+        # advance writes either, so the folder must be byte-identical, no bytecode
+        # cache included.
+        run, folder = self.paused()
+        before = self.folder_state(folder)
+        done = self.trusted(folder, "--stop", run.state["run_id"])
+        self.assertIn("ended stopped-by-user", done.stdout, done.stderr)
+        self.assertEqual(self.folder_state(folder), before)
+        self.assertEqual(list(folder.rglob("__pycache__")), [])
+        run, folder = self.started()
+        loop_copy = frozen.trusted_run_py(folder).parent / "loop.py"
+        with open(loop_copy, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n\nasync def _stub_advance(self):\n"
+                         "    self.end(sr.REVIEWED_CLEAN, {'stub': True})\n\n\n"
+                         "Run.advance = _stub_advance\n")
+        before = self.folder_state(folder)
+        done = self.trusted(folder, "--advance", run.state["run_id"])
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.folder_state(folder), before)
+        self.assertEqual(list(folder.rglob("__pycache__")), [])
+
+    def test_positive_a_start_hands_the_run_to_its_trusted_copy(self):
+        run, folder = self.started()
+        calls = []
+
+        def runner(argv, cwd=None, env=None):
+            calls.append((argv, cwd, env))
+            self.end_as_the_trusted_copy_would(run)
+            return subprocess.CompletedProcess(argv, 7)
+        environ = {"PATH": os.environ.get("PATH", ""), run_py.STARTER_MARKER: "1",
+                   "BOOK_DRAGON_ROOT": "stale"}
+        code = run_py.hand_over(run, root=self.root, wait=True, environ=environ,
+                                runner=runner, python=sys.executable)
+        self.assertEqual(code, 7, "the trusted copy's exit code is the start's")
+        (argv, cwd, env), = calls
+        self.assertEqual(argv, [sys.executable, str(frozen.trusted_run_py(folder)),
+                                "--advance", run.state["run_id"], "--wait"])
+        self.assertEqual(cwd, str(self.root))
+        self.assertEqual(env["BOOK_DRAGON_ROOT"], str(self.root))
+        self.assertEqual(env[run_py.REEXEC_MARKER], "1")
+        self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertNotIn(run_py.STARTER_MARKER, env)
+        # The trusted copy ended the run, so the hand-over leaves it as it is.
+        state = runrecord.read_state(self.runs / run.state["run_id"])
+        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
+        self.assertEqual(len(state["stop_reasons"]), 1)
+
+    def handed(self, run, **kwargs):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_py.hand_over(run, root=self.root, python=sys.executable,
+                                    environ={"PATH": os.environ.get("PATH", "")},
+                                    **kwargs)
+        return code, out.getvalue(), runrecord.read_state(self.runs / run.state["run_id"])
+
+    def ended_error(self, state, why):
+        """The run ended `error` naming ``why``, with its report and failed entry."""
+        self.assertEqual(state["status"], sr.ENDED)
+        stop = state["stop_reasons"][-1]
+        self.assertEqual(stop["reason"], sr.ERROR)
+        self.assertIn(why, stop["evidence"]["hand_over"])
+        self.assertIn(sr.ERROR, sr.RESUMABLE, "so the starter can resume it")
+        self.assertTrue((self.runs / state["run_id"] / "report.md").is_file())
+        last = self.log.read_text(encoding="utf-8").splitlines()[-1]
+        self.assertIn("| Action: failed |", last)
+        self.assertIn(f"Run {state['run_id']} ended error", last)
+
+    def test_rejection_a_trusted_copy_that_cannot_be_started_ends_the_run_error(self):
+        # Code review R19-3: the run is not left marked running.
+        run, folder = self.started()
+
+        def runner(argv, cwd=None, env=None):
+            raise FileNotFoundError(2, "No such file", argv[0])
+        code, out, state = self.handed(run, runner=runner)
+        self.assertEqual(code, 1)
+        self.ended_error(state, "could not be started (FileNotFoundError")
+        self.assertIn(f"start.py --resume {run.state['run_id']}", out)
+
+    def test_rejection_a_trusted_copy_that_exits_without_ending_the_run(self):
+        for exit_code, expected in ((3, 3), (0, 1)):
+            with self.subTest(exit_code=exit_code):
+                self.setUp()
+                run, folder = self.started()
+                code, out, state = self.handed(
+                    run, runner=lambda argv, cwd=None, env=None, c=exit_code:
+                    subprocess.CompletedProcess(argv, c))
+                self.assertEqual(code, expected)
+                self.ended_error(state, f"exited {exit_code} without ending the run")
+
+    def test_rejection_a_tripwire_that_cannot_be_armed_ends_the_run_error(self):
+        run, folder = self.started()
+        launched = []
+
+        def arm(folder, root):
+            raise RuntimeError("the tripwire is missing")
+        code, out, state = self.handed(
+            run, arm=arm, runner=lambda *a, **k: launched.append(a) or
+            subprocess.CompletedProcess([], 0))
+        self.assertEqual((code, launched), (1, []), "nothing is launched unarmed")
+        self.ended_error(state, "the tripwire could not be armed")
+
+    def test_negative_an_interrupt_is_left_to_the_trusted_copy(self):
+        # Ctrl+C reaches both processes; the parent does not race the child to end
+        # the run.
+        run, folder = self.started()
+
+        def runner(argv, cwd=None, env=None):
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.handed(run, runner=runner)
+        state = runrecord.read_state(self.runs / run.state["run_id"])
+        self.assertEqual(state["status"], sr.RUNNING)
+
+    def test_positive_the_command_line_start_hands_over_instead_of_advancing(self):
+        handed = []
+        code = run_py.main(["--run", "brief.md", "--builder", "claude", "--item", "demo",
+                            "--git-dir", str(self.personal)],
+                           root=self.root, log_path=self.log, deps=self.h.deps(),
+                           runs_dir=self.runs, frozen=None,
+                           handover=lambda run, root, wait: handed.append(run) or 5)
+        self.assertEqual(code, 5)
+        run, = handed
+        self.assertEqual(run.state["step"], "preflight", "no step was taken here")
+        self.assertEqual(self.h.builders, [])
+
+    def test_rejection_advance_is_the_trusted_copy_mode_only(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            run_py.main(["--advance", "20261008-000000-ffff"], root=self.root,
+                        log_path=self.log, runs_dir=self.runs, frozen=None)
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_positive_the_layout_names_the_frozen_folder(self):
+        run, folder = self.started()
+        self.assertEqual(run_py.trusted_frozen_folder(frozen.trusted_run_py(folder)),
+                         folder)
+        self.assertIsNone(run_py.trusted_frozen_folder(SCRIPTS / "run.py"))
+        odd = self.temp / "book-dragon-orchestration" / "not-a-run" / "trusted" / \
+            "workflows" / "review-orchestration" / "scripts" / "run.py"
+        self.assertIsNone(run_py.trusted_frozen_folder(odd))
+
+
+def loop_refused():
+    return run_py.REFUSED
 
 
 class CommandLineTests(LoopCase):
@@ -1334,6 +1814,19 @@ class RunRecordEscapingTests(LoopCase):
                                                ensure_ascii=False))
 
 
+class FixtureHelperTests(unittest.TestCase):
+    """The suite's own fixture helper (code review R18-1)."""
+
+    def test_rejection_a_failing_git_command_names_gits_own_error(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        with self.assertRaises(FixtureGitError) as caught:
+            git(Path(folder.name), "add", "missing.txt")
+        text = str(caught.exception)
+        self.assertIn("`git add missing.txt` exited 128", text)
+        self.assertIn("not a git repository", text.lower())
+
+
 class PacketTests(unittest.TestCase):
 
     def ledger(self):
@@ -1495,7 +1988,32 @@ class WorktreeTests(unittest.TestCase):
 
     def test_rejection_a_missing_classification_is_an_error_not_a_guess(self):
         with self.assertRaises(worktree.GitError):
-            worktree.category_a(self.root)  # the fixture has no sync plan
+            worktree.category_a(self.root, allowlist=self.root / "no-such" / "allowlist.py")
+        # A classification whose plan or block is missing is an error too.
+        fake = self.root / "fake_allowlist.py"
+        fake.write_bytes(b"def read_specs():\n    return None\n")
+        with self.assertRaises(worktree.GitError):
+            worktree.category_a(self.root, allowlist=fake)
+
+    def test_positive_the_classification_is_loaded_from_beside_this_code(self):
+        # Orchestrator isolation plan 7.0 item 4: in a run's trusted copy, beside the
+        # code is the starting commit's; it is never taken from the project root given.
+        self.assertEqual(worktree.ALLOWLIST,
+                         SCRIPTS.parent.parent / "sync-architecture" / "scripts"
+                         / "allowlist.py")
+        planted = self.root / "workflows" / "sync-architecture" / "scripts"
+        planted.mkdir(parents=True)
+        (planted / "allowlist.py").write_bytes(
+            b"raise SystemExit('the project root copy was loaded')\n")
+        fake = self.root / "beside.py"
+        fake.write_bytes(b"def read_specs():\n    return ['x']\n"
+                         b"def select(specs):\n    return {'final': ['memory/a.md']}\n")
+        original = worktree.ALLOWLIST
+        worktree.ALLOWLIST = fake
+        try:
+            self.assertEqual(worktree.category_a(self.root), {"memory/a.md"})
+        finally:
+            worktree.ALLOWLIST = original
 
     def test_rejection_a_run_record_is_never_the_builder_work(self):
         workflow = self.root / "workflows" / "review-orchestration"
@@ -2117,13 +2635,15 @@ class TurnCheckTests(SwappedCase):
         self.assertIn("start-ignored.txt", self.evidence(run))
         self.assertNotIn("check-calls.jsonl", self.evidence(run))
 
-    def test_negative_a_bytecode_cache_in_the_frozen_folder_is_not_a_change(self):
-        # Running the hook writes one; the rules it runs from are what is compared.
+    def test_rejection_a_bytecode_cache_in_the_frozen_folder_is_a_change(self):
+        # Code review R20-1: nothing run from the folder writes one any more, so a
+        # cache appearing there during a turn is a change like any other.
         def cache():
             (self.h.frozen / "__pycache__").mkdir()
             (self.h.frozen / "__pycache__" / "codex_rules.cpython-313.pyc").write_bytes(b"x")
         run = self.planted(cache)
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertIn("__pycache__/codex_rules.cpython-313.pyc", self.evidence(run))
 
     def test_rejection_the_check_runs_when_the_turn_raised(self):
         def fails(prompt):

@@ -24,7 +24,8 @@ Four parts, standard library only:
 Every Docker command goes through ``docker()``, so the tests replace that one
 function. Every process started here runs on the host, so none is given the
 clean-copy marker; only the container gets it, with ``-e``. Built and tested in S4;
-the loop starts calling it in S6 (the user's decision A, 2026-10-07).
+the loop starts calling it in S6b and the check helper in S7 (the user's decision A,
+2026-10-07; decision 28).
 """
 
 import hashlib

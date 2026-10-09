@@ -22,9 +22,10 @@ the copy beside it. Every ``run_check`` call adds one line to the folder's
 ``check-calls.jsonl`` (command, allowed, exit code, seconds; never the output); the
 helper writes nothing else there. ``get_timestamp`` writes nothing.
 
-Built and tested in S5; the orchestrator writes the folder's settings and gives the
-helper to the builders from S6 (the user's decision A, 2026-10-08). Standard library
-and this workflow's own modules; ``mcp`` is imported only to serve.
+Built and tested in S5. The orchestrator writes the folder and its settings from S6a,
+the image tag from S6b, and gives the helper to the builders from S7 (the user's
+decisions 27 and 28, 2026-10-08). Standard library and this workflow's own modules;
+``mcp`` is imported only to serve.
 """
 
 import json
@@ -34,9 +35,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import approver as approver_mod
-import codex_rules
-import container
+# Run from the frozen folder, where nothing but the two record files may be written
+# after setup (plan 7.0 item 3): no bytecode cache for the modules below (code review
+# R20-1).
+sys.dont_write_bytecode = True
+
+import approver as approver_mod  # noqa: E402
+import codex_rules  # noqa: E402
+import container  # noqa: E402
 
 FOLDER = Path(__file__).resolve().parent
 SERVER_NAME = "checks"

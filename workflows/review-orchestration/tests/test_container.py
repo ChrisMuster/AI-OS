@@ -64,9 +64,18 @@ class DockerCase(unittest.TestCase):
         return fake
 
 
+_spec = importlib.util.spec_from_file_location(
+    "fixture_git", Path(__file__).resolve().parent / "fixture_git.py")
+fixture_git = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fixture_git)
+FixtureGitError = fixture_git.FixtureGitError
+
+
 def git(cwd, *args):
-    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
-                          encoding="utf-8").stdout
+    """Run a git command for a test's fixture and return its output, through the
+    suites' one fixture runner (`fixture_git.py`)."""
+    return fixture_git.run_git(["git", "-C", str(cwd), *args], cwd,
+                               shown=f"git {' '.join(args)}").stdout
 
 
 def write(path, data=b"x\n"):
@@ -869,6 +878,18 @@ class RunTests(DockerCase):
                 self.assertNotIn("was stopped", message)
                 self.assertIn(f"container {name} may still be running", message)
                 self.assertIn(f"docker kill {name}", message)
+
+
+class FixtureHelperTests(unittest.TestCase):
+    """The suite's own fixture helper (code review R21-1)."""
+
+    def test_rejection_a_failing_git_command_names_gits_own_error(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        with self.assertRaises(FixtureGitError) as caught:
+            git(Path(folder.name), "add", "-A")
+        self.assertIn("`git add -A` exited 128", str(caught.exception))
+        self.assertIn("not a git repository", str(caught.exception).lower())
 
 
 if __name__ == "__main__":

@@ -62,10 +62,8 @@ MARKER = "Orchestrated session: skip the AGENTS.md session-startup sequence."
 EDIT_MAX_TURNS = 80
 REVIEW_MAX_TURNS = 200
 
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-_CONFIG_DIR = _SCRIPTS_DIR.parent / "config"
-
-# The Codex builder's settings (short plan, facts 1, 4, 12 and 13).
+# The Codex builder's settings (short plan, facts 1, 4, 12 and 13). The frozen folder's
+# parent is frozen.FROZEN_PARENT's; a test checks the two agree.
 FROZEN_PARENT = "book-dragon-orchestration"
 HOOK_TIMEOUT_SECONDS = 30
 HOOK_MATCHER = ".*"  # the run's hook applies to every tool, and Codex reports it so
@@ -356,7 +354,6 @@ class CodexBuilder:
         self._client = None
         self._thread_id = None
         self._first_prompt_sent = resume is not None
-        self._turn_started = False
         self._failed_request = None
         # The thread id is published only once a turn has started: a thread with no
         # turn cannot be resumed, so a resume must not be given one.
@@ -385,27 +382,21 @@ class CodexBuilder:
         return client
 
     def _freeze(self):
-        """Step 1: the frozen folder. Returns True if this launch created it."""
+        """Step 1: the frozen folder. The orchestrator makes it for every run before
+        any session starts (orchestrator isolation plan 6 item 1); a launch, first or
+        resumed, only checks it holds every file the hook and the rules need, and
+        raises naming what is missing."""
         folder = self.frozen_dir
-        if self.resume is not None:
-            if not folder.is_dir():
-                raise ProviderError(f"the run's frozen hook folder {folder.as_posix()} "
-                                    "is missing, so the rules this run started with are "
-                                    "gone; start the run again from its brief")
-            return False
-        if folder.exists():
-            raise ProviderError(f"the frozen hook folder {folder.as_posix()} already "
-                                "exists before this run's first launch")
-        folder.mkdir(parents=True)
-        for name in codex_rules.FROZEN_MODULES:
-            shutil.copyfile(_SCRIPTS_DIR / name, folder / name)
-        for name in codex_rules.FROZEN_LISTS:
-            shutil.copyfile(_CONFIG_DIR / name, folder / name)
-        (folder / codex_rules.HOOK_CONFIG).write_text(
-            json.dumps({"run_id": self.run_id, "edit_paths": self.edit_paths,
-                        "project_root": self.cwd}, indent=1) + "\n",
-            encoding="utf-8", newline="\n")
-        return True
+        if not folder.is_dir():
+            raise ProviderError(f"the run's frozen folder {folder.as_posix()} is missing, "
+                                "so the rules this run started with are gone; start the "
+                                "run again from its brief")
+        names = (*codex_rules.FROZEN_MODULES, *codex_rules.FROZEN_LISTS,
+                 codex_rules.HOOK_CONFIG)
+        missing = [name for name in names if not (folder / name).is_file()]
+        if missing:
+            raise ProviderError(f"the run's frozen folder {folder.as_posix()} lacks "
+                                + ", ".join(missing))
 
     def _hook_command(self):
         """Step 2: the command Codex runs, refused if it would need quoting."""
@@ -543,7 +534,7 @@ class CodexBuilder:
         }
 
     async def start(self):
-        created = self._freeze()
+        self._freeze()
         try:
             python, script, command = self._hook_command()
             self._check_hook_answers(python, script)
@@ -597,9 +588,9 @@ class CodexBuilder:
             self.thread_model = reply.get("model")
             self.launch_record = self._launch_record(hooks, config, reply)
         except BaseException:
+            # The frozen folder belongs to the run, not to this launch: it stays, and
+            # the next launch checks the same folder (plan 6 item 1).
             self._close_client()
-            if created:
-                shutil.rmtree(self.frozen_dir, ignore_errors=True)
             raise
 
     # ------------------------------------------------------- the two layers
@@ -685,7 +676,6 @@ class CodexBuilder:
         started = time.time()
         client, thread_id = self._client, self._thread_id
         turn_id = client.turn_start(thread_id, prompt, {"effort": self.effort}).turn.id
-        self._turn_started = True
         self.session_id = thread_id
         events = []
         self.last_messages = events
@@ -746,11 +736,8 @@ class CodexBuilder:
                 self._client = None
 
     async def close(self):
+        # The frozen folder is the run's; closing a session never removes it.
         self._close_client()
-        # A first launch that never started a turn leaves nothing to resume, so its
-        # frozen folder goes with it and the next launch is a first launch again.
-        if self.resume is None and not self._turn_started:
-            shutil.rmtree(self.frozen_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------- reviewer

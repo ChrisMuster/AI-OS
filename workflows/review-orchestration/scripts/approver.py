@@ -15,7 +15,8 @@ What is allowed:
                   none may name a ``.env`` file, and a Grep may not carry a ``glob``.
   edit tools     Edit, Write, MultiEdit and NotebookEdit, when the file resolves
                   inside the project, inside one of the brief's edit paths, and is not
-                  under ``.git`` or a ``.env`` file.
+                  under ``.git`` or the project ``.venv``, a ``.env`` file, or the
+                  orchestrator's starter (``brief.STARTER_PATH``).
   the shell       Bash, when the whole command matches one line of
                   ``verify-commands.txt``, is one line, has no ``..`` path component,
                   names no ``.env`` file and does not ask to leave the sandbox.
@@ -39,7 +40,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from brief import PROJECT_ROOT, _components, _folded, check_edit_path
+from brief import PROJECT_ROOT, STARTER_PATH, _components, _folded, check_edit_path
 
 _WORKFLOW_DIR = Path(__file__).resolve().parent.parent
 VERIFY_COMMANDS_PATH = _WORKFLOW_DIR / "config" / "verify-commands.txt"
@@ -259,7 +260,13 @@ class Approver:
             return f"{raw} is under `.git/`."
         if any(part == ".env" or part.startswith(".env.") for part in parts):
             return f"{raw} is a `.env` file."
+        # Whatever the edit paths say (orchestrator isolation plan 7.0 item 2 and 7.7):
+        # the project .venv runs every check, and the starter enters every run.
+        if parts[0] == ".venv":
+            return f"{raw} is in the project `.venv`, which no run may change."
         key = "/".join(parts)
+        if key == self._key(STARTER_PATH.split("/")):
+            return f"{raw} is the orchestrator's starter, which no run may change."
         if any(key == edit or key.startswith(edit + "/") for edit in self._edit_keys):
             return None
         return f"{raw} is outside this run's edit paths."

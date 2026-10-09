@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -64,12 +65,11 @@ TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
 
 
 def folder_bytes(folder):
-    """A SHA-256 for every file in a frozen folder, bytecode caches left out, since
-    importing the helper writes them (as the loop's turn check leaves them out)."""
+    """A SHA-256 for every file in a frozen folder, bytecode caches included: the
+    helper writes none (code review R20-1), as the loop's turn check now requires."""
     folder = Path(folder)
     return {path.relative_to(folder).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted(folder.rglob("*"))
-            if path.is_file() and "__pycache__" not in path.parts}
+            for path in sorted(folder.rglob("*")) if path.is_file()}
 
 
 def changed(before, after):
@@ -415,18 +415,23 @@ class ServerTests(unittest.TestCase):
                                                encoding="utf-8", newline="\n")
 
     def test_positive_the_frozen_helper_needs_nothing_from_the_project(self):
-        # Imported from the frozen folder alone, it judges by the frozen Claude list
+        # Loaded from the frozen folder alone, it judges by the frozen Claude list
         # there: an unlisted command is refused for the list, and a listed one gets
         # past it to the copy step, which fails here on the missing ignore floor
-        # before anything is copied or Docker is called.
-        code = ("import sys; sys.path.insert(0, sys.argv[1]); import check_server; "
-                "print(check_server.run_check('git push')); "
-                "print(check_server.run_check('python -m py_compile workflows/x.py')); "
-                "check_server.timestamp()")
+        # before anything is copied or Docker is called. It is run as a file, as a
+        # builder session starts it (a script is never cached), not imported, so the
+        # bytecode check sees only what the helper's own imports would write.
+        code = ("import runpy, sys; sys.path.insert(0, sys.argv[1]); "
+                "h = runpy.run_path(sys.argv[1] + '/check_server.py', run_name='helper'); "
+                "print(h['run_check']('git push')); "
+                "print(h['run_check']('python -m py_compile workflows/x.py')); "
+                "h['timestamp']()")
         before = folder_bytes(self.folder)
+        # Nothing in the environment asks for no bytecode: the helper does it itself.
+        environ = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
         done = subprocess.run([sys.executable, "-c", code, str(self.folder)],
                               capture_output=True, encoding="utf-8", timeout=60,
-                              cwd=str(self.cwd))
+                              cwd=str(self.cwd), env=environ)
         self.assertEqual(done.returncode, 0, done.stderr)
         refused, listed = done.stdout.splitlines()[:2]
         self.assertIn("Refused by the orchestrator:", refused)

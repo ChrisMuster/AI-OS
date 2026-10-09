@@ -23,6 +23,7 @@ the proof that an unfilled brief cannot start a run is about that file.
 import contextlib
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -460,6 +461,28 @@ class EditPathTests(BriefCase):
             with self.subTest(path=path):
                 self.assertRefused(self.edit(f"- {path} | Measure: ls"), "Edit paths", fragment)
 
+    def test_rejection_control_the_venv_and_the_starter(self):
+        # Orchestrator isolation plan 7.7 and 7.0 item 2.
+        cases = {
+            ".venv": "project `.venv`", ".venv/": "project `.venv`",
+            ".venv/Lib/x.py": "project `.venv`", ".VENV./x": "project `.venv`",
+            "workflows/review-orchestration/scripts/start.py": "starter",
+            "Workflows/Review-Orchestration/Scripts/START.py": "starter",
+            "workflows/review-orchestration/scripts/start.py.": "starter",
+        }
+        for path, fragment in cases.items():
+            with self.subTest(path=path):
+                self.assertRefused(self.edit(f"- {path} | Measure: ls"), "Edit paths",
+                                   fragment)
+
+    def test_negative_control_the_starters_folder_and_a_nested_venv(self):
+        # The folder may be an edit path (the approver still refuses the file), and a
+        # .venv below the root is not the project's.
+        self.assertPasses(self.edit(
+            "- workflows/review-orchestration/scripts/ | Measure: ls\n"
+            "- sub/.venv/x.py | Measure: ls\n"
+            "- workflows/review-orchestration/scripts/start.py.bak | Measure: ls"))
+
     def test_negative_control_names_that_resemble_protected_ones(self):
         self.assertPasses(self.edit("- .github/x.yml | Measure: ls .github\n"
                                     "- docs/.environment | Measure: ls docs\n"
@@ -674,9 +697,12 @@ class SmokeTests(unittest.TestCase):
     """The real scripts as subprocesses, always with --dry-run."""
 
     def call(self, script, *args):
+        # run.py is entered through the starter, which marks its child; the starter's
+        # own checks are tested in test_start.py (orchestrator isolation plan 7.0).
+        env = dict(os.environ, BOOK_DRAGON_REVIEW_ORCHESTRATION_STARTER="1")
         return subprocess.run(
             [sys.executable, str(SCRIPTS / script), *args], cwd=PROJECT_ROOT,
-            capture_output=True, text=True, encoding="utf-8")
+            capture_output=True, text=True, encoding="utf-8", env=env)
 
     def test_both_entry_points_refuse_the_template_identically(self):
         direct = self.call("brief.py", "--check", TEMPLATE, "--dry-run")

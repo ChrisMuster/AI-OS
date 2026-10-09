@@ -1,18 +1,20 @@
 # Review orchestration: let an interactive Codex session start, resume and stop a run.
 # A run must run outside Codex's sandbox, because it starts Claude and Codex sessions
-# and writes its run record. Nothing else is allowed here; see CONTEXT.md.
+# and writes its run record. Each command goes through the starter, which checks the
+# tree is committed before a start and resumes or stops from the run's trusted copy
+# (orchestrator isolation plan 7.0). Nothing else is allowed here; see CONTEXT.md.
 prefix_rule(
-    pattern = ["python", "workflows/review-orchestration/scripts/run.py", "--run"],
+    pattern = ["python", "workflows/review-orchestration/scripts/start.py", "--run"],
     decision = "allow",
     justification = "Start a review-orchestration run the user asked for.",
 )
 prefix_rule(
-    pattern = ["python", "workflows/review-orchestration/scripts/run.py", "--resume"],
+    pattern = ["python", "workflows/review-orchestration/scripts/start.py", "--resume"],
     decision = "allow",
     justification = "Resume a review-orchestration run the user asked for.",
 )
 prefix_rule(
-    pattern = ["python", "workflows/review-orchestration/scripts/run.py", "--stop"],
+    pattern = ["python", "workflows/review-orchestration/scripts/start.py", "--stop"],
     decision = "allow",
     justification = "Stop a review-orchestration run the user asked for.",
 )

@@ -398,6 +398,12 @@ def _folded(component):
     return component.rstrip(". ").lower()
 
 
+# The starter every run, resume and stop is entered through (orchestrator isolation plan
+# 7.0 item 2). No builder may change it, so no brief may name it as an edit path, and the
+# approver refuses an edit to it whatever the edit paths say.
+STARTER_PATH = "workflows/review-orchestration/scripts/start.py"
+
+
 def check_edit_path(path):
     """Reasons an Edit paths entry is refused. Existence is not required."""
     if not path:
@@ -419,6 +425,12 @@ def check_edit_path(path):
         reasons.append(f"`{path}` is under `.git/`")
     if any(part == ".env" or part.startswith(".env.") for part in folded):
         reasons.append(f"`{path}` is a `.env` file")
+    # The project .venv runs every check the run makes (plan 7.7), so no builder may
+    # edit it; the starter likewise (7.0 item 2).
+    if folded and folded[0] == ".venv":
+        reasons.append(f"`{path}` is the project `.venv` or under it")
+    if "/".join(folded) == "/".join(_folded(part) for part in STARTER_PATH.split("/")):
+        reasons.append(f"`{path}` is the orchestrator's starter, which no run may change")
     return reasons
 
 

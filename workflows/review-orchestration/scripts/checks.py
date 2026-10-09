@@ -41,7 +41,8 @@ outside the project; ``trusted_host_checks`` runs them from there against the li
 project (``BOOK_DRAGON_ROOT``), with bytecode off, and reads their results: the
 targeted audit and doc-sync as above, ``personal_data`` (the file and the kind of
 each hit, never the matched text) and ``link_check`` (each dead link). Built in
-stage S3; the loop starts calling them in S6 (the user's decision A, 2026-10-07).
+stage S3; the loop starts calling them in S6b (the user's decision A, 2026-10-07;
+decision 28).
 """
 
 import io
@@ -299,7 +300,10 @@ def write_trusted_copies(root, head, dest, workflows=TRUSTED_WORKFLOWS):
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(result.stdout)) as archive:
         archive.extractall(dest, filter="data")
-    missing = [w for w in workflows if not (dest / w / "scripts" / "run.py").is_file()]
+    # A workflow folder holds scripts/run.py; a scripts folder (the sync classification's,
+    # plan 7.0) holds run.py itself.
+    missing = [w for w in workflows if not (dest / w / "scripts" / "run.py").is_file()
+               and not (w.endswith("/scripts") and (dest / w / "run.py").is_file())]
     if missing:
         raise TrustedCopyError(f"the commit holds no {', '.join(missing)} run.py")
     return dest
