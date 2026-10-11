@@ -426,9 +426,14 @@ def check_edit_path(path):
     if any(part == ".env" or part.startswith(".env.") for part in folded):
         reasons.append(f"`{path}` is a `.env` file")
     # The project .venv runs every check the run makes (plan 7.7), so no builder may
-    # edit it; the starter likewise (7.0 item 2).
+    # edit it; the starter likewise (7.0 item 2); and Codex's configuration, which a
+    # Codex session loads before its launch check can read it back (7.6 item 1,
+    # decision 33).
     if folded and folded[0] == ".venv":
         reasons.append(f"`{path}` is the project `.venv` or under it")
+    if folded and folded[0] == ".codex":
+        reasons.append(f"`{path}` is Codex's configuration (`.codex`) or under it, "
+                       "which no run may change")
     if "/".join(folded) == "/".join(_folded(part) for part in STARTER_PATH.split("/")):
         reasons.append(f"`{path}` is the orchestrator's starter, which no run may change")
     return reasons

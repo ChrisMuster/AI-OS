@@ -4,7 +4,8 @@
 Same three controls as test_brief.py:
 
     positive control  a call the plan allows (a read, an edit inside the edit paths,
-                      a listed verification command). It must be allowed.
+                      a listed verification command through the check helper's
+                      run_check). It must be allowed.
     rejection control a call the plan refuses. It must be refused, the reason named,
                       and the refusal recorded for the run report.
     negative control  something that looks like a refused shape but is not one (a
@@ -293,7 +294,29 @@ class EditTests(ApproverTestCase):
         self.assertIn("(nothing)", empty.refusals[-1]["reason"])
 
 
-class ShellTests(ApproverTestCase):
+RUN_CHECK = "mcp__checks__run_check"
+TIMESTAMP = "mcp__checks__get_timestamp"
+NOT_LISTED = "verification list"
+
+
+class ShellRefusedTests(ApproverTestCase):
+    """Orchestrator isolation plan 7.4, S7: a builder has no shell. A command the
+    verification list holds is refused in the shell too: it runs only through the
+    check helper, in the container."""
+
+    def test_rejection_the_shell_whatever_the_command(self):
+        for command in ("python workflows/close-out/scripts/run.py --read-only",
+                        "python -m py_compile workflows/doc-sync-guard/scripts/run.py",
+                        "ls", ""):
+            with self.subTest(command=command):
+                decision = self.refused("Bash", {"command": command},
+                                        "the shell is not available")
+                self.assertIn("run_check", decision.reason)
+
+
+class RunCheckTests(ApproverTestCase):
+    """The check helper's run_check is allowed only for a command the helper itself
+    would run: the same test, ``approver.verify_refusal`` (plan 7.4)."""
 
     def test_positive_every_listed_command_shape(self):
         for command in (
@@ -309,14 +332,14 @@ class ShellTests(ApproverTestCase):
                 "python workflows/doc-sync-guard/scripts/run.py",
                 "  python workflows/close-out/scripts/run.py --read-only  "):
             with self.subTest(command=command):
-                self.allowed("Bash", {"command": command})
+                self.allowed(RUN_CHECK, {"command": command})
 
     def test_rejection_anything_not_listed(self):
         for command in ("ls", "git status", "python -c 'print(1)'",
                         "python workflows/close-out/scripts/run.py --scope all --fix",
                         "rm -rf workflows"):
             with self.subTest(command=command):
-                self.refused("Bash", {"command": command}, "only these verification commands")
+                self.refused(RUN_CHECK, {"command": command}, NOT_LISTED)
 
     def test_rejection_the_audit_and_close_out_without_read_only(self):
         # Orchestrator isolation plan 6: both must write nothing, so the flag is
@@ -328,7 +351,7 @@ class ShellTests(ApproverTestCase):
                 "python workflows/close-out/scripts/run.py --scope all --json",
                 "python workflows/close-out/scripts/run.py --scope all --read-only"):
             with self.subTest(command=command):
-                self.refused("Bash", {"command": command}, "only these verification commands")
+                self.refused(RUN_CHECK, {"command": command}, NOT_LISTED)
 
     def test_positive_the_tightened_lines_still_take_their_arguments(self):
         for command in (
@@ -341,7 +364,7 @@ class ShellTests(ApproverTestCase):
                 "python workflows/x/tests/test_run.py RunTests",
                 "python workflows/x/tests/test_run.py RunTests.test_one OtherTests -v"):
             with self.subTest(command=command):
-                self.allowed("Bash", {"command": command})
+                self.allowed(RUN_CHECK, {"command": command})
 
     def test_positive_every_line_obeys_the_no_unnamed_flag_rule(self):
         # The file's header claims it for every line (R3-1). This checks it for these
@@ -385,78 +408,124 @@ class ShellTests(ApproverTestCase):
                 "python workflows/x/tests/test_run.py --save",
                 "python workflows/x/tests/test_run.py -v RunTests"):
             with self.subTest(command=command):
-                self.refused("Bash", {"command": command}, "only these verification commands")
+                self.refused(RUN_CHECK, {"command": command}, NOT_LISTED)
 
     def test_rejection_chaining_is_not_a_whole_match(self):
         for command in ("python workflows/close-out/scripts/run.py; rm -rf x",
                         "python workflows/close-out/scripts/run.py && git push",
                         "python workflows/close-out/scripts/run.py | tee out"):
             with self.subTest(command=command):
-                self.refused("Bash", {"command": command}, "only these verification commands")
+                self.refused(RUN_CHECK, {"command": command}, NOT_LISTED)
 
     def test_rejection_more_than_one_line(self):
-        self.refused("Bash", {"command": "python workflows/close-out/scripts/run.py\nls"},
+        self.refused(RUN_CHECK,
+                     {"command": "python workflows/close-out/scripts/run.py --read-only\nls"},
                      "one command per call")
 
     def test_rejection_a_dotdot_component_even_when_a_pattern_matches(self):
         command = "python workflows/doc-sync-guard/tests/../../../x/tests/evil.py"
         self.assertTrue(any(p.fullmatch(command) for p in self.approver.verify_patterns),
                         "the control needs a command a listed pattern would allow")
-        self.refused("Bash", {"command": command}, "`..` path component")
+        self.refused(RUN_CHECK, {"command": command}, "`..` path component")
 
     def test_negative_three_dots_is_not_a_parent_component(self):
-        self.allowed("Bash", {"command": "python -m py_compile workflows/doc-sync-guard/a...py"})
+        self.allowed(RUN_CHECK,
+                     {"command": "python -m py_compile workflows/doc-sync-guard/a...py"})
 
     def test_rejection_naming_an_env_file(self):
-        self.refused("Bash", {"command": "python -m py_compile .env"}, "`.env` file")
-        self.refused("Bash", {"command": "python -m py_compile workflows/.env.local"},
+        self.refused(RUN_CHECK, {"command": "python -m py_compile .env"}, "`.env` file")
+        self.refused(RUN_CHECK, {"command": "python -m py_compile workflows/.env.local"},
                      "`.env` file")
 
     def test_negative_venv_is_not_env(self):
-        self.allowed("Bash", {"command": "python -m py_compile .venv/x.py"})
+        self.allowed(RUN_CHECK, {"command": "python -m py_compile .venv/x.py"})
 
-    def test_rejection_leaving_the_sandbox(self):
-        self.refused("Bash", {"command": "python workflows/close-out/scripts/run.py",
-                              "dangerouslyDisableSandbox": True}, "may not leave the sandbox")
+    def test_rejection_any_argument_but_the_command(self):
+        # The helper takes one argument; a second (a sandbox override, say) is refused
+        # rather than passed on.
+        self.refused(RUN_CHECK, {"command": "python workflows/close-out/scripts/run.py "
+                                            "--read-only", "dangerouslyDisableSandbox": True},
+                     "takes only `command`")
 
     def test_rejection_no_command(self):
-        self.refused("Bash", {}, "no command given")
-        self.refused("Bash", {"command": 5}, "no command given")
+        self.refused(RUN_CHECK, {}, "no command was given")
+        self.refused(RUN_CHECK, {"command": 5}, "no command was given")
+        self.refused(RUN_CHECK, {"command": "   "}, "no command was given")
+
+    def test_rejection_quoting_that_cannot_be_read(self):
+        # A pattern-matching command whose quoting shlex cannot read, as the helper
+        # refuses it (check_server.refusal): the two use one test.
+        patterns = [approver.re.compile(r"python -m py_compile .+")]
+        self.assertIn("quoting cannot be read",
+                      approver.verify_refusal("python -m py_compile 'a.py", patterns))
+
+    def test_positive_the_refusal_lists_the_commands(self):
+        decision = self.refused(RUN_CHECK, {"command": "ls"}, NOT_LISTED)
+        self.assertIn(self.approver.verify_patterns[0].pattern, decision.reason)
+
+
+class TimestampTests(ApproverTestCase):
+
+    def test_positive_get_timestamp_with_no_arguments(self):
+        self.allowed(TIMESTAMP, {})
+        self.allowed(TIMESTAMP, None)
+
+    def test_rejection_get_timestamp_with_any_argument(self):
+        self.refused(TIMESTAMP, {"format": "x"}, "takes no arguments")
+
+    def test_positive_the_helper_names_agree(self):
+        # The approver restates the helper's server name so it stays importable on its
+        # own; the two must agree, or no helper call would ever be allowed.
+        _load("container")  # check_server imports it
+        check_server = _load("check_server")
+        self.assertEqual(approver.CHECKS_SERVER, check_server.SERVER_NAME)
+        self.assertEqual(RUN_CHECK, approver.RUN_CHECK_TOOL)
+        self.assertEqual(TIMESTAMP, approver.TIMESTAMP_TOOL)
 
 
 class BiblioToolTests(ApproverTestCase):
+    """Plan 7.6 item 1: a builder loses every Biblio Tools tool, since they run the
+    working tree's scripts on the host; the clock comes from the check helper."""
 
     P = "mcp__biblio-tools__"
 
-    def test_positive_read_only_forms(self):
-        self.allowed(self.P + "get_timestamp", {})
-        self.allowed(self.P + "run_audit", {})
-        self.allowed(self.P + "run_audit", {"save": False, "with_graph": True})
-        self.allowed(self.P + "run_link_check", {})
-        self.allowed(self.P + "run_link_check", {"mode": "audit"})
-
-    def test_rejection_writing_forms(self):
-        self.refused(self.P + "run_audit", {"save": True}, "may not save its report")
-        self.refused(self.P + "run_link_check", {"mode": "link"}, "may only audit")
-        self.refused(self.P + "run_link_check", {"mode": "fix"}, "may only audit")
-        self.refused(self.P + "run_link_check", {"save": True}, "may only audit")
-
-    def test_positive_append_log_inside_the_edit_paths(self):
-        self.allowed(self.P + "append_log", {"directory": "workflows/doc-sync-guard",
-                                             "actor": "Biblio", "action": "modified",
-                                             "note": "x"})
-        self.allowed(self.P + "append_log", {"directory": "workflows/doc-sync-guard/scripts/"})
-
-    def test_rejection_append_log_elsewhere(self):
-        for directory in (".", "workflows/audit", "memory", "", None):
-            with self.subTest(directory=directory):
-                self.refused(self.P + "append_log", {"directory": directory}, "append_log")
-
-    def test_rejection_other_biblio_tools(self):
-        for name in ("run_new_month", "build_knowledge_graph", "run_session_search_index",
-                     "verify_setup"):
+    def test_rejection_every_biblio_tool(self):
+        for name, tool_input in (
+                ("get_timestamp", {}), ("run_audit", {}), ("run_audit", {"save": False}),
+                ("run_link_check", {"mode": "audit"}),
+                ("append_log", {"directory": "workflows/doc-sync-guard"}),
+                ("run_new_month", {}), ("build_knowledge_graph", {}),
+                ("run_session_search_index", {}), ("verify_setup", {})):
             with self.subTest(name=name):
-                self.refused(self.P + name, {}, "is not permitted in this run")
+                decision = self.refused(self.P + name, tool_input,
+                                        "is not available to a builder")
+                self.assertIn("get_timestamp", decision.reason)
+
+
+class CodexConfigTests(ApproverTestCase):
+    """Decision 33: no run may change `.codex/`, whatever the edit paths say."""
+
+    def test_rejection_an_edit_under_codex_even_with_an_edit_path_over_it(self):
+        self.approver = approver.Approver(["notes/plan.md"], approver.load_verify_commands(),
+                                          root=self.root)
+        # An edit path covering `.codex/` cannot be given (brief.check_edit_path), so
+        # the approver's own refusal is tested with its edit keys set directly.
+        self.approver._edit_keys.append(".codex")
+        for name in (".codex/config.toml", ".Codex/rules/x.rules", ".codex",
+                     str(self.root / ".codex" / "config.toml")):
+            with self.subTest(name=name):
+                self.refused("Write", {"file_path": name}, "Codex's configuration")
+                self.refused("Edit", {"file_path": name}, "Codex's configuration")
+
+    def test_negative_a_codex_folder_lower_down_is_not_the_project_config(self):
+        self.allowed("Write", {"file_path": "workflows/doc-sync-guard/.codex/x.toml"})
+
+    def test_rejection_a_codex_edit_path_refuses_to_build_the_approver(self):
+        for path in (".codex", ".codex/", ".codex/config.toml", ".Codex/rules/x.rules"):
+            with self.subTest(path=path):
+                self.assertTrue(brief.check_edit_path(path))
+                with self.assertRaises(approver.ApproverError):
+                    approver.Approver([path], [], root=self.root)
 
 
 class VerifyCommandsFileTests(unittest.TestCase):
@@ -495,14 +564,16 @@ class VerifyCommandsFileTests(unittest.TestCase):
 class RefusalRecordTests(ApproverTestCase):
 
     def test_positive_a_refusal_records_tool_detail_and_reason(self):
-        self.approver.decide("Bash", {"command": "git status"})
-        record = self.approver.refusals[-1]
-        self.assertEqual(record["tool"], "Bash")
-        self.assertEqual(record["detail"], "git status")
-        self.assertIn("only these verification commands", record["reason"])
+        for tool in ("Bash", RUN_CHECK):
+            with self.subTest(tool=tool):
+                self.approver.decide(tool, {"command": "git status"})
+                record = self.approver.refusals[-1]
+                self.assertEqual(record["tool"], tool)
+                self.assertEqual(record["detail"], "git status")
+                self.assertTrue(record["reason"].startswith("Refused by the orchestrator"))
 
     def test_positive_a_long_detail_is_cut_short(self):
-        self.approver.decide("Bash", {"command": "x" * 1000})
+        self.approver.decide(RUN_CHECK, {"command": "x" * 1000})
         self.assertEqual(len(self.approver.refusals[-1]["detail"]), 300)
 
 

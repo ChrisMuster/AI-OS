@@ -9,24 +9,32 @@ which provider holds each. Both pairings are built:
 
   ClaudeBuilder   one Claude session for the whole build, resumed for every fix pass.
                   Every tool call goes through the run's ``Approver`` in a PreToolUse
-                  hook, so a call the project's allowlist permits is still checked;
-                  rate-limit events feed ``limits.ClaudeUsage``, a limit hit
-                  mid-session is raised as ``limits.UsageLimitError``, and a turn that
-                  ends in error is raised as ``ProviderError``.
+                  hook, so a call the project's allowlist permits is still checked,
+                  and then through the run's trusted rule hooks; rate-limit events
+                  feed ``limits.ClaudeUsage``, a limit hit mid-session is raised as
+                  ``limits.UsageLimitError``, and a turn that ends in error is raised
+                  as ``ProviderError``.
   CodexReviewer   a fresh read-only Codex session for every review round, answering
                   in structured JSON against a schema. The turn's events are read
                   directly, so a limit hit mid-turn keeps its structured code and is
-                  raised as ``limits.UsageLimitError``.
+                  raised as ``limits.UsageLimitError``. It runs no project code: its
+                  shell's Python processes load the run's tripwire, which its launch
+                  proves before any turn.
   CodexBuilder    one Codex thread for the whole build, resumed for every fix pass.
                   It is held by a hook the session supplies when it launches Codex
                   (``codex_hook.py``, run from a frozen copy outside the project), with
                   Codex's sandbox beneath it for file writes and an approval handler
                   that accepts only what the hook allowed. The session does no builder
-                  work until Codex reports the hook, and the project's own hooks, in
-                  force, and it ends the turn if a hook run fails.
+                  work until Codex reports the hook in force and the project's own
+                  hooks off, and it ends the turn if a hook run fails.
   ClaudeReviewer  a fresh read-only Claude session for every review round: only Read,
                   Grep and Glob, under the read rules of ``approver.read_rules``, with
                   the reply's shape enforced by the SDK's ``output_format``.
+
+Every session starts only trusted programs (orchestrator isolation plan 7.4 to 7.6,
+stage S7): no project hook or plugin runs in any of them, a builder's one MCP server
+is the run's check helper (``check_server.py``, from the frozen folder), and the rule
+hooks a builder's calls go through are the frozen folder's trusted copy.
 
 Asking for a provider with no session for the role raises ``ProviderError`` naming
 what is missing, rather than quietly running another pairing.
@@ -44,6 +52,8 @@ no model call.
 import asyncio
 import dataclasses
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -54,7 +64,7 @@ from pathlib import Path
 
 import codex_rules
 import limits
-from approver import read_rules
+from approver import CHECKS_SERVER, read_rules
 from settings import model_for
 
 MARKER = "Orchestrated session: skip the AGENTS.md session-startup sequence."
@@ -85,6 +95,119 @@ _CODEX_TOOL_ITEMS = frozenset({"commandExecution", "fileChange", "webSearch",
 REVIEWER_TOOLS = ("Read", "Grep", "Glob")
 STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 REVIEWER_REFUSAL = "Refused by the orchestrator: the reviewer is read-only."
+
+# Every session starts only trusted programs (plan 7.6). No settings-file hook runs in
+# a Claude session: the orchestrator's own callback is not a settings hook.
+CLAUDE_NO_HOOKS = json.dumps({"disableAllHooks": True})
+# Codex: no plugin's MCP server (Biblio Tools included, probe 9), and not its own apps
+# feature, whose `codex_apps` server cannot be switched off by name (decision 35).
+PLUGINS_OFF = "features.plugins=false"
+APPS_OFF = "features.apps=false"
+# A server name that may be written into a `mcp_servers.<name>.enabled=false` override.
+SERVER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+# The check helper, the one MCP server a builder gets. A check can take minutes (the
+# container's own limit is 1800 s), so neither client's MCP call limit may end it
+# sooner: Codex's per-server `tool_timeout_sec`, and Claude's `MCP_TOOL_TIMEOUT`
+# (milliseconds), given to the CLI's environment.
+CHECK_HELPER = "check_server.py"
+CHECK_TOOL_TIMEOUT_SECONDS = 1800
+CLAUDE_MCP_ENV = {"MCP_TOOL_TIMEOUT": str(CHECK_TOOL_TIMEOUT_SECONDS * 1000)}
+# The tools the project's Claude rule hooks are registered for in
+# `.claude/settings.json`; the Claude builder's callback runs the trusted copy for
+# these and no other (plan 7.6 item 3).
+CLAUDE_RULE_HOOK_TOOLS = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit")
+# The Codex reviewer's launch self-test (plan 7.6 item 4, R35-1): standard library
+# only, run through `command/exec` in the read-only sandbox from the frozen folder. It
+# prints PYTHONPATH and the file the loaded `sitecustomize` came from.
+REVIEWER_SELF_TEST = ("import os, sys; m = sys.modules.get('sitecustomize'); "
+                      "print(os.environ.get('PYTHONPATH', '')); "
+                      "print(getattr(m, '__file__', '') or '')")
+REVIEWER_SELF_TEST_TIMEOUT_MS = 60000
+
+
+def frozen_folder(run_id, temp_root=None):
+    """A run's frozen folder, ``<temp>/book-dragon-orchestration/<run-id>/``."""
+    return Path(temp_root or tempfile.gettempdir()) / FROZEN_PARENT / run_id
+
+
+def _quotable(path):
+    """``path`` with forward slashes, refused if it holds a space, a quote or a
+    backslash: quoting rules for a launch override are not modelled."""
+    text = str(path).replace("\\", "/")
+    if any(character in text for character in (" ", '"', "'", "\\")):
+        raise ProviderError(f"{text!r} holds a space, a quote or a backslash and cannot be "
+                            "written safely into a launch setting")
+    return text
+
+
+def _same_file(a, b):
+    """True when two paths name the same file, compared as Windows compares them."""
+    try:
+        return (os.path.normcase(os.path.realpath(a))
+                == os.path.normcase(os.path.realpath(b)))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _project_hook_keys(hooks):
+    """The keys of every hook whose source is the project, read from ``hooks/list``."""
+    keys = []
+    for hook in hooks:
+        if hook.get("source") != "project":
+            continue
+        key = hook.get("key")
+        if not isinstance(key, str) or not key or "'" in key:
+            raise ProviderError(f"a project hook's key cannot be written as an override: "
+                                f"{key!r}")
+        keys.append(key)
+    return keys
+
+
+def _hooks_state(entries):
+    """One ``hooks.state`` override from ``{key: inline table text}``, or None."""
+    if not entries:
+        return None
+    return "hooks.state={" + ", ".join(f"'{key}'={value}" for key, value in entries.items()) + "}"
+
+
+def _counting(listing, allowed=()):
+    """Every listed server other than those in ``allowed`` that counts. A server counts
+    when it reports tools, or reports that its tool discovery failed (it was started);
+    the project's disabled `biblio-tools` reports neither."""
+    return [server for server in (listing or {}).get("data", [])
+            if isinstance(server, dict) and server.get("name") not in allowed
+            and (server.get("tools") or server.get("toolsError"))]
+
+
+def counting_servers(listing, allowed=()):
+    """The MCP servers a launch may not have, described for a refusal. The listing
+    gives no command, so this is by name (plan 7.6 item 1)."""
+    return [f"{server.get('name')!r}"
+            + (f" (plugin {server.get('pluginId')})" if server.get("pluginId") else "")
+            for server in _counting(listing, allowed)]
+
+
+def servers_off(listing, allowed=()):
+    """The overrides that switch off, by name, every server that counts in a first
+    client's listing other than those in ``allowed`` (decision 35): one
+    ``mcp_servers.<name>.enabled=false`` each. A server that does not count is never
+    named, since naming one the user's configuration does not define makes Codex
+    refuse the launch. A name that cannot be written safely is refused."""
+    overrides = []
+    for server in _counting(listing, allowed):
+        name = server.get("name")
+        if not isinstance(name, str) or not SERVER_NAME.match(name):
+            raise ProviderError(f"an MCP server's name cannot be written as an override "
+                                f"to switch it off: {name!r}")
+        overrides.append(f"mcp_servers.{name}.enabled=false")
+    return tuple(overrides)
+
+
+def server_record(listing):
+    """What a launch read back from ``mcpServerStatus/list``, for the run record."""
+    return [{"name": s.get("name"), "pluginId": s.get("pluginId"),
+             "tools": sorted(s.get("tools") or {}), "toolsError": s.get("toolsError")}
+            for s in (listing or {}).get("data", []) if isinstance(s, dict)]
 
 
 class ProviderError(Exception):
@@ -123,6 +246,8 @@ class ReviewRecord:
     tokens: int | None = None
     model: str | None = None
     refusals: list = dataclasses.field(default_factory=list)
+    # What a Codex reviewer's launch read back (plan 7.6 item 4, live check 4b).
+    launch: dict | None = None
 
 
 def claude_tokens(usage):
@@ -177,14 +302,17 @@ class ClaudeBuilder:
     """The builder session on Claude, through ``claude-agent-sdk``."""
 
     provider = limits.CLAUDE
-    wants = ("resume", "usage")
+    wants = ("resume", "usage", "run_dir")
     # The check after every turn is for a Codex builder; a Claude builder's every call
     # goes through the approver in the orchestrator's own process.
     needs_turn_check = False
-    frozen_dir = None
 
     def __init__(self, model, effort, approver, *, cwd, resume=None, client_factory=None,
-                 usage=None, max_turns=EDIT_MAX_TURNS):
+                 usage=None, max_turns=EDIT_MAX_TURNS, run_dir=None, temp_root=None,
+                 python=None, rule_hook=None):
+        if run_dir is None:
+            raise ProviderError("a Claude builder needs the run's folder, whose name is "
+                                "the run id, for its frozen folder")
         self.model = model
         self.effort = effort
         self.approver = approver
@@ -192,15 +320,24 @@ class ClaudeBuilder:
         self.resume = resume
         self.usage = usage if usage is not None else limits.ClaudeUsage()
         self.max_turns = max_turns
+        self.run_id = Path(run_dir).name
+        self.frozen_dir = frozen_folder(self.run_id, temp_root)
+        self._temp_root = temp_root
+        self._python = python or sys.executable
+        self._rule_hook = rule_hook or codex_rules.run_rule_hook
         self._client_factory = client_factory
         self._client = None
         self._first_prompt_sent = resume is not None
         self.session_id = resume
         self.stderr = []
         self.last_messages = []
+        # Every call the callback judged, in order, for live check 4 (the callback
+        # firing for every call with disableAllHooks set).
+        self.callback_calls = []
 
     async def pre_tool_use(self, hook_input, tool_use_id, context):
-        """A PreToolUse hook that puts every tool call past the approver.
+        """A PreToolUse hook that puts every tool call past the approver, then the
+        run's trusted rule hooks (plan 7.6 item 3).
 
         ``can_use_tool`` alone is not enough: the SDK calls it only for a call the
         permission rules would otherwise ask about, never for one a
@@ -208,15 +345,32 @@ class ClaudeBuilder:
         installed SDK's docstring for ``ClaudeAgentOptions.can_use_tool``, and review
         finding R1-1). A hook runs for every call. A refusal is returned as a ``deny``
         decision; an allowed call gets no decision at all, so the normal rules carry
-        on, rather than ``allow``, which would also skip every rule after it.
+        on, rather than ``allow``, which would also skip every rule after it. Since S7
+        the project's own settings hooks are off for the session (``disableAllHooks``),
+        so the rule hooks the project would have run are run here, from the frozen
+        folder's trusted copy, for the tools the project registers them for; a block,
+        a timeout, a crash or an unreadable answer is a deny with that reason.
         """
-        decision = self.approver.decide(hook_input.get("tool_name"),
-                                        hook_input.get("tool_input"))
-        if decision.allowed:
+        name, tool_input = hook_input.get("tool_name"), hook_input.get("tool_input")
+        self.callback_calls.append(name)
+        decision = self.approver.decide(name, tool_input)
+        reason = None if decision.allowed else decision.reason
+        if reason is None and name in CLAUDE_RULE_HOOK_TOOLS:
+            event = dict(hook_input)
+            event.setdefault("hook_event_name", "PreToolUse")
+            reason = await asyncio.to_thread(
+                self._rule_hook, self._python, self.frozen_dir, "claude", event,
+                self.approver.root, self.run_id, temp_root=self._temp_root)
+            if reason is not None:
+                text = " ".join(str(tool_input).split())
+                self.approver.refusals.append(
+                    {"tool": name, "reason": reason,
+                     "detail": text if len(text) <= 300 else text[:297] + "..."})
+        if reason is None:
             return {}
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                        "permissionDecision": "deny",
-                                       "permissionDecisionReason": decision.reason}}
+                                       "permissionDecisionReason": reason}}
 
     async def can_use_tool(self, tool_name, tool_input, context):
         """The SDK's permission callback: the approver's answer, in SDK types. A second
@@ -227,6 +381,12 @@ class ClaudeBuilder:
             return PermissionResultAllow()
         return PermissionResultDeny(message=decision.reason)
 
+    def mcp_servers(self):
+        """The builder's one MCP server, the run's check helper from its frozen folder
+        (plan 7.4), run by the orchestrator's own interpreter."""
+        return {CHECKS_SERVER: {"type": "stdio", "command": self._python,
+                                "args": [str(self.frozen_dir / CHECK_HELPER)]}}
+
     def options(self):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
         # A matcher of None matches every tool.
@@ -235,9 +395,19 @@ class ClaudeBuilder:
                                   permission_mode="default", can_use_tool=self.can_use_tool,
                                   hooks=hooks, include_hook_events=True,
                                   max_turns=self.max_turns, resume=self.resume,
-                                  stderr=self.stderr.append)
+                                  stderr=self.stderr.append,
+                                  mcp_servers=self.mcp_servers(), strict_mcp_config=True,
+                                  settings=CLAUDE_NO_HOOKS, env=dict(CLAUDE_MCP_ENV))
 
     async def start(self):
+        missing = [name for name in (CHECK_HELPER, *codex_rules.FROZEN_LISTS,
+                                     codex_rules.HOOK_CONFIG)
+                   if not (self.frozen_dir / name).is_file()]
+        if not self.frozen_dir.joinpath(*codex_rules.TRUSTED_RULE_HOOKS).is_file():
+            missing.append("/".join(codex_rules.TRUSTED_RULE_HOOKS))
+        if missing:
+            raise ProviderError(f"the run's frozen folder {self.frozen_dir.as_posix()} "
+                                "lacks " + ", ".join(missing))
         if self._client_factory is None:
             from claude_agent_sdk import ClaudeSDKClient
             factory = ClaudeSDKClient
@@ -346,8 +516,7 @@ class CodexBuilder:
         self.resume = resume
         self.run_dir = Path(run_dir)
         self.run_id = self.run_dir.name
-        self.frozen_dir = (Path(temp_root or tempfile.gettempdir()) / FROZEN_PARENT
-                           / self.run_id)
+        self.frozen_dir = frozen_folder(self.run_id, temp_root)
         self._client_factory = client_factory
         self._python = python or sys.executable
         self._self_test = self_test or _run_hook_once
@@ -462,8 +631,10 @@ class CodexBuilder:
         return [h for h in hooks
                 if h.get("source") == "sessionFlags" and h.get("eventName") == "preToolUse"]
 
-    def _launch_problems(self, hooks, config):
-        """Step 6: why the session may not do builder work, as a list."""
+    def _launch_problems(self, hooks, config, servers=None):
+        """Step 6: why the session may not do builder work, as a list. Since S7 (plan
+        7.6): the project's own hooks must be listed and off, the run's hook the only
+        run-supplied one, and no MCP server but the check helper may count."""
         problems = []
         own = self._run_hooks(hooks)
         if len(own) != 1:
@@ -483,21 +654,19 @@ class CodexBuilder:
                 problems.append(f"the run's hook has a time limit of "
                                 f"{hook.get('timeoutSec')!r} seconds, not "
                                 f"{HOOK_TIMEOUT_SECONDS}")
-        project = [h for h in hooks if h.get("source") == "project"]
-        for hook in project:
-            if hook.get("trustStatus") != "trusted" or hook.get("enabled") is not True:
+        for hook in hooks:
+            if hook.get("source") == "project" and hook.get("enabled") is not False:
                 problems.append(f"the project's {hook.get('eventName')} hook "
-                                f"({hook.get('matcher')!r}) is not trusted and enabled, "
-                                "so the project's guardrails are not in force")
-        for matcher in ("Bash", "apply_patch"):
-            if not any(h.get("eventName") == "preToolUse" and h.get("matcher") == matcher
-                       for h in project):
-                problems.append(f"the project's preToolUse hook for {matcher} is not "
-                                "listed, so the project's guardrails are not in force")
+                                f"({hook.get('matcher')!r}) is not switched off, so it "
+                                "would run the live project's code on the host")
         search = ((config or {}).get("config") or {}).get("web_search")
         if search != "disabled":
             problems.append(f"web search is not switched off (web_search reads "
                             f"{search!r}), and a web search needs no approval")
+        extra = counting_servers(servers, allowed=(CHECKS_SERVER,))
+        if extra:
+            problems.append("an MCP server other than the check helper is in force: "
+                            + ", ".join(extra))
         return problems
 
     def _thread_reply_problems(self, reply):
@@ -515,10 +684,11 @@ class CodexBuilder:
                             f"{(reply or {}).get('model') if isinstance(reply, dict) else None!r}")
         return problems
 
-    def _launch_record(self, hooks, config, reply):
+    def _launch_record(self, hooks, config, reply, servers=None):
         """The readings this launch passed on, in the form the run record keeps (the
-        chunk (d) short plan, 11.2, for live checks 1 and 3). Every value is what Codex
-        reported; a launch whose checks failed raises and is never recorded."""
+        chunk (d) short plan, 11.2, for live checks 1 and 3; since S7 the MCP servers
+        too, for live check 4a). Every value is what Codex reported; a launch whose
+        checks failed raises and is never recorded."""
         own = self._run_hooks(hooks)[0]
         return {
             "hook": {key: own.get(key) for key in ("trustStatus", "enabled", "timeoutSec",
@@ -526,6 +696,7 @@ class CodexBuilder:
             "project_hooks": [{key: hook.get(key) for key in
                                ("eventName", "matcher", "trustStatus", "enabled")}
                               for hook in hooks if hook.get("source") == "project"],
+            "mcp_servers": server_record(servers),
             "self_test": "passed",
             "web_search": ((config or {}).get("config") or {}).get("web_search"),
             "thread": {"method": "resume" if self.resume is not None else "start",
@@ -541,14 +712,25 @@ class CodexBuilder:
             hook_override = (f'hooks.PreToolUse=[{{matcher="{HOOK_MATCHER}", '
                              'hooks=[{type="command", '
                              f'command="{command}", timeout={HOOK_TIMEOUT_SECONDS}}}]}}]')
-            base = (hook_override, WEB_SEARCH_OFF)
-            # Step 4: ask Codex for the hook's key and fingerprint, to supply its trust.
+            # The check helper as the builder's one MCP server (plan 7.5), from the
+            # frozen folder; its path passed the same quoting refusal as the hook's.
+            helper = _quotable(self.frozen_dir / CHECK_HELPER)
+            checks_override = (f'mcp_servers.{CHECKS_SERVER}={{command="{python}", '
+                               f'args=["{helper}"], '
+                               f'tool_timeout_sec={CHECK_TOOL_TIMEOUT_SECONDS}}}')
+            base = (hook_override, WEB_SEARCH_OFF, PLUGINS_OFF, APPS_OFF, checks_override)
+            # Step 4: ask Codex for the hook's key and fingerprint, to supply its trust,
+            # for the project hooks' keys, to switch them off (plan 7.6 item 2), and for
+            # the servers, to switch off by name every one that counts but the helper
+            # (decision 35).
             first = self._open(base)
             try:
-                own = self._run_hooks(self._hooks(
-                    first._request_raw("hooks/list", {"cwds": [self.cwd]})))
+                listed = self._hooks(first._request_raw("hooks/list", {"cwds": [self.cwd]}))
+                first_servers = first._request_raw("mcpServerStatus/list", {})
             finally:
                 first.close()
+            off = servers_off(first_servers, allowed=(CHECKS_SERVER,))
+            own = self._run_hooks(listed)
             if len(own) != 1:
                 raise ProviderError(f"Codex lists {len(own)} run-supplied preToolUse "
                                     "hooks, not 1, so the run's hook cannot be trusted")
@@ -556,15 +738,20 @@ class CodexBuilder:
             if not isinstance(key, str) or not isinstance(fingerprint, str) or "'" in key:
                 raise ProviderError("the run's hook key cannot be written as a trust "
                                     f"override: {key!r}")
-            trust = "hooks.state={'" + key + "'={trusted_hash=\"" + fingerprint + "\"}}"
-            # Step 5: the session's client, with the hook, its trust and the handler.
-            self._client = self._open((*base, trust), self._approve)
-            # Step 6: nothing is done until the hook and the project's own are in force.
+            states = {key: '{trusted_hash="' + fingerprint + '"}'}
+            states.update({project: "{enabled=false}"
+                           for project in _project_hook_keys(listed)})
+            # Step 5: the session's client, with the hook, its trust, the project hooks
+            # off and the handler.
+            self._client = self._open((*base, *off, _hooks_state(states)), self._approve)
+            # Step 6: nothing is done until the hook is in force, the project's are off
+            # and no MCP server but the helper counts.
             hooks = self._hooks(self._client._request_raw("hooks/list",
                                                           {"cwds": [self.cwd]}))
             config = self._client._request_raw("config/read", {"includeLayers": False,
                                                                "cwd": self.cwd})
-            problems = self._launch_problems(hooks, config)
+            servers = self._client._request_raw("mcpServerStatus/list", {})
+            problems = self._launch_problems(hooks, config, servers)
             if problems:
                 raise ProviderError("the Codex builder session does no work: "
                                     + "; ".join(problems))
@@ -586,7 +773,7 @@ class CodexBuilder:
                                     "turn runs on it: " + "; ".join(problems))
             self._thread_id = self.resume or reply["thread"]["id"]
             self.thread_model = reply.get("model")
-            self.launch_record = self._launch_record(hooks, config, reply)
+            self.launch_record = self._launch_record(hooks, config, reply, servers)
         except BaseException:
             # The frozen folder belongs to the run, not to this launch: it stays, and
             # the next launch checks the same folder (plan 6 item 1).
@@ -615,10 +802,11 @@ class CodexBuilder:
             return None
         status, source, run_id = run.get("status"), run.get("source"), str(run.get("id"))
         if source != "sessionFlags":
-            # A project rule refusing a call is that rule working.
-            if status in ("completed", "blocked"):
-                return None
-            return f"a {source} preToolUse hook run ended {status!r} ({run_id})"
+            # Since S7 the project's hooks are off for a builder and no other hook
+            # should run, so any other source's run ends the turn, whatever its status
+            # (plan 7.6 item 3): it ran code the run does not hold.
+            return (f"a {source} preToolUse hook ran ({status!r}, {run_id}), and only "
+                    "the run's own hook may run for a builder")
         lines = self._decisions()
         calls = {line.get("tool_use_id") for line in lines
                  if isinstance(line.get("tool_use_id"), str) and line.get("tool_use_id")
@@ -745,21 +933,119 @@ class CodexBuilder:
 
 class CodexReviewer:
     """The reviewer session on Codex, through ``openai-codex``: a fresh read-only
-    thread per round, with approvals refused."""
+    thread per round, with approvals refused.
+
+    Since S7 (plan 7.6 item 4, decision 34) it starts only trusted programs and runs no
+    project code. Its launch turns plugins off, switches the project's hooks off by
+    their keys, and sets ``shell_environment_policy.set.PYTHONPATH`` to the run's
+    tripwire folder, so a Python process its shell starts fails on executing a
+    live-tree ``.py`` file. Before any thread it reads back ``hooks/list``,
+    ``mcpServerStatus/list`` and ``config/read``, and runs a self-test through
+    ``command/exec`` (R35-1), refusing the session unless every reading is as set."""
 
     provider = limits.CODEX
+    wants = ("frozen_dir",)
 
-    def __init__(self, model, effort, *, cwd, codex_factory=None):
+    def __init__(self, model, effort, *, cwd, frozen_dir=None, codex_factory=None,
+                 python=None):
+        if frozen_dir is None:
+            raise ProviderError("a Codex reviewer needs the run's frozen folder, whose "
+                                "tripwire its shell's Python processes load")
         self.model = model
         self.effort = effort
         self.cwd = str(cwd)
+        self.frozen_dir = Path(frozen_dir)
+        self._python = python or sys.executable
         self._codex_factory = codex_factory
+        # What the last launch read back and relied on, for the run record (live
+        # check 4b); set only once every check of the launch has passed.
+        self.launch_record = None
 
-    def _open(self):
+    def _open(self, overrides):
         if self._codex_factory is not None:
-            return self._codex_factory()
+            return self._codex_factory(tuple(overrides))
         from openai_codex import Codex, CodexConfig
-        return Codex(CodexConfig(cwd=self.cwd))
+        return Codex(CodexConfig(cwd=self.cwd, config_overrides=tuple(overrides)))
+
+    def _self_test(self, client, tripwire):
+        """The launch self-test (R35-1): the run's interpreter started through
+        ``command/exec`` in the read-only sandbox, from the frozen folder, running only
+        the standard-library ``REVIEWER_SELF_TEST``. Returns its output, or raises
+        unless the tripwire folder is first on its ``PYTHONPATH`` and the
+        ``sitecustomize`` it loaded is that folder's."""
+        reply = client._request_raw("command/exec", {
+            "command": [self._python, "-c", REVIEWER_SELF_TEST],
+            "cwd": str(self.frozen_dir), "sandboxPolicy": {"type": "readOnly"},
+            "timeoutMs": REVIEWER_SELF_TEST_TIMEOUT_MS})
+        reply = reply if isinstance(reply, dict) else {}
+        lines = (reply.get("stdout") or "").splitlines()
+        first = (lines[0] if lines else "").split(os.pathsep)[0]
+        loaded = lines[1].strip() if len(lines) > 1 else ""
+        problems = []
+        if reply.get("exitCode") != 0:
+            problems.append(f"it exited {reply.get('exitCode')!r}")
+        if not first or not _same_file(first, tripwire):
+            problems.append(f"PYTHONPATH starts {first!r}, not the tripwire folder")
+        if not loaded or not _same_file(loaded, tripwire / "sitecustomize.py"):
+            problems.append(f"the sitecustomize it loaded is {loaded or 'none'!r}, not "
+                            "the tripwire")
+        if problems:
+            raise ProviderError("the Codex reviewer's launch self-test failed, so a "
+                                "command its shell started could run project code: "
+                                + "; ".join(problems))
+        return {"exitCode": reply.get("exitCode"), "pythonpath_first": first,
+                "sitecustomize": loaded}
+
+    def _launch(self):
+        """Open the reviewer's client with every setting of plan 7.6 item 4, check it,
+        and return it. A launch whose checks fail closes the client and raises."""
+        tripwire = self.frozen_dir / "tripwire"
+        wire = _quotable(tripwire)
+        base = (PLUGINS_OFF, APPS_OFF, f'shell_environment_policy.set.PYTHONPATH="{wire}"')
+        first = self._open(base)
+        try:
+            listed = CodexBuilder._hooks(first._client._request_raw(
+                "hooks/list", {"cwds": [self.cwd]}))
+            first_servers = first._client._request_raw("mcpServerStatus/list", {})
+        finally:
+            first.close()
+        # Decision 35: every server that counts is switched off by name; the reviewer
+        # allows none.
+        off = servers_off(first_servers)
+        state = _hooks_state({key: "{enabled=false}" for key in _project_hook_keys(listed)})
+        codex = self._open((*base, *off, state) if state else (*base, *off))
+        try:
+            client = codex._client
+            hooks = CodexBuilder._hooks(client._request_raw("hooks/list",
+                                                            {"cwds": [self.cwd]}))
+            servers = client._request_raw("mcpServerStatus/list", {})
+            config = client._request_raw("config/read", {"includeLayers": False,
+                                                         "cwd": self.cwd})
+            problems = [f"the project's {h.get('eventName')} hook ({h.get('matcher')!r}) "
+                        "is not switched off" for h in hooks
+                        if h.get("source") == "project" and h.get("enabled") is not False]
+            extra = counting_servers(servers)
+            if extra:
+                problems.append("an MCP server is in force: " + ", ".join(extra))
+            policy = ((config or {}).get("config") or {}).get("shell_environment_policy")
+            given = ((policy or {}).get("set") or {}).get("PYTHONPATH")
+            if given != wire:
+                problems.append(f"Codex reports the shell's PYTHONPATH as {given!r}, not "
+                                f"the tripwire folder {wire!r}")
+            if problems:
+                raise ProviderError("the Codex reviewer session does no review: "
+                                    + "; ".join(problems))
+            self_test = self._self_test(client, tripwire)
+            self.launch_record = {
+                "project_hooks": [{key: h.get(key) for key in ("eventName", "matcher",
+                                                               "enabled")}
+                                  for h in hooks if h.get("source") == "project"],
+                "mcp_servers": server_record(servers),
+                "shell_pythonpath": given, "self_test": self_test}
+        except BaseException:
+            codex.close()
+            raise
+        return codex
 
     def review(self, prompt, schema):
         """Run one review round. Returns a ReviewRecord whose ``reply`` is the parsed
@@ -768,7 +1054,8 @@ class CodexReviewer:
         from openai_codex import ApprovalMode, Sandbox
         from openai_codex._run import _collect_turn_result
         started = time.time()
-        with self._open() as codex:
+        self.launch_record = None
+        with self._launch() as codex:
             available = _model_ids(codex.models())
             if self.model not in available:
                 raise ProviderError(f"Codex has no model {self.model!r}; a model is never "
@@ -810,7 +1097,8 @@ class CodexReviewer:
         usage = jsonable(getattr(result, "usage", None))
         return ReviewRecord(reply=reply, thread_id=thread_id, status=status, usage=usage,
                             wall_seconds=round(time.time() - started, 1),
-                            raw=jsonable(result), tokens=codex_tokens(usage))
+                            raw=jsonable(result), tokens=codex_tokens(usage),
+                            launch=self.launch_record)
 
 
 class ClaudeReviewer:
@@ -854,11 +1142,15 @@ class ClaudeReviewer:
     def options(self, schema):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
         hooks = {"PreToolUse": [HookMatcher(matcher=None, hooks=[self.pre_tool_use])]}
+        # No MCP server and no settings-file hook (plan 7.6 item 4); its read rules stay
+        # in its own callback.
         return ClaudeAgentOptions(cwd=self.cwd, model=self.model, effort=self.effort,
                                   permission_mode="default",
                                   allowed_tools=list(REVIEWER_TOOLS), hooks=hooks,
                                   output_format={"type": "json_schema", "schema": schema},
-                                  max_turns=self.max_turns, stderr=self.stderr.append)
+                                  max_turns=self.max_turns, stderr=self.stderr.append,
+                                  mcp_servers={}, strict_mcp_config=True,
+                                  settings=CLAUDE_NO_HOOKS)
 
     def review(self, prompt, schema):
         """Run one review round. The loop calls this in a worker thread, where no
@@ -970,9 +1262,11 @@ def make_builder(settings, approver, *, cwd, resume=None, run_dir=None, usage=No
                **_wanted(cls, offered), **kwargs)
 
 
-def make_reviewer(settings, *, cwd, usage=None, **kwargs):
+def make_reviewer(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
     """The reviewer session for the provider ``settings["roles"]["reviewer"]`` names.
-    ``usage`` is the run's ``limits.ClaudeUsage``, given to a Claude reviewer."""
+    ``usage`` is the run's ``limits.ClaudeUsage``, given to a Claude reviewer;
+    ``frozen_dir`` the run's frozen folder, given to a Codex reviewer for its
+    tripwire."""
     provider = settings["roles"]["reviewer"]
     cls = REVIEWERS.get(provider)
     if cls is None:
@@ -980,4 +1274,4 @@ def make_reviewer(settings, *, cwd, usage=None, **kwargs):
                             f"{', '.join(REVIEWERS)} can review")
     entry = model_for(settings, provider, "reviewer")
     return cls(entry["model"], entry["effort"], cwd=cwd,
-               **_wanted(cls, {"usage": usage}), **kwargs)
+               **_wanted(cls, {"usage": usage, "frozen_dir": frozen_dir}), **kwargs)

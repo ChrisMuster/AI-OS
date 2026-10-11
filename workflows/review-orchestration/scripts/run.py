@@ -99,15 +99,35 @@ def arm_tripwire(frozen, root=None):
     return module.install(root)
 
 
+def with_tripwire(environ, frozen):
+    """``PYTHONPATH`` with the frozen folder's tripwire folder first (plan 7.8, S7), so
+    every Python process started with it loads the tripwire as ``sitecustomize``."""
+    wire = str(Path(frozen) / "tripwire")
+    rest = [part for part in (environ.get("PYTHONPATH") or "").split(os.pathsep)
+            if part and part != wire]
+    return os.pathsep.join([wire, *rest])
+
+
+# The run's rule-hook fire log (codex_rules.fire_log_path, restated: nothing from the
+# project is imported before the trusted copy is set up; a test checks they agree).
+FIRE_LOG_ENV = "BOOK_DRAGON_FIRE_LOG"
+RUNLOGS_PARENT = "book-dragon-runlogs"
+
+
 def set_up_trusted(frozen, environ=None):
     """The trusted copy's first statements (plan 7.0 item 3 and 7.8): arm the tripwire,
     then take the project root from ``hook.json`` and set ``BOOK_DRAGON_ROOT`` to it.
-    Returns None, or the reason the copy cannot run."""
+    Since S7 it also puts the tripwire folder first on ``PYTHONPATH`` and sets the
+    run's rule-hook fire log, so every process the run starts inherits both (plan 7.6
+    item 3, 7.8). Returns None, or the reason the copy cannot run."""
     environ = os.environ if environ is None else environ
     try:
         arm_tripwire(frozen)
     except Exception as exc:  # noqa: BLE001 - whatever failed, nothing else loads
         return f"the tripwire could not be armed ({exc})"
+    environ["PYTHONPATH"] = with_tripwire(environ, frozen)
+    environ[FIRE_LOG_ENV] = str(Path(frozen).parent.parent / RUNLOGS_PARENT
+                                / Path(frozen).name / "fire-log.jsonl")
     try:
         config = json.loads((Path(frozen) / "hook.json").read_text(encoding="utf-8"))
         root = Path(config["project_root"])
@@ -241,7 +261,8 @@ def hand_over(run, *, root=brief.PROJECT_ROOT, wait=False, environ=None,
                 run.state["run_id"], *(["--wait"] if wait else [])]
         env = {k: v for k, v in environ.items() if k != STARTER_MARKER}
         env.update({ROOT_ENV: str(root), REEXEC_MARKER: "1",
-                    "PYTHONDONTWRITEBYTECODE": "1"})
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONPATH": with_tripwire(environ, folder)})
         try:
             code = runner(argv, cwd=str(root), env=env).returncode
         except Exception as exc:  # noqa: BLE001

@@ -122,9 +122,15 @@ READ_BASE = [
 VERIFY_BASE = [
     "python -m py_compile workflows/x/a.py",
     "python workflows/x/tests/test_run.py RunTests",
+    "python workflows/close-out/scripts/run.py --read-only",
+    "python workflows/audit/scripts/run.py --context workflows/x --read-only",
     "python workflows/encoding-guard/scripts/run.py --check",
     "python workflows/doc-sync-guard/scripts/run.py --check",
 ]
+RUN_CHECK = "mcp__checks__run_check"
+TIMESTAMP = "mcp__checks__get_timestamp"
+NOT_LISTED = "verification list"
+NO_SHELL = "the shell runs only the listed read commands"
 NAMED_GUARDS = ("ai-style-guard", "backlog-guard", "encoding-guard",
                 "skill-hardening-guard", "sync-architecture")
 FLAGS = ("--help", "--save", "-q", "--help x", "--save out.md", "-k name", "--scope=all")
@@ -167,6 +173,13 @@ class RulesCase(unittest.TestCase):
 
     def no_shell(self, command, reason=""):
         return self.refused("Bash", {"command": command}, reason)
+
+    def check(self, command):
+        """A verification command, through the check helper's run_check (S7)."""
+        self.allowed(RUN_CHECK, {"command": command})
+
+    def no_check(self, command, reason=""):
+        return self.refused(RUN_CHECK, {"command": command}, reason)
 
 
 class ReadCommandTests(RulesCase):
@@ -306,9 +319,9 @@ class ReadCommandTests(RulesCase):
         self.no_shell("git status --short\ngit status --short")
 
     def test_rejection_no_command(self):
-        self.no_shell(None, "no command given")
-        self.no_shell("   ", "no command given")
-        self.refused("Bash", {}, "no command given")
+        self.no_shell(None, NO_SHELL)
+        self.no_shell("   ", NO_SHELL)
+        self.refused("Bash", {}, NO_SHELL)
 
     def test_rejection_a_list_file_that_cannot_be_used(self):
         folder = tempfile.TemporaryDirectory()
@@ -337,9 +350,14 @@ class ShellOverrideTests(RulesCase):
                  ("prefix_rule", ["python", "workflows"]),
                  ("dangerouslyDisableSandbox", True)]
 
-    def test_positive_both_allow_paths_take_a_plain_call(self):
+    def test_positive_a_plain_read_and_a_check_through_the_helper(self):
         self.shell(self.READ)
-        self.shell(self.VERIFY)
+        self.check(self.VERIFY)
+
+    def test_rejection_a_listed_check_in_the_shell(self):
+        # Since S7 a verification command runs only through the check helper, in the
+        # container (plan 7.5): in the shell it is refused like anything unlisted.
+        self.no_shell(self.VERIFY, NO_SHELL)
 
     def test_rejection_an_override_is_refused_on_a_listed_read_and_a_listed_check(self):
         self.assertEqual([field for field, _ in self.OVERRIDES],
@@ -351,25 +369,27 @@ class ShellOverrideTests(RulesCase):
                                  f"`{field}`")
 
     def test_negative_a_default_value_is_not_an_override(self):
-        for command in (self.READ, self.VERIFY):
-            for field, value in (("sandbox_permissions", "use_default"),
-                                 ("with_escalated_permissions", False),
-                                 ("additional_permissions", None),
-                                 ("prefix_rule", [])):
-                with self.subTest(command=command, field=field):
-                    self.allowed("Bash", {"command": command, field: value})
+        for field, value in (("sandbox_permissions", "use_default"),
+                             ("with_escalated_permissions", False),
+                             ("additional_permissions", None),
+                             ("prefix_rule", [])):
+            with self.subTest(field=field):
+                self.allowed("Bash", {"command": self.READ, field: value})
 
-    def test_positive_the_whole_call_reaches_the_approver(self):
-        # A field the approver judges, and this module does not, still counts.
+    def test_positive_the_whole_check_call_reaches_the_approver(self):
+        # A helper call goes to the approver whole, so a field this module does not
+        # judge still counts there (run_check takes only `command`).
         seen = []
         real = self.approver.decide
 
         def spy(tool, tool_input):
-            seen.append(dict(tool_input))
+            seen.append((tool, dict(tool_input)))
             return real(tool, tool_input)
         self.approver.decide = spy
-        self.decide("Bash", {"command": self.VERIFY, "timeout_ms": 5000})
-        self.assertEqual(seen, [{"command": self.VERIFY, "timeout_ms": 5000}])
+        decision = self.decide(RUN_CHECK, {"command": self.VERIFY, "timeout_ms": 5000})
+        self.assertEqual(seen, [(RUN_CHECK, {"command": self.VERIFY, "timeout_ms": 5000})])
+        self.assertFalse(decision.allowed)
+        self.assertIn("takes only `command`", decision.reason)
 
 
 class ShellFolderTests(RulesCase):
@@ -384,9 +404,8 @@ class ShellFolderTests(RulesCase):
         for field in codex_rules.SHELL_FOLDER_FIELDS:
             for value in (None, "", ".", str(self.root), self.root.as_posix(),
                           "notes/..", str(self.root) + "/"):
-                for command in (self.READ, self.VERIFY):
-                    with self.subTest(field=field, value=value, command=command):
-                        self.allowed("Bash", {"command": command, field: value})
+                with self.subTest(field=field, value=value):
+                    self.allowed("Bash", {"command": self.READ, field: value})
 
     def test_rejection_another_folder_is_refused_on_a_listed_read_and_a_listed_check(self):
         outside = self.root.parent
@@ -413,13 +432,13 @@ class VerifyListTests(RulesCase):
         for pattern, command in zip(self.codex, VERIFY_BASE):
             with self.subTest(line=pattern.pattern):
                 self.assertTrue(pattern.fullmatch(command), command)
-                self.shell(command)
+                self.check(command)
         for guard in NAMED_GUARDS:
             with self.subTest(guard=guard):
-                self.shell(f"python workflows/{guard}/scripts/run.py --check")
-        self.shell("python workflows/doc-sync-guard/scripts/run.py")
-        self.shell("python workflows/x/tests/test_run.py RunTests.test_one -v")
-        self.shell("python -m py_compile workflows/x/a.py workflows/x/b.py")
+                self.check(f"python workflows/{guard}/scripts/run.py --check")
+        self.check("python workflows/doc-sync-guard/scripts/run.py")
+        self.check("python workflows/x/tests/test_run.py RunTests.test_one -v")
+        self.check("python -m py_compile workflows/x/a.py workflows/x/b.py")
 
     def test_positive_every_form_it_names_is_also_on_the_claude_builders_list(self):
         # The Codex list only ever takes away from verify-commands.txt.
@@ -441,18 +460,16 @@ class VerifyListTests(RulesCase):
                                        + words[position:])
                     with self.subTest(command=command):
                         self.assertIsNone(pattern.fullmatch(command), command)
-                        self.no_shell(command)
+                        self.no_check(command)
 
-    def test_rejection_the_audit_and_close_out_in_every_form_the_other_list_takes(self):
-        # Read-only, neither writes a log, but on the host the close-out verifier still
-        # reads personal files; the Codex list gains both only once its commands run in
-        # the container (isolation decisions 27 and 28, stage S7).
+    def test_positive_the_audit_and_close_out_in_their_read_only_forms(self):
+        # Since S7 every line runs in the container over a clean copy, where neither
+        # writes anywhere that matters nor reads a personal file, so the Codex list
+        # gains both, read-only only (isolation plan 6, decisions 27 and 28).
         for command in (
                 "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard "
                 "--read-only",
                 "python workflows/audit/scripts/run.py --context workflows/x workflows/y "
-                "--read-only",
-                "python workflows/audit/scripts/run.py --context workflows/x --no-graph "
                 "--read-only",
                 "python workflows/close-out/scripts/run.py --read-only",
                 "python workflows/close-out/scripts/run.py --read-only --scope all",
@@ -460,9 +477,24 @@ class VerifyListTests(RulesCase):
                 "python workflows/close-out/scripts/run.py --read-only --scope doc-sync-guard "
                 "--json"):
             with self.subTest(command=command):
-                self.assertTrue(any(p.fullmatch(command) for p in self.claude),
-                                "the control needs a command the Claude list accepts")
-                self.no_shell(command, "only these verification commands")
+                self.check(command)
+                self.no_shell(command, NO_SHELL)
+
+    def test_rejection_the_audit_and_close_out_without_read_only(self):
+        for command in (
+                "python workflows/audit/scripts/run.py --context workflows/doc-sync-guard",
+                "python workflows/close-out/scripts/run.py",
+                "python workflows/close-out/scripts/run.py --scope all --json",
+                "python workflows/close-out/scripts/run.py --scope all --read-only",
+                "python workflows/audit/scripts/run.py --context workflows/x --read-only "
+                "--save"):
+            with self.subTest(command=command):
+                self.no_check(command, NOT_LISTED)
+
+    def test_positive_the_codex_audit_line_takes_no_graph_flag(self):
+        # The plan's Codex audit line names no `--no-graph`, unlike the Claude list's.
+        self.no_check("python workflows/audit/scripts/run.py --context workflows/x "
+                      "--no-graph --read-only", NOT_LISTED)
 
     def test_rejection_a_check_the_list_does_not_name(self):
         # The Reddit collector's check makes an HTTP request; web-research's and the
@@ -474,13 +506,21 @@ class VerifyListTests(RulesCase):
             with self.subTest(command=command):
                 self.assertTrue(any(p.fullmatch(command) for p in self.claude),
                                 "the control needs a command the Claude list accepts")
-                self.no_shell(command, "only these verification commands")
-        self.no_shell("python skills/web-research/scripts/run.py --check")
+                self.no_check(command, NOT_LISTED)
+        self.no_check("python skills/web-research/scripts/run.py --check")
 
     def test_rejection_a_named_guard_with_another_flag(self):
-        self.no_shell("python workflows/encoding-guard/scripts/run.py --fix")
-        self.no_shell("python workflows/encoding-guard/scripts/run.py --check --fix")
-        self.no_shell("python workflows/backlog-guard/scripts/run.py --snapshot")
+        self.no_check("python workflows/encoding-guard/scripts/run.py --fix")
+        self.no_check("python workflows/encoding-guard/scripts/run.py --check --fix")
+        self.no_check("python workflows/backlog-guard/scripts/run.py --snapshot")
+
+    def test_positive_the_headers_say_every_line_runs_in_the_container(self):
+        # Decision 27: both lists say so once builders run checks through the helper.
+        for name in ("codex-verify-commands.txt", "verify-commands.txt"):
+            with self.subTest(name=name):
+                text = (CONFIG / name).read_text(encoding="utf-8")
+                self.assertIn("# Every line runs in the container.", text)
+                self.assertIn("run_check", text)
 
     def test_positive_the_shipped_files_are_lf(self):
         for name in codex_rules.FROZEN_LISTS:
@@ -617,6 +657,44 @@ class OtherToolTests(RulesCase):
         self.assertEqual(codex_rules.RUN_ID.pattern, runrecord.RUN_ID.pattern)
 
 
+class CheckHelperTests(RulesCase):
+    """Plan 7.5: the check helper's two tools are the one MCP route a Codex builder
+    has, judged by the approver with the Codex builder's own list."""
+
+    def test_positive_run_check_with_a_listed_command_and_get_timestamp(self):
+        self.check("python workflows/x/tests/test_run.py")
+        self.allowed(TIMESTAMP, {})
+
+    def test_rejection_run_check_with_an_unlisted_command_or_another_argument(self):
+        self.no_check("curl https://example.com", NOT_LISTED)
+        # The Claude list's general --check line is not on the Codex list.
+        self.no_check("python workflows/web-research/scripts/run.py --check", NOT_LISTED)
+        self.refused(RUN_CHECK, {"command": "python workflows/x/tests/test_run.py",
+                                 "cwd": "notes"}, "takes only `command`")
+        self.refused(TIMESTAMP, {"x": 1}, "takes no arguments")
+
+    def test_rejection_every_other_mcp_tool(self):
+        for tool in ("mcp__checks__other", "mcp__biblio-tools__get_timestamp",
+                     "mcp__node_repl__js", "mcp__checks", "mcp__check__run_check"):
+            with self.subTest(tool=tool):
+                self.refused(tool, {"command": "python workflows/x/tests/test_run.py"},
+                             "is not permitted in this run")
+
+
+class CodexConfigPatchTests(RulesCase):
+    """Decision 33: a patch that adds or updates `.codex/config.toml` is refused,
+    through the approver's own refusal, whatever the edit paths say."""
+
+    def test_rejection_a_patch_into_codex(self):
+        self.approver._edit_keys.append(".codex")  # an edit path no brief may hold
+        for header in ("*** Add File: .codex/config.toml",
+                       "*** Update File: .codex/config.toml",
+                       "*** Add File: .Codex/rules/x.rules"):
+            with self.subTest(header=header):
+                self.refused("apply_patch", {"command": patch(header, "+x")},
+                             "Codex's configuration")
+
+
 class ApprovalTests(unittest.TestCase):
     """The approval handler's three rows (short plan 3.4)."""
 
@@ -673,10 +751,50 @@ class ApprovalTests(unittest.TestCase):
         self.assertIsNone(codex_rules.decision_for(lines, None))
 
 
-class HookTests(unittest.TestCase):
+# A stand-in for the trusted rule hooks (plan 7.6 item 3), written into a frozen
+# folder's trusted/ copy. It logs each call to FAKE_RULE_HOOK_DIR (outside the frozen
+# folder, so the folder's state is not changed by it) and answers as mode.txt there
+# says: allow (nothing, exit 0), block (Codex's deny on stdout), crash (exit 1) or
+# garbage (unreadable stdout). With no FAKE_RULE_HOOK_DIR it allows and logs nothing.
+FAKE_RULE_HOOKS = '''\
+import json, os, sys
+from pathlib import Path
+event = json.loads(sys.stdin.read())
+where = os.environ.get("FAKE_RULE_HOOK_DIR")
+mode = "allow"
+if where:
+    where = Path(where)
+    with open(where / "calls.jsonl", "a", encoding="utf-8", newline="\\n") as handle:
+        handle.write(json.dumps({"argv": sys.argv[1:], "event": event,
+                                 "root": os.environ.get("BOOK_DRAGON_ROOT"),
+                                 "fire_log": os.environ.get("BOOK_DRAGON_FIRE_LOG")}) + "\\n")
+    if (where / "mode.txt").exists():
+        mode = (where / "mode.txt").read_text(encoding="utf-8").strip()
+if mode == "block":
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                             "permissionDecision": "deny",
+                                             "permissionDecisionReason":
+                                                 "BLOCKED by rule X: planted"}}))
+elif mode == "crash":
+    sys.exit(1)
+elif mode == "garbage":
+    print("not json")
+sys.exit(0)
+'''
+
+
+def install_fake_rule_hooks(frozen_dir):
+    script = Path(frozen_dir).joinpath(*codex_rules.TRUSTED_RULE_HOOKS)
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(FAKE_RULE_HOOKS, encoding="utf-8", newline="\n")
+    return script
+
+
+class HookCase(unittest.TestCase):
     """codex_hook.py, run as Codex runs it: a subprocess from the run's frozen folder,
     made as the orchestrator makes it (``frozen.populate``, isolation plan 6 item 1) and
-    checked by the builder session's own launch."""
+    checked by the builder session's own launch. Its trusted rule hooks are a stand-in
+    (``FAKE_RULE_HOOKS``)."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -696,19 +814,39 @@ class HookTests(unittest.TestCase):
         self.builder._freeze()  # the launch's own check finds it whole
         self.frozen = self.builder.frozen_dir
         self.decisions = self.frozen / "hook-decisions.jsonl"
+        install_fake_rule_hooks(self.frozen)
+        self.fake = base / "fake-rule-hooks"
+        self.fake.mkdir()
+
+    def env(self, **extra):
+        """The hook's environment: this test's temp folder, so the run's fire log lands
+        there, and the stand-in rule hooks' log folder."""
+        env = dict(os.environ)
+        env.update({"TEMP": str(self.temp), "TMP": str(self.temp), "TMPDIR": str(self.temp),
+                    "FAKE_RULE_HOOK_DIR": str(self.fake)})
+        env.update(extra)
+        return env
+
+    def rule_hook_calls(self):
+        path = self.fake / "calls.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
     def event(self, tool="Bash", tool_input=None, call="exec-1", session="thread-1"):
         return {"hook_event_name": "PreToolUse", "tool_name": tool,
-                "tool_input": tool_input or {"command": "git status --short"},
+                "tool_input": (tool_input if tool_input is not None
+                               else {"command": "git status --short"}),
                 "tool_use_id": call, "turn_id": "turn-1", "session_id": session,
                 "cwd": str(self.root), "model": "gpt-6-sol"}
 
     def run_hook(self, stdin, run_id=RUN_ID, env=None, cwd=None):
+        self.temp.mkdir(exist_ok=True)
         done = subprocess.run(
             [sys.executable, str(self.frozen / "codex_hook.py"), run_id],
             input=stdin if isinstance(stdin, str) else json.dumps(stdin),
-            capture_output=True, encoding="utf-8", timeout=60, env=env,
-            cwd=str(cwd or self.temp))
+            capture_output=True, encoding="utf-8", timeout=60,
+            env=env if env is not None else self.env(), cwd=str(cwd or self.temp))
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout
 
@@ -723,6 +861,9 @@ class HookTests(unittest.TestCase):
                         .startswith("Refused by the orchestrator:"))
         self.assertIn(reason, specific["permissionDecisionReason"])
 
+
+class HookTests(HookCase):
+
     def test_positive_the_frozen_folder_holds_the_rules_and_the_check_helper(self):
         # The check helper and the container module run from here, with the Claude
         # list, since the helper judges either builder (isolation plan 6, item 1).
@@ -730,7 +871,8 @@ class HookTests(unittest.TestCase):
         self.assertEqual(names, {"codex_hook.py", "codex_rules.py", "approver.py",
                                  "brief.py", "check_server.py", "container.py",
                                  "codex-verify-commands.txt", "codex-read-commands.txt",
-                                 "verify-commands.txt", "hook.json", "tripwire"})
+                                 "verify-commands.txt", "hook.json", "tripwire",
+                                 "trusted"})
         config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
         self.assertEqual(config, {"run_id": RUN_ID, "edit_paths": EDIT_PATHS,
                                   "project_root": str(self.root),
@@ -746,7 +888,7 @@ class HookTests(unittest.TestCase):
             return {p.relative_to(self.frozen).as_posix(): p.read_bytes()
                     for p in sorted(self.frozen.rglob("*")) if p.is_file()}
         before = state()
-        env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+        env = {k: v for k, v in self.env().items() if k != "PYTHONDONTWRITEBYTECODE"}
         self.run_hook(self.event(), env=env)
         self.run_hook(self.event(tool_input={"command": "rm -rf x"}, call="exec-2"), env=env)
         after = state()
@@ -772,10 +914,10 @@ class HookTests(unittest.TestCase):
 
     def test_positive_a_patch_and_a_verification_command_are_judged_by_the_run(self):
         # The project root and the edit paths come from hook.json, never from where the
-        # frozen copies sit.
+        # frozen copies sit. A verification command arrives as a run_check call (S7).
         inside = patch("*** Add File: workflows/doc-sync-guard/a.py", "+x")
         self.assertEqual(self.run_hook(self.event("apply_patch", {"command": inside})), "")
-        self.assertEqual(self.run_hook(self.event(tool_input={
+        self.assertEqual(self.run_hook(self.event(RUN_CHECK, {
             "command": "python workflows/doc-sync-guard/scripts/run.py --check"},
             call="exec-2")), "")
         outside = patch("*** Add File: workflows/audit/a.py", "+x")
@@ -788,10 +930,10 @@ class HookTests(unittest.TestCase):
 
     def test_rejection_a_refused_call_prints_the_refusal_and_records_deny(self):
         for number, (tool, tool_input, reason) in enumerate((
-                ("Bash", {"command": "curl https://example.com"},
-                 "only these verification commands"),
+                ("Bash", {"command": "curl https://example.com"}, NO_SHELL),
                 ("Bash", {"command": "python workflows/audit/scripts/run.py --context x"},
-                 "only these verification commands"),
+                 NO_SHELL),
+                (RUN_CHECK, {"command": "curl https://example.com"}, NOT_LISTED),
                 ("webrun", {"query": "example.com"}, "is not permitted in this run"),
                 ("clockcurr_time", {}, "is not permitted in this run"))):
             with self.subTest(tool=tool, tool_input=tool_input):
@@ -855,7 +997,7 @@ class HookTests(unittest.TestCase):
         decoy.mkdir()
         for name in ("codex_rules.py", "approver.py", "brief.py"):
             (decoy / name).write_bytes(b"raise SystemExit(3)\n")
-        env = {**os.environ, "PYTHONPATH": str(decoy)}
+        env = self.env(PYTHONPATH=str(decoy))
         self.assertEqual(self.run_hook(self.event(), env=env, cwd=decoy), "")
         self.assertEqual(self.lines()[-1]["decision"], "allow")
         # And they need nothing but the standard library and themselves: no site
@@ -863,8 +1005,141 @@ class HookTests(unittest.TestCase):
         isolated = subprocess.run(
             [sys.executable, "-E", "-s", "-S", str(self.frozen / "codex_hook.py"), RUN_ID],
             input=json.dumps(self.event(call="exec-2")), capture_output=True,
-            encoding="utf-8", timeout=60, cwd=str(decoy))
+            encoding="utf-8", timeout=60, cwd=str(decoy), env=self.env())
         self.assertEqual((isolated.returncode, isolated.stdout), (0, ""), isolated.stderr)
+
+
+class HookRuleHookTests(HookCase):
+    """Plan 7.6 item 3 and section 8, "Codex hook and the rule hooks": after its own
+    rules allow a Bash or apply_patch call, the hook runs the trusted rule hooks, and
+    their block, crash or unreadable answer is the call's deny."""
+
+    PATCH = patch("*** Add File: workflows/doc-sync-guard/a.py", "+x")
+
+    def mode(self, mode):
+        (self.fake / "mode.txt").write_text(mode, encoding="utf-8", newline="\n")
+
+    def test_positive_a_bash_and_a_patch_the_rule_hooks_pass(self):
+        self.assertEqual(self.run_hook(self.event()), "")
+        self.assertEqual(self.run_hook(self.event("apply_patch", {"command": self.PATCH},
+                                                  call="exec-2")), "")
+        calls = self.rule_hook_calls()
+        self.assertEqual([c["event"]["tool_name"] for c in calls], ["Bash", "apply_patch"])
+        self.assertEqual(calls[0]["argv"], ["--ai", "codex"])
+        # Given the hook's input as Codex sent it, the project root from hook.json and
+        # the run's own fire log, outside the project and the frozen folder.
+        self.assertEqual(calls[0]["event"], self.event())
+        self.assertEqual(calls[0]["root"], str(self.root))
+        self.assertEqual(Path(calls[0]["fire_log"]),
+                         self.temp / "book-dragon-runlogs" / RUN_ID / "fire-log.jsonl")
+        self.assertEqual([line["decision"] for line in self.lines()], ["allow", "allow"])
+
+    def test_rejection_a_call_the_rule_hooks_block_carries_the_rules_message(self):
+        self.mode("block")
+        out = self.run_hook(self.event("apply_patch", {"command": self.PATCH}))
+        specific = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(specific["permissionDecision"], "deny")
+        self.assertEqual(specific["permissionDecisionReason"], "BLOCKED by rule X: planted")
+        line = self.lines()[-1]
+        self.assertEqual((line["decision"], line["reason"]),
+                         ("deny", "BLOCKED by rule X: planted"))
+
+    def test_rejection_a_crash_or_unreadable_answer_is_a_deny(self):
+        for number, mode in enumerate(("crash", "garbage")):
+            with self.subTest(mode=mode):
+                self.mode(mode)
+                self.denied(self.run_hook(self.event(call=f"exec-{number}")),
+                            "the rule hooks could not judge this call")
+                self.assertEqual(self.lines()[-1]["decision"], "deny")
+
+    def test_rejection_missing_rule_hooks_are_a_deny(self):
+        Path(self.frozen).joinpath(*codex_rules.TRUSTED_RULE_HOOKS).unlink()
+        self.denied(self.run_hook(self.event()), "rule hooks")
+
+    def test_negative_never_run_for_another_tool_or_a_call_already_denied(self):
+        self.run_hook(self.event(RUN_CHECK, {
+            "command": "python workflows/doc-sync-guard/scripts/run.py --check"}))
+        self.run_hook(self.event(TIMESTAMP, {}, call="exec-2"))
+        self.run_hook(self.event(tool_input={"command": "curl https://x"}, call="exec-3"))
+        outside = patch("*** Add File: workflows/audit/a.py", "+x")
+        self.run_hook(self.event("apply_patch", {"command": outside}, call="exec-4"))
+        self.assertEqual(self.rule_hook_calls(), [])
+        self.assertEqual([line["decision"] for line in self.lines()],
+                         ["allow", "allow", "deny", "deny"])
+
+    def test_positive_the_hook_never_passes_the_rule_hooks_reply_on(self):
+        # A block is turned into this hook's own refusal: one JSON object, the hook's
+        # event name, nothing the rule hooks printed besides.
+        self.mode("block")
+        out = self.run_hook(self.event())
+        self.assertEqual(out.count("hookSpecificOutput"), 1)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["hookEventName"], "PreToolUse")
+
+
+class RunRuleHookTests(unittest.TestCase):
+    """``codex_rules.run_rule_hook`` for both AIs' reply forms, with a stand-in runner:
+    Claude's rule hooks block with exit 2 and the reason on stderr, Codex's with a deny
+    on stdout; a timeout, a start failure, a crash or an answer it cannot read is a
+    refusal naming what failed."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        base = Path(folder.name)
+        self.frozen = base / "frozen"
+        install_fake_rule_hooks(self.frozen)
+        self.temp = base / "temp"
+        self.seen = []
+
+    def call(self, ai, result=None, error=None):
+        def runner(argv, **kwargs):
+            self.seen.append((argv, kwargs))
+            if error is not None:
+                raise error
+            return subprocess.CompletedProcess(argv, *result)
+        return codex_rules.run_rule_hook("py", self.frozen, ai, {"tool_name": "Bash"},
+                                         "C:/project", RUN_ID, temp_root=self.temp,
+                                         environ={"KEEP": "1"}, runner=runner)
+
+    def test_positive_a_pass_is_none_for_both(self):
+        self.assertIsNone(self.call("claude", (0, "", "")))
+        self.assertIsNone(self.call("codex", (0, "", "")))
+        argv, kwargs = self.seen[0]
+        self.assertEqual(argv[2:], ["--ai", "claude"])
+        self.assertEqual(json.loads(kwargs["input"]), {"tool_name": "Bash"})
+        self.assertEqual(kwargs["timeout"], codex_rules.RULE_HOOK_TIMEOUT_SECONDS)
+        env = kwargs["env"]
+        self.assertEqual((env["KEEP"], env["BOOK_DRAGON_ROOT"]), ("1", "C:/project"))
+        self.assertEqual(Path(env["BOOK_DRAGON_FIRE_LOG"]),
+                         self.temp / "book-dragon-runlogs" / RUN_ID / "fire-log.jsonl")
+        self.assertTrue((self.temp / "book-dragon-runlogs" / RUN_ID).is_dir())
+
+    def test_rejection_each_ais_block_is_the_rules_message(self):
+        self.assertEqual(self.call("claude", (2, "", "BLOCKED: rule A3\n")), "BLOCKED: rule A3")
+        deny = json.dumps({"hookSpecificOutput": {"permissionDecision": "deny",
+                                                  "permissionDecisionReason": "BLOCKED: B3"}})
+        self.assertEqual(self.call("codex", (0, deny, "")), "BLOCKED: B3")
+
+    def test_rejection_what_cannot_be_read_is_a_refusal(self):
+        for ai, result in (("claude", (1, "", "Traceback")), ("claude", (2, "", "")),
+                           ("claude", (0, "noise", "")), ("codex", (1, "", "")),
+                           ("codex", (0, "not json", "")), ("codex", (2, "", "bad root")),
+                           ("codex", (0, json.dumps({"hookSpecificOutput": {
+                               "permissionDecision": "allow"}}), ""))):
+            with self.subTest(ai=ai, result=result):
+                reason = self.call(ai, result)
+                self.assertTrue(reason.startswith("Refused by the orchestrator: the rule "
+                                                  "hooks could not judge this call"), reason)
+
+    def test_rejection_a_timeout_or_a_start_failure(self):
+        self.assertIn("did not answer within",
+                      self.call("codex", error=subprocess.TimeoutExpired("py", 20)))
+        self.assertIn("could not be started", self.call("claude", error=OSError("gone")))
+
+    def test_rejection_missing_rule_hooks_start_nothing(self):
+        Path(self.frozen).joinpath(*codex_rules.TRUSTED_RULE_HOOKS).unlink()
+        self.assertIn("are missing", self.call("codex", (0, "", "")))
+        self.assertEqual(self.seen, [])
 
 
 class ProjectRulesFileTests(unittest.TestCase):

@@ -8,13 +8,23 @@ A Codex builder is held by a hook Codex runs before every tool call
 
   Bash         allowed when the whole trimmed command is a listed read command
                (``config/codex-read-commands.txt``) that also passes the approver's
-               shell checks, or a verification command on the Codex builder's own list
-               (``config/codex-verify-commands.txt``). Everything else is refused.
+               shell checks. Everything else is refused: since S7 a verification
+               command runs only through the check helper (orchestrator isolation
+               plan 7.5).
   apply_patch  allowed when every file the patch names, read from its header lines
                only, is one the approver allows as an edit, and none is under this
                workflow's ``runs/`` folder.
-  anything     refused. That covers web search, the clock, image generation, goals, MCP
-  else         tools, plugin install, the JavaScript REPL and every sub-agent tool.
+  the check    the helper's ``run_check``, when its command is on the Codex builder's
+  helper       own verification list (``config/codex-verify-commands.txt``) and passes
+               the helper's test, and ``get_timestamp`` with no arguments; both judged
+               by the approver.
+  anything     refused. That covers web search, the clock, image generation, goals,
+  else         every other MCP tool, plugin install, the JavaScript REPL and every
+               sub-agent tool.
+
+After this module allows a ``Bash`` or ``apply_patch`` call, the hook runs the run's
+trusted rule hooks on it (``run_rule_hook``, plan 7.6 item 3), from the frozen
+folder's ``trusted/`` copy, and a block from them is the call's deny.
 
 The approval handler is the second layer behind the hook (``approval_reply``). It
 reads no command text: a request is accepted only when the hook recorded an ``allow``
@@ -27,7 +37,10 @@ sits: the project root always comes from the caller. Standard library only.
 """
 
 import json
+import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 import approver as approver_mod
@@ -65,6 +78,21 @@ QUOTED_TOKEN = r"""(?:"(?!-)[^"`$]*"|'(?!-)[^']*')"""
 
 SHELL_TOOL = "Bash"
 PATCH_TOOL = "apply_patch"
+CHECK_TOOLS = (approver_mod.RUN_CHECK_TOOL, approver_mod.TIMESTAMP_TOOL)
+
+# The run's trusted rule hooks (plan 7.6 item 3): the frozen folder's archive of the
+# start commit's `workflows/rule-hooks/` (checks.TRUSTED_DIR, restated: this module is
+# standard library only). Each process gets the project root and a fire log of its own
+# run, outside the project and the frozen folder.
+TRUSTED_RULE_HOOKS = ("trusted", "workflows", "rule-hooks", "scripts", "run.py")
+RULE_HOOK_TIMEOUT_SECONDS = 20
+RUNLOGS_PARENT = "book-dragon-runlogs"
+FIRE_LOG_NAME = "fire-log.jsonl"
+ROOT_ENV = "BOOK_DRAGON_ROOT"
+FIRE_LOG_ENV = "BOOK_DRAGON_FIRE_LOG"
+# The tools the project's rule hooks are registered for in `.codex/config.toml`; the
+# Codex hook runs them for these and no other.
+RULE_HOOK_TOOLS = (SHELL_TOOL, PATCH_TOOL)
 _PATCH_BEGIN = "*** Begin Patch"
 _PATCH_FILE_HEADERS = ("*** Add File: ", "*** Update File: ", "*** Delete File: ",
                        "*** Move to: ")
@@ -230,17 +258,20 @@ def decide(tool_name, tool_input, approver, read_pattern):
         if isinstance(command, str):
             trimmed = command.strip()
             listed = bool(trimmed and read_pattern.fullmatch(trimmed))
-            if listed and approver_mod.shell_checks(trimmed) is None:
-                return Decision(True)
-        decision = approver.decide("Bash", dict(tool_input))
+            if listed:
+                reason = approver_mod.shell_checks(trimmed)
+                return Decision(True) if reason is None else Decision(False, reason)
+        reason = ("Refused by the orchestrator: the shell runs only the listed read "
+                  "commands in this run. Run a check with the check helper's run_check "
+                  "tool, which runs it in an offline container over a clean copy.")
         # A Get-Content, or half of the accepted form, refused for its form is told the
-        # form that is accepted; one in that form refused for another reason (a `.env`
-        # file, say) is not.
-        if (not decision.allowed and not listed and isinstance(command, str)
-                and ("get-content" in command.lower()
-                     or "[console]::outputencoding" in command.lower())):
-            return Decision(False, decision.reason + GET_CONTENT_NOTE)
-        return decision
+        # form that is accepted.
+        if isinstance(command, str) and ("get-content" in command.lower()
+                                         or "[console]::outputencoding" in command.lower()):
+            reason += GET_CONTENT_NOTE
+        return Decision(False, reason)
+    if tool_name in CHECK_TOOLS:
+        return approver.decide(tool_name, dict(tool_input))
     if tool_name == PATCH_TOOL:
         try:
             files = patch_files(tool_input.get("command"))
@@ -262,7 +293,73 @@ def decide(tool_name, tool_input, approver, read_pattern):
     return Decision(False, f"Refused by the orchestrator: {tool_name} is not permitted "
                            "in this run. Read with the listed read commands, change "
                            "files with apply_patch inside the run's edit paths, and "
-                           "run only the listed verification commands.")
+                           "run the listed verification commands with the check "
+                           "helper's run_check.")
+
+
+# ------------------------------------------------------------- the rule hooks
+
+
+def fire_log_path(run_id, temp_root=None):
+    """The run's rule-hook fire log, ``<temp>/book-dragon-runlogs/<run-id>/
+    fire-log.jsonl``: outside the project and the frozen folder (plan 7.6 item 3)."""
+    return (Path(temp_root or tempfile.gettempdir()) / RUNLOGS_PARENT / run_id
+            / FIRE_LOG_NAME)
+
+
+def rule_hook_env(environ, root, run_id, temp_root=None):
+    """The environment for one trusted rule-hook process: the caller's, with the
+    project root and the run's fire log set. The fire log's folder is made here."""
+    log = fire_log_path(run_id, temp_root)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    env = dict(environ)
+    env.update({ROOT_ENV: str(root), FIRE_LOG_ENV: str(log),
+                "PYTHONDONTWRITEBYTECODE": "1"})
+    return env
+
+
+def run_rule_hook(python, frozen, ai, event, root, run_id, *, temp_root=None,
+                  environ=None, runner=subprocess.run,
+                  timeout=RULE_HOOK_TIMEOUT_SECONDS):
+    """Run the trusted rule hooks once on one call, as the project hook would have.
+
+    Returns None when they let the call through, else the reason it is refused: the
+    rule's own message for a block, or what failed when they could not judge it (a
+    timeout, a crash, output that cannot be read), since a hook that cannot judge a
+    call never lets it through. ``ai`` is ``claude`` or ``codex``: Claude's rule
+    hooks block with exit 2 and the reason on stderr, Codex's with a deny on stdout."""
+    script = Path(frozen).joinpath(*TRUSTED_RULE_HOOKS)
+    if not script.is_file():
+        return f"Refused by the orchestrator: the run's rule hooks ({script.as_posix()}) are missing."
+    environ = os.environ if environ is None else environ
+    try:
+        done = runner([str(python), str(script), "--ai", ai], input=json.dumps(event),
+                      capture_output=True, encoding="utf-8", errors="replace",
+                      timeout=timeout, env=rule_hook_env(environ, root, run_id, temp_root),
+                      cwd=str(root))
+    except subprocess.TimeoutExpired:
+        return (f"Refused by the orchestrator: the rule hooks did not answer within "
+                f"{timeout} s.")
+    except OSError as exc:
+        return f"Refused by the orchestrator: the rule hooks could not be started ({exc})."
+    out, err = (done.stdout or "").strip(), (done.stderr or "").strip()
+    if ai == "claude":
+        if done.returncode == 0 and not out:
+            return None
+        if done.returncode == 2 and err:
+            return err
+    else:
+        if done.returncode == 0 and not out:
+            return None
+        try:
+            reply = json.loads(out)["hookSpecificOutput"]
+            if reply.get("permissionDecision") == "deny" and reply.get("permissionDecisionReason"):
+                return str(reply["permissionDecisionReason"])
+        except (ValueError, KeyError, TypeError, AttributeError):
+            pass
+    tail = " ".join((err or out).split())[-300:]
+    return (f"Refused by the orchestrator: the rule hooks could not judge this call "
+            f"(exit {done.returncode}{'; ' + tail if tail else ''}).")
 
 
 def detail(tool_name, tool_input):

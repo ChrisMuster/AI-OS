@@ -16,10 +16,11 @@ $read_commands
     `Get-Date` command immediately before you write the entry, never earlier.
   - No git commands other than the read forms listed above. Do not stage or commit
     anything.
-  - You may run these verification commands, one per call, with no chaining. Each is
-    a regular expression the whole command must match:
+  - Run checks only with the check helper's `run_check` tool, never in the shell. It
+    runs each command in an offline container over a clean copy of the project, with
+    no personal file and no network, and replies with the exit code and the end of
+    the output. You may run these verification commands through it, one per call,
+    with no chaining. Each is a regular expression the whole command must match:
 $verify_commands
-    The targeted audit and the close-out verifier are not among them: the
-    orchestrator runs both itself before every review and reports what they find, so
-    do not try to run either.
-  - No web search, no sub-agents, no MCP tools and no other tool.
+  - No web search, no sub-agents, and no MCP tool but the check helper's `run_check`
+    and `get_timestamp`; no other tool.

@@ -84,22 +84,14 @@ def load_config(folder):
 
 
 def refusal(command, folder, config):
-    """Why ``command`` may not run, or None. ``command`` is already trimmed."""
+    """Why ``command`` may not run, or None. ``command`` is already trimmed. The test is
+    ``approver.verify_refusal``, the one the builders' approver applies too (S7), so
+    the approver allows exactly what the helper runs."""
     if not command:
         return "Refused by the orchestrator: no command was given."
-    reason = approver_mod.shell_checks(command)
-    if reason is not None:
-        return reason
     patterns = approver_mod.load_verify_commands(
         Path(folder) / LISTS[config["builder_provider"]])
-    if not any(pattern.fullmatch(command) for pattern in patterns):
-        return ("Refused by the orchestrator: only the commands on this run's "
-                "verification list can be run as checks.")
-    try:
-        shlex.split(command)
-    except ValueError:
-        return "Refused by the orchestrator: the command's quoting cannot be read."
-    return None
+    return approver_mod.verify_refusal(command, patterns)
 
 
 def _tail(name, text):

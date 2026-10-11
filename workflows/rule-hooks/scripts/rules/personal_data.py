@@ -16,22 +16,29 @@ write pays nothing for it.
 import importlib.util
 import os
 import subprocess
+from pathlib import Path
 
 from core import Decision, format_block
 
 RULE_ID = "B3"
 
+# The guard is loaded from beside this rule's own code, never from the project root
+# being checked: run from the review orchestrator's trusted copy, the guard beside it
+# is the trusted one, so a builder's edit to the live guard never runs here. Outside a
+# run the two are the same tree (orchestrator isolation plan 7.6 item 3).
+# rules -> scripts -> rule-hooks -> workflows
+GUARD_PATH = (Path(__file__).resolve().parents[3] / "personal-data-guard" / "scripts"
+              / "run.py")
+
 _GUARD_CACHE = {}
 
 
-def _load_guard(project_root):
-    """Load personal-data-guard's run.py as a module (cached per root)."""
-    key = str(project_root)
+def _load_guard(guard_path=GUARD_PATH):
+    """Load personal-data-guard's run.py as a module (cached per file). The project
+    root stays the data the guard scans; it is never where the guard is loaded from."""
+    key = str(guard_path)
     if key in _GUARD_CACHE:
         return _GUARD_CACHE[key]
-    guard_path = (
-        project_root / "workflows" / "personal-data-guard" / "scripts" / "run.py"
-    )
     spec = importlib.util.spec_from_file_location("pdg_guard", str(guard_path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -66,7 +73,7 @@ def check(ctx):
         # Cannot determine, or a gitignored personal file -> do not block.
         return None
 
-    guard = _load_guard(ctx.project_root)
+    guard = _load_guard()
     markers, _ = guard.build_markers()
     rel = os.path.basename(ctx.file_path.replace("\\", "/"))
     findings = guard.scan_text(rel, ctx.content, markers)

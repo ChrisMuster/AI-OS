@@ -23,7 +23,9 @@ Same three controls as test_brief.py:
 import asyncio
 import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -161,17 +163,46 @@ class FakeClaudeClient:
         self.disconnected = True
 
 
+def add_rule_hooks(frozen_dir):
+    """A stand-in trusted rule-hooks script in a frozen folder's trusted/ copy, enough
+    for a launch's own check that the folder is whole; a test that runs it replaces it."""
+    script = Path(frozen_dir).joinpath(*codex_rules.TRUSTED_RULE_HOOKS)
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("import sys\nsys.stdin.read()\n", encoding="utf-8", newline="\n")
+    return script
+
+
 @NEEDS_CLAUDE
 class ClaudeBuilderTests(unittest.TestCase):
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        self.root = Path(folder.name).resolve()
+        base = Path(folder.name).resolve()
+        self.root = base / "project"
+        (self.root / "notes").mkdir(parents=True)
+        self.temp = base / "temp"
+        self.run_dir = base / "runs" / RUN_ID
+        self.frozen = self.temp / providers.FROZEN_PARENT / RUN_ID
+        make_frozen(self.frozen, self.root)
+        add_rule_hooks(self.frozen)
         FakeClaudeClient.instances = []
-        self.builder = providers.ClaudeBuilder(MODEL, "medium", an_approver(self.root),
-                                               cwd=self.root,
-                                               client_factory=FakeClaudeClient)
+        # The trusted rule hooks, stood in for: each call recorded, and the answer the
+        # test sets (None lets the call through).
+        self.rule_calls = []
+        self.rule_answer = None
+        self.builder = self.make()
+
+    def rule_hook(self, python, frozen_dir, ai, event, root, run_id, *, temp_root=None):
+        self.rule_calls.append({"python": python, "frozen": frozen_dir, "ai": ai,
+                                "event": event, "root": root, "run_id": run_id})
+        return self.rule_answer
+
+    def make(self, **kwargs):
+        return providers.ClaudeBuilder(MODEL, "medium", an_approver(self.root),
+                                       cwd=self.root, client_factory=FakeClaudeClient,
+                                       run_dir=self.run_dir, temp_root=self.temp,
+                                       rule_hook=self.rule_hook, **kwargs)
 
     def run_turns(self, *scripts, prompts=("build it",)):
         async def go():
@@ -212,12 +243,13 @@ class ClaudeBuilderTests(unittest.TestCase):
         cases = [
             ("Bash", {"command": "python workflows/sync-architecture/scripts/allowlist.py "
                                  "--stage --git-dir C:/BookDragon/personal-work.git"},
-             "only these verification commands"),
+             "the shell is not available"),
             ("mcp__biblio-tools__append_log", {"directory": "memory", "note": "x"},
-             "append_log"),
+             "is not available to a builder"),
             ("mcp__biblio-tools__run_new_month", {"month": "2026-10"},
-             "is not permitted in this run"),
-            ("mcp__biblio-tools__run_link_check", {"mode": "link"}, "may only audit"),
+             "is not available to a builder"),
+            ("mcp__biblio-tools__run_link_check", {"mode": "link"},
+             "is not available to a builder"),
         ]
         for tool, tool_input, reason in cases:
             with self.subTest(tool=tool):
@@ -257,7 +289,7 @@ class ClaudeBuilderTests(unittest.TestCase):
         deny = asyncio.run(self.builder.can_use_tool("Bash", {"command": "git push"}, None))
         self.assertIsInstance(allow, PermissionResultAllow)
         self.assertIsInstance(deny, PermissionResultDeny)
-        self.assertIn("only these verification commands", deny.message)
+        self.assertIn("the shell is not available", deny.message)
         self.assertEqual(len(self.builder.approver.refusals), 1)
 
     def test_positive_a_turn_collects_result_session_and_usage(self):
@@ -284,9 +316,7 @@ class ClaudeBuilderTests(unittest.TestCase):
         self.assertEqual(self.client.prompts[0].count(providers.MARKER), 1)
 
     def test_positive_a_resumed_session_sends_no_marker_and_keeps_its_id(self):
-        builder = providers.ClaudeBuilder(MODEL, "medium", an_approver(self.root),
-                                          cwd=self.root, resume="sess-0",
-                                          client_factory=FakeClaudeClient)
+        builder = self.make(resume="sess-0")
         self.assertEqual(builder.options().resume, "sess-0")
         self.builder = builder
         record, = self.run_turns([result(session_id="sess-0")], prompts=("continue",))
@@ -322,6 +352,86 @@ class ClaudeBuilderTests(unittest.TestCase):
     def test_rejection_a_turn_before_start(self):
         with self.assertRaisesRegex(providers.ProviderError, "has not been started"):
             asyncio.run(self.builder.turn("t", "x"))
+
+    # ------------------------------------- trusted programs only (plan 7.4, 7.6)
+
+    def test_positive_the_options_give_only_the_check_helper_and_no_settings_hook(self):
+        options = self.builder.options()
+        self.assertTrue(options.strict_mcp_config, "ignores .mcp.json, user and plugins")
+        self.assertEqual(options.mcp_servers, {"checks": {
+            "type": "stdio", "command": sys.executable,
+            "args": [str(self.frozen / "check_server.py")]}})
+        self.assertEqual(json.loads(options.settings), {"disableAllHooks": True})
+        # A check can take minutes: Claude's MCP call limit, in milliseconds.
+        self.assertEqual(options.env, {"MCP_TOOL_TIMEOUT": "1800000"})
+        self.assertEqual(self.builder.frozen_dir, self.frozen)
+
+    def test_positive_an_allowed_edit_goes_through_the_trusted_rule_hooks(self):
+        call = hook_call("Write", {"file_path": "notes/a.md", "content": "x"})
+        out = asyncio.run(self.builder.pre_tool_use(call, "use-1", None))
+        self.assertEqual(out, {})
+        seen, = self.rule_calls
+        self.assertEqual((seen["ai"], seen["run_id"], seen["frozen"], seen["root"]),
+                         ("claude", RUN_ID, self.frozen, self.root))
+        self.assertEqual(seen["event"]["tool_name"], "Write")
+        self.assertEqual(seen["event"]["hook_event_name"], "PreToolUse")
+        self.assertEqual(self.builder.callback_calls, ["Write"])
+
+    def test_rejection_what_the_rule_hooks_block_is_denied_with_their_reason(self):
+        self.rule_answer = "BLOCKED: rule B3 says no"
+        call = hook_call("Edit", {"file_path": "notes/a.md"})
+        specific = asyncio.run(self.builder.pre_tool_use(call, "use-1", None))[
+            "hookSpecificOutput"]
+        self.assertEqual((specific["permissionDecision"],
+                          specific["permissionDecisionReason"]),
+                         ("deny", "BLOCKED: rule B3 says no"))
+        refusal, = self.builder.approver.refusals
+        self.assertEqual((refusal["tool"], refusal["reason"]),
+                         ("Edit", "BLOCKED: rule B3 says no"))
+
+    def test_negative_the_rule_hooks_never_run_for_a_read_or_a_refused_call(self):
+        for tool, tool_input in (("Read", {"file_path": "AGENTS.md"}),
+                                 ("Glob", {"pattern": "**/*.py"}),
+                                 ("Write", {"file_path": "outside/a.md"}),
+                                 ("Bash", {"command": "git status"}),
+                                 ("mcp__checks__get_timestamp", {})):
+            with self.subTest(tool=tool):
+                asyncio.run(self.builder.pre_tool_use(hook_call(tool, tool_input),
+                                                      "use-1", None))
+        self.assertEqual(self.rule_calls, [])
+
+    def test_positive_the_real_rule_hooks_runner_denies_a_block(self):
+        # The default runner, codex_rules.run_rule_hook, against a stand-in rule-hooks
+        # script that blocks as Claude's adapter does: exit 2, the reason on stderr.
+        add_rule_hooks(self.frozen).write_text(
+            "import sys\nsys.stdin.read()\nsys.stderr.write('BLOCKED by rule X')\n"
+            "sys.exit(2)\n", encoding="utf-8", newline="\n")
+        builder = providers.ClaudeBuilder(MODEL, "medium", an_approver(self.root),
+                                          cwd=self.root, client_factory=FakeClaudeClient,
+                                          run_dir=self.run_dir, temp_root=self.temp)
+        specific = asyncio.run(builder.pre_tool_use(
+            hook_call("Write", {"file_path": "notes/a.md"}), "use-1", None))[
+            "hookSpecificOutput"]
+        self.assertEqual(specific["permissionDecisionReason"], "BLOCKED by rule X")
+        self.assertTrue((self.temp / "book-dragon-runlogs" / RUN_ID).is_dir(),
+                        "the run's own fire-log folder, outside the project")
+
+    def test_rejection_a_start_whose_frozen_folder_lacks_the_helper_or_rule_hooks(self):
+        for path in (self.frozen / "check_server.py",
+                     self.frozen.joinpath(*codex_rules.TRUSTED_RULE_HOOKS)):
+            with self.subTest(path=path.name):
+                kept = path.read_bytes()
+                path.unlink()
+                try:
+                    with self.assertRaisesRegex(providers.ProviderError, "lacks"):
+                        asyncio.run(self.make().start())
+                finally:
+                    path.write_bytes(kept)
+        self.assertEqual(FakeClaudeClient.instances, [], "the CLI is never started")
+
+    def test_rejection_a_claude_builder_without_the_run_folder(self):
+        with self.assertRaisesRegex(providers.ProviderError, "needs the run's folder"):
+            providers.ClaudeBuilder(MODEL, "medium", an_approver(self.root), cwd=self.root)
 
 
 TURN_ID = "turn-1"
@@ -362,19 +472,56 @@ class FakeThread:
         raise AssertionError("the reviewer must read the turn's events, not call run()")
 
 
-class FakeCodex:
-    """Stands in for the Codex client: a model listing and one thread."""
+class FakeReviewerRpc:
+    """Stands in for the reviewer's ``Codex._client``: answers the launch's read-backs
+    (plan 7.6 item 4) and its ``command/exec`` self-test (R35-1) from a test's world."""
 
-    def __init__(self, models, events):
+    def __init__(self, world, overrides):
+        self.world = world
+        self.overrides = tuple(overrides)
+        self.requests = []
+
+    def _request_raw(self, method, params=None):
+        self.requests.append((method, params))
+        world = self.world
+        if method == "hooks/list":
+            return {"data": [{"cwd": params["cwds"][0], "errors": [], "warnings": [],
+                              "hooks": hooks_listing(self.overrides, world.project,
+                                                     world.ignore_disable)}]}
+        if method == "mcpServerStatus/list":
+            return servers_listing(world.servers, self.overrides, world.keep_counting)
+        if method == "config/read":
+            given = None
+            for override in self.overrides:
+                prefix = "shell_environment_policy.set.PYTHONPATH="
+                if override.startswith(prefix) and world.honour_env:
+                    given = override[len(prefix):].strip('"')
+            return {"config": {"shell_environment_policy": {"set": {"PYTHONPATH": given}}
+                               if given is not None else None}, "origins": {}}
+        if method == "command/exec":
+            return world.exec_reply
+        raise AssertionError(f"unexpected request {method}")
+
+
+class FakeCodex:
+    """Stands in for the Codex client: a model listing and one thread, and the raw
+    client the reviewer's launch reads back through."""
+
+    def __init__(self, models, events, world=None, overrides=()):
         self._models = models
         self.thread = FakeThread(events)
         self.started = None
         self.closed = False
+        self.overrides = tuple(overrides)
+        self._client = FakeReviewerRpc(world, overrides)
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
+        self.closed = True
+
+    def close(self):
         self.closed = True
 
     def models(self):
@@ -412,11 +559,139 @@ def turn(status="completed", final=None, error=None, completed=True):
 @NEEDS_CODEX
 class CodexReviewerTests(unittest.TestCase):
 
+    def setUp(self):
+        self.frozen = Path(tempfile.gettempdir()) / providers.FROZEN_PARENT / RUN_ID
+        self.wire = (self.frozen / "tripwire").as_posix()
+        self.world = SimpleNamespace(
+            project=project_hooks(), ignore_disable=False, honour_env=True,
+            servers=[server("biblio-tools")], keep_counting=(),
+            exec_reply={"exitCode": 0, "stderr": "",
+                        "stdout": f"{self.wire}{os.pathsep}C:/other\n"
+                                  f"{self.wire}/sitecustomize.py\n"})
+        self.opened = []
+
+    def factory(self, models, events):
+        def open_client(overrides):
+            client = FakeCodex(list(models), events, self.world, overrides)
+            self.opened.append(client)
+            self.codex = client
+            return client
+        return open_client
+
+    def reviewer(self, events, models=("gpt-6-sol", "gpt-6-astra"), model="gpt-6-sol"):
+        return providers.CodexReviewer(model, "high", cwd="C:/project",
+                                       frozen_dir=self.frozen,
+                                       codex_factory=self.factory(models, events))
+
     def review(self, events, models=("gpt-6-sol", "gpt-6-astra"), model="gpt-6-sol"):
-        self.codex = FakeCodex(list(models), events)
-        reviewer = providers.CodexReviewer(model, "high", cwd="C:/project",
-                                           codex_factory=lambda: self.codex)
-        return reviewer.review("review this", stopreasons.REVIEW_SCHEMA)
+        return self.reviewer(events, models, model).review("review this",
+                                                            stopreasons.REVIEW_SCHEMA)
+
+    # --------------------------- trusted programs only, no project code (7.6 item 4)
+
+    def test_positive_the_launch_overrides_and_read_backs(self):
+        record = self.review(turn())
+        first, second = self.opened
+        base = ("features.plugins=false", "features.apps=false",
+                f'shell_environment_policy.set.PYTHONPATH="{self.wire}"')
+        self.assertEqual(first.overrides, base)
+        self.assertTrue(first.closed, "the first client only lists the hooks and servers")
+        self.assertEqual([r[0] for r in first._client.requests],
+                         ["hooks/list", "mcpServerStatus/list"])
+        self.assertIsNone(first.started)
+        state = ("hooks.state={" + ", ".join(f"'{h['key']}'={{enabled=false}}"
+                                             for h in project_hooks()) + "}")
+        self.assertEqual(second.overrides, (*base, state))
+        self.assertEqual([r[0] for r in second._client.requests],
+                         ["hooks/list", "mcpServerStatus/list", "config/read",
+                          "command/exec"])
+        method, params = second._client.requests[-1]
+        self.assertEqual(params, {"command": [sys.executable, "-c",
+                                              providers.REVIEWER_SELF_TEST],
+                                  "cwd": str(self.frozen),
+                                  "sandboxPolicy": {"type": "readOnly"},
+                                  "timeoutMs": 60000})
+        # Live check 4b: the launch's readings travel with the review.
+        self.assertEqual(record.launch["shell_pythonpath"], self.wire)
+        self.assertEqual(record.launch["self_test"]["exitCode"], 0)
+        self.assertEqual({e["enabled"] for e in record.launch["project_hooks"]}, {False})
+
+    def test_rejection_each_reason_the_reviewer_does_no_review(self):
+        wire = self.wire
+        cases = [
+            ("a project hook still on", {"ignore_disable": True}, "is not switched off"),
+            ("a plugin's server Codex does not switch off",
+             {"servers": [server("x", ("t",), plugin="p@q")], "keep_counting": ("x",)},
+             "an MCP server is in force: 'x' \\(plugin p@q\\)"),
+            ("a user server Codex does not switch off",
+             {"servers": [server("biblio-tools"), *outside_servers()],
+              "keep_counting": ("node_repl",)},
+             "an MCP server is in force: 'node_repl'"),
+            ("a server name that cannot be written",
+             {"servers": [server("bad name!", ("t",))]},
+             "name cannot be written as an override"),
+            ("the shell's PYTHONPATH not reported", {"honour_env": False},
+             "reports the shell's PYTHONPATH as None"),
+            ("a self-test that failed", {"exec_reply": {"exitCode": 1, "stdout": ""}},
+             "self-test failed.*exited 1"),
+            ("the tripwire not first",
+             {"exec_reply": {"exitCode": 0,
+                             "stdout": f"C:/other{os.pathsep}{wire}\n{wire}/sitecustomize.py\n"}},
+             "PYTHONPATH starts 'C:/other', not the tripwire folder"),
+            ("no sitecustomize loaded",
+             {"exec_reply": {"exitCode": 0, "stdout": f"{wire}\n\n"}},
+             "the sitecustomize it loaded is 'none'"),
+            ("a sitecustomize from elsewhere",
+             {"exec_reply": {"exitCode": 0, "stdout": f"{wire}\nC:/x/sitecustomize.py\n"}},
+             "loaded is 'C:/x/sitecustomize.py'"),
+        ]
+        for label, change, reason in cases:
+            with self.subTest(label):
+                self.setUp()
+                for name, value in change.items():
+                    setattr(self.world, name, value)
+                with self.assertRaisesRegex(providers.ProviderError, reason):
+                    self.review(turn())
+                self.assertTrue(all(c.started is None for c in self.opened),
+                                "no thread may start")
+                self.assertTrue(all(c.closed for c in self.opened))
+
+    def test_positive_outside_servers_are_switched_off_and_none_allowed(self):
+        # Decision 35: the reviewer allows no server, so node_repl is switched off by
+        # name and codex_apps by apps off; biblio-tools, with no tools, is never named.
+        self.world.servers = [server("biblio-tools"), *outside_servers()]
+        self.review(turn())
+        first, second = self.opened
+        off = [o for o in second.overrides if o.startswith("mcp_servers.")]
+        self.assertEqual(off, ["mcp_servers.node_repl.enabled=false"])
+
+    def test_rejection_a_reviewer_without_the_frozen_folder(self):
+        with self.assertRaisesRegex(providers.ProviderError, "needs the run's frozen"):
+            providers.CodexReviewer("gpt-6-sol", "high", cwd="C:/project")
+
+    def test_positive_the_real_self_test_code_reports_the_tripwire(self):
+        # The self-test's own code, run with the run's interpreter and a fixture
+        # tripwire folder first on PYTHONPATH (no Codex): it names that folder and the
+        # sitecustomize.py loaded from it, and imports no project code.
+        with tempfile.TemporaryDirectory() as folder:
+            wire = Path(folder) / "tripwire"
+            wire.mkdir()
+            (wire / "sitecustomize.py").write_text("LOADED = True\n", encoding="utf-8",
+                                                   newline="\n")
+            done = subprocess.run([sys.executable, "-c", providers.REVIEWER_SELF_TEST],
+                                  env={**os.environ, "PYTHONPATH": str(wire),
+                                       "PYTHONDONTWRITEBYTECODE": "1"},
+                                  capture_output=True, encoding="utf-8", cwd=folder,
+                                  timeout=60)
+        first, loaded = done.stdout.splitlines()[:2]
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(providers._same_file(first.split(os.pathsep)[0], wire))
+        self.assertTrue(providers._same_file(loaded, wire / "sitecustomize.py"))
+
+    def test_positive_the_reviewer_prompt_no_longer_invites_running_tests(self):
+        text = (WORKFLOW / "prompts" / "reviewer-tools-codex.md").read_text(encoding="utf-8")
+        self.assertNotIn("such as the tests", text)
+        self.assertIn("run no project code", text)
 
     def test_positive_a_fresh_read_only_thread_with_the_schema(self):
         record = self.review(turn())
@@ -499,10 +774,65 @@ def listed(event, source, matcher=None, trust="trusted", enabled=True, timeout=6
 
 
 def project_hooks():
-    """The project's own four Codex hooks, as hooks/list reported them on 2026-10-02."""
-    return [listed("preToolUse", "project", "Bash"),
-            listed("preToolUse", "project", "apply_patch"),
-            listed("sessionStart", "project"), listed("stop", "project")]
+    """The project's own four Codex hooks, as hooks/list reported them on 2026-10-02,
+    each with its own key."""
+    return [listed("preToolUse", "project", "Bash", key="C:\\p\\.codex\\config.toml:pre:0"),
+            listed("preToolUse", "project", "apply_patch",
+                   key="C:\\p\\.codex\\config.toml:pre:1"),
+            listed("sessionStart", "project", key="C:\\p\\.codex\\config.toml:start:0"),
+            listed("stop", "project", key="C:\\p\\.codex\\config.toml:stop:0")]
+
+
+def server(name, tools=(), plugin=None, error=None):
+    """One mcpServerStatus/list row, with the fields the installed SDK's type names."""
+    return {"name": name, "pluginId": plugin, "authStatus": "unsupported",
+            "resources": [], "resourceTemplates": [], "toolsError": error,
+            "tools": {tool: {"name": tool, "inputSchema": {"type": "object"}}
+                      for tool in tools}}
+
+
+def builder_servers():
+    """A builder's listing as plan 7.6 item 1 expects it: the check helper with its two
+    tools, and the project's own biblio-tools listed, disabled and with no tools."""
+    return [server("checks", ("run_check", "get_timestamp")), server("biblio-tools")]
+
+
+def servers_listing(rows, overrides, keep_counting=()):
+    """mcpServerStatus/list as Codex reports it under ``overrides`` (decision 35's
+    probe, 2026-10-11): `codex_apps` is gone once apps are off, and a server switched
+    off by name is listed with no tools, unless a test has Codex ignore the switch for
+    it (``keep_counting``)."""
+    out = []
+    for row in rows:
+        name = row["name"]
+        if name == "codex_apps" and providers.APPS_OFF in overrides:
+            continue
+        row = dict(row)
+        if f"mcp_servers.{name}.enabled=false" in overrides and name not in keep_counting:
+            row.update(tools={}, toolsError=None)
+        out.append(row)
+    return {"data": out, "nextCursor": None}
+
+
+def outside_servers():
+    """What a launch in this project lists with plugins off on 2026-10-11: Codex's own
+    apps and a server from the user's own configuration, each counting."""
+    return [server("codex_apps", ("app_a", "app_b")), server("node_repl", ("js", "eval"))]
+
+
+def hooks_listing(overrides, rows, ignore_disable=False):
+    """hooks/list's rows as Codex reports them under ``overrides``: a hook switched off
+    by key in a hooks.state override reports enabled false, as probe 9 showed, unless
+    a test has Codex ignore it."""
+    out = []
+    for row in rows:
+        row = dict(row)
+        off = f"'{row['key']}'={{enabled=false}}"
+        if not ignore_disable and any(o.startswith("hooks.state=") and off in o
+                                      for o in overrides):
+            row["enabled"] = False
+        out.append(row)
+    return out
 
 
 def codex_note(method, payload):
@@ -577,7 +907,7 @@ class FakeCodexClient:
         world = self.world
         if method == "hooks/list":
             trusted = any(o.startswith("hooks.state=") for o in self.overrides)
-            hooks = list(world.project)
+            hooks = hooks_listing(self.overrides, world.project, world.ignore_disable)
             for count in range(world.run_hooks):
                 hooks.append(listed("preToolUse", "sessionFlags", world.matcher,
                                     trust=world.trust if trusted else "untrusted",
@@ -588,6 +918,8 @@ class FakeCodexClient:
         if method == "config/read":
             off = providers.WEB_SEARCH_OFF in self.overrides and world.search_off
             return {"config": {"web_search": "disabled" if off else "live"}, "origins": {}}
+        if method == "mcpServerStatus/list":
+            return servers_listing(world.servers, self.overrides, world.keep_counting)
         if method in ("thread/start", "thread/resume"):
             return world.thread_reply
         raise AssertionError(f"unexpected request {method}")
@@ -640,7 +972,7 @@ class CodexBuilderTests(unittest.TestCase):
             models=["gpt-6-sol", "gpt-6-astra"],
             thread_reply={"thread": {"id": THREAD}, "model": "gpt-6-sol",
                           "sandbox": dict(SANDBOX), "approvalPolicy": "untrusted"},
-            script=[])
+            script=[], servers=builder_servers(), ignore_disable=False, keep_counting=())
         self.clients = []
         self.frozen = self.temp / providers.FROZEN_PARENT / RUN_ID
         self.decisions = self.frozen / "hook-decisions.jsonl"
@@ -825,16 +1157,28 @@ class CodexBuilderTests(unittest.TestCase):
         hook = ('hooks.PreToolUse=[{matcher=".*", hooks=[{type="command", command="'
                 f'{python} {self.frozen.as_posix()}/codex_hook.py {RUN_ID}", '
                 'timeout=30}]}]')
-        self.assertEqual(first.overrides, (hook, 'web_search="disabled"'))
+        # Plan 7.5 and 7.6: plugins off, and the check helper from the frozen folder as
+        # the builder's one MCP server, with a call limit no shorter than a check's.
+        checks = (f'mcp_servers.checks={{command="{python}", '
+                  f'args=["{self.frozen.as_posix()}/check_server.py"], '
+                  'tool_timeout_sec=1800}')
+        base = (hook, 'web_search="disabled"', "features.plugins=false",
+                "features.apps=false", checks)
+        self.assertEqual(first.overrides, base)
         self.assertIsNone(first.handler)
-        self.assertTrue(first.closed, "the first client only lists the hook")
-        self.assertEqual([r[0] for r in first.requests], ["hooks/list"])
-        # The key holds backslashes, so it is a TOML literal string.
-        trust = "hooks.state={'" + HOOK_KEY + "'={trusted_hash=\"sha256:abc\"}}"
-        self.assertEqual(second.overrides, (hook, 'web_search="disabled"', trust))
+        self.assertTrue(first.closed, "the first client only lists the hooks and servers")
+        self.assertEqual([r[0] for r in first.requests],
+                         ["hooks/list", "mcpServerStatus/list"])
+        # Keys hold backslashes, so each is a TOML literal string: the run's hook gets
+        # its trust, and every project hook is switched off by its own key (7.6 item 2).
+        state = ("hooks.state={'" + HOOK_KEY + "'={trusted_hash=\"sha256:abc\"}, "
+                 + ", ".join(f"'{h['key']}'={{enabled=false}}" for h in project_hooks())
+                 + "}")
+        self.assertEqual(second.overrides, (*base, state))
         self.assertEqual(second.handler, builder._approve)
         self.assertEqual([r[0] for r in second.requests],
-                         ["hooks/list", "config/read", "thread/start"])
+                         ["hooks/list", "config/read", "mcpServerStatus/list",
+                          "thread/start"])
         self.assertEqual(second.requests[0][1], {"cwds": [str(self.root)]})
         self.assertFalse(second.closed)
 
@@ -868,6 +1212,12 @@ class CodexBuilderTests(unittest.TestCase):
         self.assertEqual(len(record["project_hooks"]), len(project))
         self.assertTrue(all(set(entry) == {"eventName", "matcher", "trustStatus", "enabled"}
                             for entry in record["project_hooks"]))
+        self.assertEqual({entry["enabled"] for entry in record["project_hooks"]}, {False})
+        # Live check 4a: the servers read back, the helper's tools by name.
+        self.assertEqual(record["mcp_servers"], [
+            {"name": "checks", "pluginId": None, "tools": ["get_timestamp", "run_check"],
+             "toolsError": None},
+            {"name": "biblio-tools", "pluginId": None, "tools": [], "toolsError": None}])
         self.turn(builder, said_codex("done"), turn_done())
         asyncio.run(builder.close())
         again = self.started(resume=THREAD)
@@ -894,20 +1244,30 @@ class CodexBuilderTests(unittest.TestCase):
             ("no matcher reported", {"matcher": None},
              "the run's hook applies to None, not\\s+to every tool"),
             ("web search on", {"search_off": False}, "web search is not switched off"),
-            ("a project hook untrusted",
-             {"project": [listed("preToolUse", "project", "Bash", trust="untrusted"),
-                          *project_hooks()[1:]]},
-             "the project's preToolUse hook \\('Bash'\\) is not trusted and enabled"),
-            ("a project hook disabled",
-             {"project": [*project_hooks()[:3], listed("stop", "project", enabled=False)]},
-             "the project's stop hook .* is not trusted and enabled"),
-            ("no project hook for the shell", {"project": project_hooks()[1:]},
-             "the project's preToolUse hook for Bash is not\\s+listed"),
-            ("no project hook for patches",
-             {"project": [project_hooks()[0], *project_hooks()[2:]]},
-             "the project's preToolUse hook for apply_patch is not\\s+listed"),
-            ("no project hooks at all", {"project": []},
-             "the project's preToolUse hook for Bash is not\\s+listed"),
+            # Plan 7.6 item 2: Codex not honouring the switch-off is refused.
+            ("a project hook still on", {"ignore_disable": True},
+             "the project's preToolUse hook \\('Bash'\\) is not switched off"),
+            # Plan 7.6 item 1: any server but the helper that still counts (reports tools
+            # or a failed discovery) once switched off by name refuses the session, by
+            # name: here Codex is made to ignore the switch-off (decision 35's backstop).
+            ("a plugin's server",
+             {"servers": [*builder_servers()[:1], server("biblio-tools", ("verify_setup",),
+                                                         plugin="biblio-tools@book-dragon")],
+              "keep_counting": ("biblio-tools",)},
+             "an MCP server other than the check helper is in force: 'biblio-tools' "
+             "\\(plugin biblio-tools@book-dragon\\)"),
+            ("a project server with tools",
+             {"servers": [server("checks", ("run_check",)), server("biblio-tools", ("x",))],
+              "keep_counting": ("biblio-tools",)},
+             "an MCP server other than the check helper is in force: 'biblio-tools'"),
+            ("a server whose discovery failed",
+             {"servers": [*builder_servers(), server("added", error="timed out")],
+              "keep_counting": ("added",)},
+             "an MCP server other than the check helper is in force: 'added'"),
+            ("a user server Codex does not switch off",
+             {"servers": [*builder_servers(), *outside_servers()],
+              "keep_counting": ("node_repl",)},
+             "an MCP server other than the check helper is in force: 'node_repl'"),
         ]
         for label, change, reason in cases:
             with self.subTest(label):
@@ -918,6 +1278,25 @@ class CodexBuilderTests(unittest.TestCase):
                 self.assertNotIn("thread/start",
                                  [r[0] for c in self.clients for r in c.requests])
                 self.assertTrue(all(client.closed for client in self.clients))
+
+    def test_positive_servers_from_outside_the_project_are_switched_off_by_name(self):
+        # Decision 35, with the listing live check 4c met: apps off removes codex_apps;
+        # node_repl is switched off by name; biblio-tools (no tools) and checks (the
+        # helper) are never named.
+        self.world.servers = [*builder_servers(), *outside_servers()]
+        builder = self.started()
+        first, second = self.clients
+        self.assertIn("features.apps=false", first.overrides)
+        off = [o for o in second.overrides if o.startswith("mcp_servers.") and
+               o.endswith(".enabled=false")]
+        self.assertEqual(off, ["mcp_servers.node_repl.enabled=false"])
+        self.assertEqual({entry["name"] for entry in builder.launch_record["mcp_servers"]},
+                         {"checks", "biblio-tools", "node_repl"})
+
+    def test_rejection_a_server_name_that_cannot_be_written(self):
+        self.world.servers = [*builder_servers(), server("bad name!", ("t",))]
+        self.refused_start("name cannot be written as an override")
+        self.assertEqual(len(self.clients), 1, "the session's own client never starts")
 
     def test_rejection_not_exactly_one_run_hook_or_a_key_with_a_quote(self):
         for label, change, reason in (
@@ -1096,20 +1475,18 @@ class CodexBuilderTests(unittest.TestCase):
         self.ended(builder, self.decided("exec-1", "allow"), note, turn_done(),
                    reason="ended 'paused'")
 
-    def test_positive_a_project_rule_refusing_a_call_is_that_rule_working(self):
-        builder = self.started()
-        self.turn(builder,
-                  self.decided("exec-1", "allow"), hook_done("exec-1"),
-                  hook_done("exec-1", "blocked", source="project"),
-                  self.decided("exec-2", "allow"), hook_done("exec-2"),
-                  hook_done("exec-2", "completed", source="project"),
-                  command_item("exec-2"), said_codex("ok"), turn_done())
-
-    def test_rejection_a_project_pre_tool_use_hook_that_failed(self):
-        builder = self.started()
-        self.ended(builder, self.decided("exec-1", "allow"), hook_done("exec-1"),
-                   hook_done("exec-1", "failed", source="project"), turn_done(),
-                   reason="a project preToolUse hook run ended 'failed'")
+    def test_rejection_a_project_pre_tool_use_hook_that_ran_whatever_its_status(self):
+        # Plan 7.6 item 3: the project's hooks are off for a builder, so a run of one
+        # ended the turn whatever it reported, even a block or a pass.
+        for status in ("blocked", "completed", "failed"):
+            for source in ("project", "user"):
+                with self.subTest(status=status, source=source):
+                    self.setUp()
+                    builder = self.started()
+                    self.ended(builder, self.decided("exec-1", "allow"),
+                               hook_done("exec-1"),
+                               hook_done("exec-1", status, source=source), turn_done(),
+                               reason=f"a {source} preToolUse hook ran \\('{status}'")
 
     def test_negative_the_projects_session_start_and_stop_hooks_failing(self):
         # Both report failed in every Codex session in the project today. They are not
@@ -1266,6 +1643,10 @@ class ClaudeReviewerTests(unittest.TestCase):
         self.assertIsNone(matcher.matcher, "a matcher of None matches every tool")
         self.assertEqual(matcher.hooks, [self.reviewer.pre_tool_use])
         self.assertIsNone(options.resume, "a fresh session per round")
+        # Plan 7.6 item 4: no MCP server at all, and no settings-file hook.
+        self.assertTrue(options.strict_mcp_config)
+        self.assertEqual(options.mcp_servers, {})
+        self.assertEqual(json.loads(options.settings), {"disableAllHooks": True})
 
     def test_positive_the_hook_lets_the_read_tools_and_the_reply_through(self):
         for tool, tool_input in (("Read", {"file_path": "notes/a.md"}),
@@ -1363,17 +1744,22 @@ class RegistryTests(unittest.TestCase):
 
     def test_positive_the_claude_builds_pairing(self):
         loaded = settings.assign_roles(settings.load_settings(), "claude")
-        builder = providers.make_builder(loaded, an_approver(self.root), cwd=self.root)
-        reviewer = providers.make_reviewer(loaded, cwd=self.root)
+        builder = providers.make_builder(loaded, an_approver(self.root), cwd=self.root,
+                                         run_dir=self.root / RUN_ID)
+        reviewer = providers.make_reviewer(loaded, cwd=self.root, frozen_dir=self.root)
         self.assertIsInstance(builder, providers.ClaudeBuilder)
         self.assertEqual((builder.model, builder.effort), (MODEL, "medium"))
         self.assertIsInstance(reviewer, providers.CodexReviewer)
         self.assertEqual((reviewer.model, reviewer.effort), ("gpt-6-sol", "high"))
+        # Each is passed what it takes: the Claude builder the run folder, for its
+        # frozen folder; the Codex reviewer the frozen folder, for its tripwire.
+        self.assertEqual(builder.run_id, RUN_ID)
+        self.assertEqual(reviewer.frozen_dir, self.root)
 
     def test_positive_models_come_from_the_settings_not_the_code(self):
         loaded = self.loaded({"models": {"codex": {"reviewer": {"model": "gpt-7",
                                                                 "effort": "max"}}}})
-        reviewer = providers.make_reviewer(loaded, cwd=self.root)
+        reviewer = providers.make_reviewer(loaded, cwd=self.root, frozen_dir=self.root)
         self.assertEqual((reviewer.model, reviewer.effort), ("gpt-7", "max"))
 
     def test_positive_the_swapped_pairing_on_the_defaults(self):
@@ -1382,7 +1768,8 @@ class RegistryTests(unittest.TestCase):
         builder = providers.make_builder(loaded, an_approver(self.root), cwd=self.root,
                                          resume="thread-9", run_dir=self.root / RUN_ID,
                                          usage=usage)
-        reviewer = providers.make_reviewer(loaded, cwd=self.root, usage=usage)
+        reviewer = providers.make_reviewer(loaded, cwd=self.root, usage=usage,
+                                           frozen_dir=self.root)  # a Claude one takes none
         self.assertIsInstance(builder, providers.CodexBuilder)
         self.assertEqual((builder.model, builder.effort), ("gpt-6-sol", "high"))
         # Each session is passed what it takes: a Codex builder the run folder, whose
@@ -1402,7 +1789,10 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(builder.resume, "sess-0")
         self.assertFalse(builder.needs_turn_check)
         self.assertTrue(providers.CodexBuilder.needs_turn_check)
-        providers.make_reviewer(loaded, cwd=self.root, usage=usage)  # takes no usage
+        providers.make_reviewer(loaded, cwd=self.root, usage=usage,
+                                frozen_dir=self.root)  # takes no usage
+        with self.assertRaisesRegex(providers.ProviderError, "needs the run's frozen"):
+            providers.make_reviewer(loaded, cwd=self.root, usage=usage)
 
     def test_rejection_a_provider_with_no_session_is_named_not_substituted(self):
         loaded = settings.load_settings()
@@ -1418,6 +1808,76 @@ class RegistryTests(unittest.TestCase):
         loaded = self.loaded({}, builder="codex")
         with self.assertRaisesRegex(providers.ProviderError, "needs the run's folder"):
             providers.make_builder(loaded, an_approver(self.root), cwd=self.root)
+
+
+PROJECT = WORKFLOW.parent.parent
+
+
+class RuleHooksFromTrustedCopyTests(unittest.TestCase):
+    """Plan 7.6 item 3 and section 8, "Rule hook from the trusted copy": the real rule
+    hooks, run from a frozen folder's trusted/ copy by ``codex_rules.run_rule_hook``,
+    reach rule B3 and load the personal-data guard beside their own code, never the live
+    project's; the fire log lands in the run's own folder outside the project; and the
+    frozen folder is unchanged after a block and after a warning."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        self.root = base / "project"
+        self.root.mkdir()
+        (self.root / "AGENTS.md").write_bytes(b"# agents\n")
+        subprocess.run(["git", "init", "-q"], cwd=str(self.root), check=True,
+                       capture_output=True)
+        # A side effect planted in the live tree's guard: it must never run.
+        self.fired = base / "fired-live-guard"
+        live = self.root / "workflows" / "personal-data-guard" / "scripts"
+        live.mkdir(parents=True)
+        (live / "run.py").write_text(f"open(r'{self.fired}', 'w').close()\n",
+                                     encoding="utf-8", newline="\n")
+        self.temp = base / "temp"
+        self.frozen = self.temp / providers.FROZEN_PARENT / RUN_ID
+        trusted = self.frozen / "trusted" / "workflows"
+        skip = shutil.ignore_patterns("__pycache__", "LOG.md", "*.pyc")
+        for name in ("rule-hooks", "personal-data-guard"):
+            shutil.copytree(PROJECT / "workflows" / name / "scripts",
+                            trusted / name / "scripts", ignore=skip)
+
+    def state(self):
+        return {p.relative_to(self.frozen).as_posix(): p.read_bytes()
+                for p in sorted(self.frozen.rglob("*")) if p.is_file()}
+
+    def judge(self, event):
+        environ = {k: v for k, v in os.environ.items()
+                   if k not in ("BOOK_DRAGON_ROOT", "BOOK_DRAGON_FIRE_LOG")}
+        return codex_rules.run_rule_hook(sys.executable, self.frozen, "claude", event,
+                                         self.root, RUN_ID, temp_root=self.temp,
+                                         environ=environ)
+
+    def test_positive_b3_uses_the_trusted_guard_and_the_runs_own_fire_log(self):
+        before = self.state()
+        address = "a.person" + "@" + "mailbox.org"  # built here, so this file holds none
+        block = self.judge({"hook_event_name": "PreToolUse", "tool_name": "Write",
+                            "tool_input": {"file_path": str(self.root / "notes.md"),
+                                           "content": f"Write to {address}."},
+                            "cwd": str(self.root), "session_id": "s"})
+        self.assertIsNotNone(block, "rule B3 blocks a committable file holding an email")
+        self.assertIn("personal data", block)
+        self.assertFalse(self.fired.exists(), "the live project's guard never ran")
+        self.assertEqual(self.state(), before, "nothing written in the frozen folder")
+        # A warning: rule A3's byte-level allowance, logged and let through.
+        warned = self.judge({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                             "tool_input": {"command": "grep -c $'\\r' AGENTS.md"},
+                             "cwd": str(self.root), "session_id": "s"})
+        self.assertIsNone(warned)
+        self.assertEqual(self.state(), before)
+        log = self.temp / "book-dragon-runlogs" / RUN_ID / "fire-log.jsonl"
+        events = [json.loads(line)["event"]
+                  for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertIn("block", events)
+        self.assertIn("warn", events)
+        self.assertFalse((self.root / "workflows" / "rule-hooks").exists(),
+                         "no fire log, or anything else, lands in the project")
 
 
 class MarkerTests(unittest.TestCase):

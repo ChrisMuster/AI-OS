@@ -1,22 +1,25 @@
 # Verification commands an orchestrated Codex builder may run (short chunk (d) plan,
 # section 3.7). A Codex builder uses this list, not verify-commands.txt.
 #
+# Every line runs in the container. A builder runs these only through the check
+# helper's run_check tool, which runs the command in the run's offline image over a
+# fresh clean copy of the project, with no personal file and no network, and removes
+# the copy afterwards (orchestrator isolation plan 6 and 7.5). None runs on the host.
+#
 # Same format: one Python regular expression per line, the whole trimmed command must
 # match one line, and no line accepts a flag it does not name.
 #
-# Two things are left off on purpose:
-#
-#   - The targeted audit and the close-out verifier. Each appends to LOG.md files
-#     outside any ordinary edit path, and the check after every Codex builder turn
-#     ends the run on such a write. The orchestrator runs both itself before every
-#     review and reports what they find.
-#   - The general `scripts/run.py --check` line. It would accept any workflow's check,
-#     and the Reddit collector's makes an HTTP request, while the web-research and
-#     personal-data guard checks read the project's `.env` file. The third line below
-#     names the checks a Codex builder may run, one by one. Add a name only after
-#     reading what that check does: it must not reach the network, read `.env`, or
-#     write a tracked or hand-written file.
+# The targeted audit and the close-out verifier are here in their read-only forms only:
+# inside the clean copy neither writes anywhere that matters nor reads a personal file
+# (plan 6). The general `scripts/run.py --check` line is still left off: it would accept
+# any workflow's check, and the Reddit collector's makes an HTTP request, while the
+# web-research and personal-data guard checks read the project's `.env` file. The
+# fifth line below names the checks a Codex builder may run, one by one. Add a name only
+# after reading what that check does: it must not reach the network, read `.env`, or
+# write a tracked or hand-written file.
 python -m py_compile( (?!-)[\w./\-]+)+
 python (workflows|skills)/[\w./\-]+/tests/[\w./\-]+\.py( (?!-)[\w.]+)*( -v)?
+python workflows/close-out/scripts/run\.py --read-only( --scope (?!-)[\w\-]+)?( --json)?
+python workflows/audit/scripts/run\.py --context( (?!-)[\w./\-]+)+ --read-only
 python workflows/(ai-style-guard|backlog-guard|encoding-guard|skill-hardening-guard|sync-architecture)/scripts/run\.py --check
 python workflows/doc-sync-guard/scripts/run\.py( --check)?

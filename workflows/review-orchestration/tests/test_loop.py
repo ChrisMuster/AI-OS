@@ -212,6 +212,9 @@ class Harness:
         self.swapped = False
         self.usage = FakeUsage(self)
         self.given = []
+        self.reviewer_frozen = []
+        self.reading_folders = []
+        self.review_launch = None  # a Codex reviewer's launch readings, if a test sets
         self.cat_a = set(CAT_A)
         self.frozen = None
         self.frozen_calls = []
@@ -346,11 +349,15 @@ class Harness:
         self.builders.append(builder)
         return builder
 
-    def make_reviewer(self, settings, cwd, usage):
+    def make_reviewer(self, settings, cwd, usage, frozen_dir):
         self.given.append(("reviewer", None, usage))
+        self.reviewer_frozen.append(frozen_dir)
         return FakeReviewer(self)
 
-    def read_codex(self, root):
+    def read_codex(self, root, folder=None):
+        # Plan 7.6 item 4: which folder each usage reading was given (None before the
+        # frozen folder exists).
+        self.reading_folders.append(folder)
         return self.readings.pop(0) if self.readings else reading()
 
     def run_checks(self, root, edit_paths, directories, commands, python=None, *, run_id,
@@ -447,7 +454,8 @@ class FakeReviewer:
                                              "files_reviewed": listed},
                                       thread_id="t", status="completed", usage=usage,
                                       wall_seconds=0.1, raw={"r": 1},
-                                      tokens=providers.codex_tokens(usage))
+                                      tokens=providers.codex_tokens(usage),
+                                      launch=self.harness.review_launch)
 
 
 class LoopCase(unittest.TestCase):
@@ -918,7 +926,7 @@ class UsageTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         calls = []
 
-        def read(root):
+        def read(root, folder=None):
             calls.append(1)
             if len(calls) == 3:
                 raise RuntimeError("transport closed")
@@ -1073,8 +1081,8 @@ class PreflightTests(LoopCase):
         log_before = self.log.read_bytes()
         for trouble in (reading(credits=None), RuntimeError("transport closed")):
             deps = self.h.deps()
-            deps.read_codex = (lambda root, r=trouble: (_ for _ in ()).throw(r)) \
-                if isinstance(trouble, Exception) else (lambda root, r=trouble: r)
+            deps.read_codex = (lambda root, folder=None, r=trouble: (_ for _ in ()).throw(r)) \
+                if isinstance(trouble, Exception) else (lambda root, folder=None, r=trouble: r)
             again = loop.load(run.state["run_id"], root=self.root, deps=deps,
                               log_path=self.log, runs_dir=self.runs)
             with self.assertRaises(loop.RunRefused):
@@ -1664,6 +1672,160 @@ class EndOfRunTests(LoopCase):
         self.assertEqual(call["round_dir"], run.run_dir / "rounds" / "R1")
 
 
+class TrustedSessionsLoopTests(LoopCase):
+    """Orchestrator isolation stage S7, the loop's part: a usage reading never loads the
+    project's configuration (plan 7.6 item 4); a reviewer is given the run's frozen
+    folder for its tripwire, and a Codex reviewer's launch readings are kept (live check
+    4b); the run's rule-hook fire log is copied into the run record at every end and its
+    folder removed with the frozen folder (7.6 item 3)."""
+
+    def test_positive_each_usage_reading_is_given_the_frozen_folder_once_it_exists(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        first, *later = self.h.reading_folders
+        self.assertIsNone(first, "the preflight's reading: no frozen folder yet")
+        self.assertTrue(later)
+        self.assertEqual(set(later), {run.state["frozen_dir"]})
+        self.assertEqual(self.h.reviewer_frozen, [run.state["frozen_dir"]])
+
+    def test_positive_a_resumes_reading_is_given_the_frozen_folder(self):
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        run = self.start(cap=1)
+        self.assertEqual(self.reason(run), sr.MAX_ROUNDS)
+        before = len(self.h.reading_folders)
+        self.resume(run, rounds=1)
+        self.assertEqual(set(self.h.reading_folders[before:]), {run.state["frozen_dir"]})
+
+    def test_positive_a_codex_reviewers_launch_readings_are_kept(self):
+        self.h.review_launch = {"shell_pythonpath": "C:/t/tripwire",
+                                "self_test": {"exitCode": 0}}
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(run.state["live"]["codex_reviewer_launches"],
+                         [{"step": "review-R1", "shell_pythonpath": "C:/t/tripwire",
+                           "self_test": {"exitCode": 0}}])
+
+    def write_fire_log(self):
+        """During the review, the trusted rule hooks' fire log as they write it:
+        UTF-8 JSON with non-ASCII kept, and a line that is not JSON."""
+        def write():
+            run_id = self.h.frozen_calls[-1]["run_id"]
+            log = codex_rules.fire_log_path(run_id)
+            log.parent.mkdir(parents=True, exist_ok=True)
+            self.addCleanup(shutil.rmtree, log.parent.parent / run_id, True)
+            log.write_text('{"event": "block", "file": "café.md"}\nnot json\n',
+                           encoding="utf-8", newline="\n")
+        self.h.during_review = write
+
+    def test_positive_the_fire_log_is_copied_escaped_and_its_folder_removed(self):
+        self.write_fire_log()
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        raw = (run.run_dir / "fire-log.jsonl").read_bytes()
+        self.assertTrue(raw.isascii(), raw)
+        lines = [json.loads(line) for line in raw.decode("ascii").splitlines()]
+        self.assertEqual(lines, [{"event": "block", "file": "café.md"}, "not json"])
+        self.assertFalse(codex_rules.fire_log_path(run.state["run_id"]).parent.exists())
+        self.assertIn({"what": "the rule-hook fire log", "removed": True},
+                      run.state["cleanup"])
+
+    def test_negative_a_resumable_end_copies_the_fire_log_and_keeps_its_folder(self):
+        self.write_fire_log()
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[finding()]]
+        run = self.start(cap=1)
+        self.assertEqual(self.reason(run), sr.MAX_ROUNDS)
+        self.assertTrue((run.run_dir / "fire-log.jsonl").is_file())
+        self.assertTrue(codex_rules.fire_log_path(run.state["run_id"]).is_file())
+
+    def test_negative_no_fire_log_writes_nothing(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertFalse((run.run_dir / "fire-log.jsonl").exists())
+
+    def live_reading(self, servers, keep_counting=(), folder="C:/frozen/run"):
+        """_read_codex_live with the SDK stood in for: each client records its
+        settings, lists ``servers`` as Codex would under its overrides (a server
+        switched off by name has no tools unless ``keep_counting`` names it, and
+        `codex_apps` is gone with apps off), and the usage request is recorded."""
+        seen, asked = [], []
+
+        class FakeRpc:
+            def __init__(self, overrides):
+                self.overrides = overrides
+
+            def _request_raw(self, method, params=None):
+                assert method == "mcpServerStatus/list", method
+                out = []
+                for name, tools in servers:
+                    if name == "codex_apps" and "features.apps=false" in self.overrides:
+                        continue
+                    off = (f"mcp_servers.{name}.enabled=false" in self.overrides
+                           and name not in keep_counting)
+                    out.append({"name": name, "tools": {} if off else dict.fromkeys(tools, {}),
+                                "toolsError": None})
+                return {"data": out}
+
+        class FakeCodex:
+            def __init__(self, config):
+                seen.append(config)
+                self._client = FakeRpc(tuple(config.config_overrides))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+        import openai_codex
+
+        def read(client):
+            asked.append(client.overrides)
+            return "reading"
+        with mock.patch.object(openai_codex, "Codex", FakeCodex), \
+                mock.patch.object(limits, "read_codex", read):
+            result = loop._read_codex_live(self.root, folder)
+        return result, seen, asked
+
+    def test_positive_the_live_reading_never_uses_the_project(self):
+        # Plan 7.6 item 4 and R38-1: the frozen folder as both clients' cwd when given,
+        # else one empty temporary folder removed afterwards; plugins and apps off on
+        # both; every counting server switched off by name on the second, the one the
+        # usage is read on; biblio-tools, with no tools, never named.
+        servers = [("biblio-tools", ()), ("codex_apps", ("a",)), ("node_repl", ("js",))]
+        result, seen, asked = self.live_reading(servers)
+        self.assertEqual(result, "reading")
+        first, second = seen
+        self.assertEqual({first.cwd, second.cwd}, {"C:/frozen/run"})
+        self.assertEqual(tuple(first.config_overrides),
+                         ("features.plugins=false", "features.apps=false"))
+        self.assertEqual(tuple(second.config_overrides),
+                         ("features.plugins=false", "features.apps=false",
+                          "mcp_servers.node_repl.enabled=false"))
+        self.assertEqual(asked, [tuple(second.config_overrides)])
+        _, seen, _ = self.live_reading(servers, folder=None)
+        empty = {config.cwd for config in seen}
+        self.assertEqual(len(empty), 1)
+        empty = Path(empty.pop())
+        self.assertNotEqual(empty, self.root)
+        self.assertFalse(empty.exists(), "the empty folder is removed")
+        self.assertIn("book-dragon-usage-", empty.name)
+
+    def test_rejection_a_server_still_counting_fails_the_reading_before_usage(self):
+        servers = [("node_repl", ("js",))]
+        with self.assertRaisesRegex(providers.ProviderError,
+                                    "usage reading's Codex client has an MCP server in "
+                                    "force: 'node_repl'"):
+            self.live_reading(servers, keep_counting=("node_repl",))
+        with self.assertRaisesRegex(providers.ProviderError, "cannot be written"):
+            self.live_reading([("bad name!", ("t",))])
+
+
 class ResumeDockerTests(LoopCase):
     """Decision 31 and R24-2: a resume starts Docker as a start does and records it,
     so the run's next end stops it again; a dry resume only reports."""
@@ -2043,11 +2205,54 @@ class TrustedCopyTests(LoopCase):
         self.assertEqual(env["BOOK_DRAGON_ROOT"], str(self.root))
         self.assertEqual(env[run_py.REEXEC_MARKER], "1")
         self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        # Plan 7.8 (S7): the trusted copy and every process it starts get the tripwire
+        # folder first on PYTHONPATH.
+        self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[0], str(folder / "tripwire"))
         self.assertNotIn(run_py.STARTER_MARKER, env)
         # The trusted copy ended the run, so the hand-over leaves it as it is.
         state = runrecord.read_state(self.runs / run.state["run_id"])
         self.assertEqual(state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
         self.assertEqual(len(state["stop_reasons"]), 1)
+
+    def test_positive_the_trusted_copys_set_up_hands_the_tripwire_to_its_children(self):
+        # Plan 7.8 and section 8 ("Tripwire in a resumed orchestrator"): set_up_trusted
+        # puts the run's tripwire folder first on PYTHONPATH, keeping what was there,
+        # and sets the run's fire log; a child started with that environment loads the
+        # tripwire as sitecustomize. Run in a subprocess, so the audit hook it arms
+        # never reaches this test process.
+        run, folder = self.started()
+        code = (
+            "import importlib.util, json, os, subprocess, sys\n"
+            f"s = importlib.util.spec_from_file_location('run_under_test', r'{SCRIPTS / 'run.py'}')\n"
+            "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+            "env = {k: v for k, v in os.environ.items() if k != 'BOOK_DRAGON_ROOT'}\n"
+            "env['PYTHONPATH'] = 'C:/kept'\n"
+            f"problem = m.set_up_trusted(r'{folder}', env)\n"
+            "child = subprocess.run([sys.executable, '-c', \"import sys; "
+            "m = sys.modules.get('sitecustomize'); print(getattr(m, '__file__', ''))\"],"
+            " env=env, capture_output=True, encoding='utf-8')\n"
+            "print(json.dumps({'problem': problem, 'pythonpath': env['PYTHONPATH'],"
+            " 'fire_log': env.get('BOOK_DRAGON_FIRE_LOG'),"
+            " 'child': child.stdout.strip(), 'child_err': child.stderr}))\n")
+        done = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True,
+                              encoding="utf-8", errors="replace", timeout=120,
+                              cwd=str(self.elsewhere),
+                              env={k: v for k, v in os.environ.items()
+                                   if k not in ("PYTHONPATH", "BOOK_DRAGON_ROOT")})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        result = json.loads(done.stdout.strip().splitlines()[-1])
+        self.assertIsNone(result["problem"])
+        self.assertEqual(result["pythonpath"].split(os.pathsep),
+                         [str(folder / "tripwire"), "C:/kept"])
+        self.assertTrue(os.path.samefile(result["child"],
+                                         folder / "tripwire" / "sitecustomize.py"),
+                        result["child_err"])
+        # The fire log is the one codex_rules names for this run (the two agree).
+        self.assertEqual(Path(result["fire_log"]),
+                         codex_rules.fire_log_path(run.state["run_id"],
+                                                   folder.parent.parent))
+        self.assertEqual(run_py.FIRE_LOG_ENV, codex_rules.FIRE_LOG_ENV)
+        self.assertEqual(run_py.RUNLOGS_PARENT, codex_rules.RUNLOGS_PARENT)
 
     def handed(self, run, **kwargs):
         out = io.StringIO()
@@ -2993,12 +3198,15 @@ class ReversePairingTests(SwappedCase):
             self.assertIn('Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"', text)
             self.assertIn("Get-Content -LiteralPath PATH", text)
             # Nothing a Codex builder does not have.
-            for absent in ("Biblio Tools", "get_timestamp", "append_log"):
+            for absent in ("Biblio Tools", "append_log"):
                 self.assertNotIn(absent, text)
-            # Its own verification list: neither writing command is offered.
+            # Its own verification list, run only through the check helper (S7): the
+            # audit and the close-out verifier in their read-only forms only.
             self.assertIn("ai-style-guard|backlog-guard", text)
-            self.assertNotIn("workflows/audit/scripts/run", text)
-            self.assertNotIn("workflows/close-out/scripts/run", text)
+            self.assertIn("check helper's `run_check` tool, never in the shell", text)
+            self.assertIn("workflows/close-out/scripts/run\\.py --read-only", text)
+            self.assertIn("workflows/audit/scripts/run\\.py --context( (?!-)[\\w./\\-]+)+ "
+                          "--read-only", text)
             self.assertNotIn("$", text.replace("`$`", ""))
         review = self.h.review_calls[0][0]
         self.assertIn("you cannot run anything", review)
@@ -3076,14 +3284,21 @@ class TodaysPairingTests(LoopCase):
         self.h.reviews = [[finding()], []]
         self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
         build, fix = (prompt for _, prompt in self.h.builders[0].prompts)
-        self.assertIn("the Biblio Tools\n    `get_timestamp` or `append_log` tool", build)
+        # Since S7 (plan 7.4): checks through the helper, its clock for LOG.md, and no
+        # shell or Biblio Tools.
+        self.assertIn("Run checks only with the check helper's `run_check` tool", build)
+        self.assertIn("check\n    helper's `get_timestamp` tool", build)
+        self.assertIn("The shell\n    is not available", build)
+        self.assertIn("The Biblio Tools tools are not\n    available", build)
         self.assertIn("workflows/audit/scripts/run", build)
         for text in (build, fix):
             # Nothing a Claude builder does not have.
             for absent in ("apply_patch", "Get-Date", "Get-Content"):
                 self.assertNotIn(absent, text)
         review = self.h.review_calls[0][0]
-        self.assertIn("You may run read-only commands, such as the tests.", review)
+        # Decision 34: the Codex reviewer runs no project code.
+        self.assertIn("You may read the code, but run no project code", review)
+        self.assertNotIn("such as the tests", review)
         self.assertNotIn("cannot run anything", review)
 
 

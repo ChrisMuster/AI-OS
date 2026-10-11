@@ -7,10 +7,14 @@ Codex runs this once per tool call, from the run's frozen folder
 (``<temp>/book-dragon-orchestration/<run-id>/``), with the run id as its one argument
 and the call as a JSON object on stdin. It reads nothing outside that folder: the
 brief's edit paths and the project root come from the folder's ``hook.json``, and the
-two command lists sit beside it. It decides the call with ``codex_rules.decide``,
-appends one line to the folder's ``hook-decisions.jsonl``, and then prints a refusal
-for a ``deny`` or nothing for an ``allow``. The line is written before anything is
-printed, so an ``allow`` with no line cannot happen.
+two command lists sit beside it. It decides the call with ``codex_rules.decide``; a
+``Bash`` or ``apply_patch`` call its rules allow then goes through the run's trusted
+rule hooks (``codex_rules.run_rule_hook``, from the folder's ``trusted/`` copy, plan
+7.6 item 3, decision 19), whose block, timeout, crash or unreadable answer is a deny
+with that reason. It appends one line to the folder's ``hook-decisions.jsonl``, and
+then prints a refusal for a ``deny`` or nothing for an ``allow``. The line is written
+before anything is printed, so an ``allow`` with no line cannot happen. The rule
+hooks' own reply is never passed to Codex as this hook's reply.
 
 It fails closed. A bad run id, a missing or unreadable ``hook.json``, stdin that is
 not a JSON object, a ``session_id`` that differs from the one an earlier line of the
@@ -52,8 +56,9 @@ def record(path, event, decision, reason, detail=""):
     return True
 
 
-def judge(argv, raw, folder):
-    """Decide one call. Returns ``(event, allowed, reason, detail)``."""
+def judge(argv, raw, folder, rule_hook=None):
+    """Decide one call. Returns ``(event, allowed, reason, detail)``. ``rule_hook``
+    stands in for ``codex_rules.run_rule_hook`` in the tests."""
     import codex_rules
     from approver import Approver
 
@@ -87,10 +92,17 @@ def judge(argv, raw, folder):
     pattern = codex_rules.load_read_pattern(folder / codex_rules.FROZEN_LISTS[1])
     tool, tool_input = event.get("tool_name"), event.get("tool_input")
     decision = codex_rules.decide(tool, tool_input, approver, pattern)
-    return event, decision.allowed, decision.reason, codex_rules.detail(tool, tool_input)
+    detail = codex_rules.detail(tool, tool_input)
+    if not decision.allowed or tool not in codex_rules.RULE_HOOK_TOOLS:
+        return event, decision.allowed, decision.reason, detail
+    blocked = (rule_hook or codex_rules.run_rule_hook)(
+        sys.executable, folder, "codex", event, root, run_id)
+    if blocked is not None:
+        return event, False, blocked, detail
+    return event, True, "", detail
 
 
-def main(argv=None, stdin=None, folder=FOLDER):
+def main(argv=None, stdin=None, folder=FOLDER, rule_hook=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -99,7 +111,7 @@ def main(argv=None, stdin=None, folder=FOLDER):
     event = None
     try:
         raw = (stdin or sys.stdin).read()
-        event, allowed, reason, detail = judge(argv, raw, folder)
+        event, allowed, reason, detail = judge(argv, raw, folder, rule_hook)
     except Exception as exc:  # noqa: BLE001 - whatever went wrong, the call is refused
         allowed, detail = False, ""
         reason = ("Refused by the orchestrator: the hook could not judge this call "

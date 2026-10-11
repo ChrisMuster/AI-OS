@@ -3,40 +3,44 @@
 approver.py - decides every tool call an orchestrated builder makes (Stage A2).
 
 Plan section 10.4: the builder is confined to the brief's edit paths and may run the
-verification commands in ``config/verify-commands.txt``; every refusal goes into the
-run report. The decision is a plain function of the tool's name and input, with no
-SDK inside it, so the provider that talks to an SDK only has to translate the answer
-(``providers.py``) and every rule here is tested without a session.
+verification commands of its list; every refusal goes into the run report. The
+decision is a plain function of the tool's name and input, with no SDK inside it, so
+the provider that talks to an SDK only has to translate the answer (``providers.py``)
+and every rule here is tested without a session.
 
-What is allowed:
+What is allowed (orchestrator isolation plan 7.4 and 7.6, stage S7):
 
   read tools      Read, Grep, Glob, TodoWrite and ToolSearch, which change nothing.
                   Read, Grep and Glob are subject to the read rules (``read_rules``):
                   none may name a ``.env`` file, and a Grep may not carry a ``glob``.
   edit tools     Edit, Write, MultiEdit and NotebookEdit, when the file resolves
                   inside the project, inside one of the brief's edit paths, and is not
-                  under ``.git`` or the project ``.venv``, a ``.env`` file, or the
-                  orchestrator's starter (``brief.STARTER_PATH``).
-  the shell       Bash, when the whole command matches one line of
-                  ``verify-commands.txt``, is one line, has no ``..`` path component,
-                  names no ``.env`` file and does not ask to leave the sandbox.
-  Biblio Tools    get_timestamp; run_audit and run_link_check in their read-only
-                  forms; append_log for a directory inside the edit paths.
+                  under ``.git``, the project ``.venv`` or ``.codex``, a ``.env`` file,
+                  or the orchestrator's starter (``brief.STARTER_PATH``).
+  the check       The check helper's two tools (``check_server.py``, server
+  helper          ``checks``): ``run_check`` when its command passes the test the
+                  helper itself applies (``verify_refusal``), and ``get_timestamp``
+                  with no arguments. A check runs in the offline container over a
+                  clean copy, never on the host.
 
-Everything else is refused, with a message the builder can act on. Refusal is the
-default, so a tool nobody listed is never allowed by accident.
+Everything else is refused, with a message the builder can act on: the shell (a check
+runs only through the helper) and every Biblio Tools tool (they run the working tree's
+scripts on the host) included. Refusal is the default, so a tool nobody listed is
+never allowed by accident.
 
 Edit paths are compared the way the brief checker compares them (``brief.py``):
 without case, ignoring trailing dots and spaces, since that is how Windows compares
 names.
 
-Two functions are shared with the other sessions of a run, so each rule has one
-implementation: ``read_rules`` (also called by the Claude reviewer's hook) and
+Three functions are shared with the other parts of a run, so each rule has one
+implementation: ``read_rules`` (also called by the Claude reviewer's hook),
 ``shell_checks`` (also applied to a Codex builder's read commands by
-``codex_rules.py``).
+``codex_rules.py``) and ``verify_refusal`` (the check helper's own test of a
+``run_check`` command, applied here too).
 """
 
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +56,15 @@ EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path
               "NotebookEdit": "notebook_path"}
 SHELL_TOOL = "Bash"
 BIBLIO_PREFIX = "mcp__biblio-tools__"
+# The check helper's tools, as both providers name an MCP tool (`mcp__<server>__<tool>`;
+# the server is check_server.SERVER_NAME, restated so this module stays importable on
+# its own, and a test checks the two agree).
+CHECKS_SERVER = "checks"
+RUN_CHECK_TOOL = f"mcp__{CHECKS_SERVER}__run_check"
+TIMESTAMP_TOOL = f"mcp__{CHECKS_SERVER}__get_timestamp"
+SHELL_REFUSAL = ("Refused by the orchestrator: the shell is not available to a builder "
+                 "in this run. Run a check with the check helper's run_check tool, "
+                 "which runs it in an offline container over a clean copy.")
 
 _PARENT_COMPONENT = re.compile(r"(?:^|[\s/\\=\"'])\.\.(?:[/\\\s\"']|$)")
 _ENV_FILE = re.compile(r"(?i)(?:^|[\s/\\=\"'])\.env(?:\.[\w.-]*)?(?:[\s/\\\"']|$)")
@@ -82,6 +95,26 @@ def shell_checks(command):
                 "name the path from the project root.")
     if _ENV_FILE.search(command):
         return "Refused by the orchestrator: a command may not name a `.env` file."
+    return None
+
+
+def verify_refusal(command, patterns):
+    """Why a check command may not run, or None: the test the check helper applies to
+    ``run_check`` (plan 6 item 3), shared so the approver and the Codex rules allow
+    exactly what the helper would run. ``command`` is trimmed first."""
+    command = command.strip() if isinstance(command, str) else ""
+    if not command:
+        return "Refused by the orchestrator: no command was given."
+    reason = shell_checks(command)
+    if reason is not None:
+        return reason
+    if not any(pattern.fullmatch(command) for pattern in patterns):
+        return ("Refused by the orchestrator: only the commands on this run's "
+                "verification list can be run as checks.")
+    try:
+        shlex.split(command)
+    except ValueError:
+        return "Refused by the orchestrator: the command's quoting cannot be read."
     return None
 
 
@@ -177,12 +210,24 @@ class Approver:
         if tool_name in EDIT_TOOLS:
             return self._edit(tool_input.get(EDIT_TOOLS[tool_name]))
         if tool_name == SHELL_TOOL:
-            return self._shell(tool_input)
+            return Decision(False, SHELL_REFUSAL)
+        if tool_name == RUN_CHECK_TOOL:
+            return self._run_check(tool_input)
+        if tool_name == TIMESTAMP_TOOL:
+            if tool_input:
+                return Decision(False, "Refused by the orchestrator: get_timestamp takes "
+                                       "no arguments.")
+            return Decision(True)
         if isinstance(tool_name, str) and tool_name.startswith(BIBLIO_PREFIX):
-            return self._biblio(tool_name[len(BIBLIO_PREFIX):], tool_input)
+            return Decision(False, f"Refused by the orchestrator: the Biblio Tools tool "
+                                   f"{tool_name[len(BIBLIO_PREFIX):]} is not available "
+                                   "to a builder in this run. Take a LOG.md timestamp "
+                                   "from the check helper's get_timestamp and write the "
+                                   "entry with the edit tools.")
         return Decision(False, f"Refused by the orchestrator: {tool_name} is not "
                                "permitted in this run. Use Read, Grep and Glob to read, "
-                               "and edit only inside the run's edit paths.")
+                               "edit only inside the run's edit paths, and run checks "
+                               "with the check helper's run_check.")
 
     def _edit(self, raw):
         where = self._inside_edit_paths(raw)
@@ -191,51 +236,20 @@ class Approver:
         return Decision(False, f"Refused by the orchestrator: {where} This run may "
                                f"change only: {', '.join(self.edit_paths) or '(nothing)'}.")
 
-    def _shell(self, tool_input):
-        command = tool_input.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return Decision(False, "Refused by the orchestrator: no command given.")
-        command = command.strip()
-        if tool_input.get("dangerouslyDisableSandbox"):
-            return Decision(False, "Refused by the orchestrator: commands in this run "
-                                   "may not leave the sandbox.")
-        reason = shell_checks(command)
-        if reason is not None:
-            return Decision(False, reason)
-        if any(pattern.fullmatch(command) for pattern in self.verify_patterns):
+    def _run_check(self, tool_input):
+        """``run_check`` is allowed only for a command the helper would run (plan 7.4,
+        7.5); the helper judges it again whatever this says."""
+        if set(tool_input) - {"command"}:
+            return Decision(False, "Refused by the orchestrator: run_check takes only "
+                                   "`command`.")
+        reason = verify_refusal(tool_input.get("command"), self.verify_patterns)
+        if reason is None:
             return Decision(True)
-        allowed = "; ".join(pattern.pattern for pattern in self.verify_patterns)
-        return Decision(False, "Refused by the orchestrator: only these verification "
-                               "commands may run, one per call with no chaining "
-                               f"(each a regular expression the whole command must "
-                               f"match): {allowed}")
-
-    def _biblio(self, name, tool_input):
-        if name == "get_timestamp":
-            return Decision(True)
-        if name == "run_audit":
-            if tool_input.get("save"):
-                return Decision(False, "Refused by the orchestrator: run_audit may not "
-                                       "save its report in this run; leave save off.")
-            return Decision(True)
-        if name == "run_link_check":
-            if tool_input.get("mode", "audit") != "audit" or tool_input.get("save"):
-                return Decision(False, "Refused by the orchestrator: run_link_check may "
-                                       "only audit in this run (mode audit, save off).")
-            return Decision(True)
-        if name == "append_log":
-            directory = tool_input.get("directory")
-            if not isinstance(directory, str) or not directory.strip():
-                return Decision(False, "Refused by the orchestrator: append_log needs a "
-                                       "directory.")
-            where = self._inside_edit_paths(directory.strip().rstrip("/") + "/LOG.md")
-            if where is None:
-                return Decision(True)
-            return Decision(False, f"Refused by the orchestrator: append_log: {where} "
-                                   f"This run may log only inside: "
-                                   f"{', '.join(self.edit_paths) or '(nothing)'}.")
-        return Decision(False, f"Refused by the orchestrator: the Biblio Tools tool "
-                               f"{name} is not permitted in this run.")
+        if "verification list" in reason:
+            allowed = "; ".join(pattern.pattern for pattern in self.verify_patterns)
+            reason += (" They are, one per call with no chaining, each a regular "
+                       f"expression the whole command must match: {allowed}")
+        return Decision(False, reason)
 
     # ---------------------------------------------------------------- paths
 
@@ -260,10 +274,14 @@ class Approver:
             return f"{raw} is under `.git/`."
         if any(part == ".env" or part.startswith(".env.") for part in parts):
             return f"{raw} is a `.env` file."
-        # Whatever the edit paths say (orchestrator isolation plan 7.0 item 2 and 7.7):
-        # the project .venv runs every check, and the starter enters every run.
+        # Whatever the edit paths say (orchestrator isolation plan 7.0 item 2, 7.6 item
+        # 1 and 7.7): the project .venv runs every check, Codex loads `.codex` before
+        # its launch check can read it back (decision 33), and the starter enters
+        # every run.
         if parts[0] == ".venv":
             return f"{raw} is in the project `.venv`, which no run may change."
+        if parts[0] == ".codex":
+            return f"{raw} is in Codex's configuration (`.codex`), which no run may change."
         key = "/".join(parts)
         if key == self._key(STARTER_PATH.split("/")):
             return f"{raw} is the orchestrator's starter, which no run may change."
@@ -283,7 +301,7 @@ def _detail(tool_name, tool_input):
     elif tool_name in FILE_READ_TOOLS:
         value = {key: tool_input[key] for key in ("file_path", "path", "pattern", "glob")
                  if key in tool_input} or None
-    elif tool_name == SHELL_TOOL:
+    elif tool_name in (SHELL_TOOL, RUN_CHECK_TOOL):
         value = tool_input.get("command")
     elif isinstance(tool_name, str) and tool_name.startswith(BIBLIO_PREFIX):
         value = {key: tool_input[key] for key in ("directory", "mode", "save")

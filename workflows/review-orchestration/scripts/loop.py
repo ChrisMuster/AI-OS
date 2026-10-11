@@ -134,11 +134,33 @@ class TurnCheckError(Exception):
 # ------------------------------------------------------------------ dependencies
 
 
-def _read_codex_live(root):
-    """One Codex usage reading on a fresh, initialised client. No model call."""
+def _read_codex_live(root, folder=None):
+    """One Codex usage reading on a fresh, initialised client. No model call.
+
+    It never loads the project's configuration (plan 7.6 item 4): its ``cwd`` is the
+    run's frozen folder, or before that exists an empty temporary folder made for the
+    reading and removed after it, and plugins and apps are off. Servers from outside the
+    project are switched off as at every Codex launch (decision 35, R38-1): a first
+    client lists them, a second switches off by name every one that counts and reads
+    them back, and the reading fails if any still counts. ``root`` is not used."""
     from openai_codex import Codex, CodexConfig
-    with Codex(CodexConfig(cwd=str(root))) as codex:
-        return limits.read_codex(codex._client)
+    empty = None if folder else tempfile.mkdtemp(prefix="book-dragon-usage-")
+    try:
+        cwd = str(folder or empty)
+        base = (providers.PLUGINS_OFF, providers.APPS_OFF)
+        with Codex(CodexConfig(cwd=cwd, config_overrides=base)) as first:
+            listed = first._client._request_raw("mcpServerStatus/list", {})
+        off = providers.servers_off(listed)
+        with Codex(CodexConfig(cwd=cwd, config_overrides=(*base, *off))) as codex:
+            extra = providers.counting_servers(
+                codex._client._request_raw("mcpServerStatus/list", {}))
+            if extra:
+                raise providers.ProviderError("the usage reading's Codex client has an "
+                                              "MCP server in force: " + ", ".join(extra))
+            return limits.read_codex(codex._client)
+    finally:
+        if empty is not None:
+            shutil.rmtree(empty, ignore_errors=True)
 
 
 def capture_problems(root, git_dir, python=None):
@@ -199,8 +221,9 @@ class Deps:
                 providers.make_builder(settings, approver, cwd=cwd, resume=resume,
                                        run_dir=run_dir, usage=usage)
         if self.make_reviewer is None:
-            self.make_reviewer = lambda settings, cwd, usage: \
-                providers.make_reviewer(settings, cwd=cwd, usage=usage)
+            self.make_reviewer = lambda settings, cwd, usage, frozen_dir: \
+                providers.make_reviewer(settings, cwd=cwd, usage=usage,
+                                        frozen_dir=frozen_dir)
         if self.inventory is None:
             self.inventory = worktree.inventory
         if self.read_codex is None:
@@ -558,7 +581,8 @@ class Run:
         return reading
 
     def readings(self):
-        codex = self.note_codex(self.deps.read_codex(self.root))
+        codex = self.note_codex(self.deps.read_codex(self.root,
+                                                     self.state.get("frozen_dir")))
         return codex, self.claude_usage.reading()
 
     def before_step(self, step, provider):
@@ -849,7 +873,8 @@ class Run:
             f"- {f['label']} ({f['source']}) {f.get('title')}: builder action "
             f"{f.get('action') or 'none yet'}"
             for f in self.ledger.findings.values()) or "None."
-        reviewer = self.deps.make_reviewer(self.settings, self.root, self.claude_usage)
+        reviewer = self.deps.make_reviewer(self.settings, self.root, self.claude_usage,
+                                           self.state["frozen_dir"])
         prompt = render("reviewer", round=round_no, brief=self.brief_text(),
                         mechanical=mechanical_text or "None.", prior=prior,
                         diff=self._shown_diff(diff, folder),
@@ -867,6 +892,11 @@ class Run:
             raise
         self._take_refusals(step, record.refusals)
         self._record_model(reviewer.provider, record.model)
+        # A Codex reviewer's launch readings (plan 7.6 item 4, live check 4b).
+        launch = getattr(record, "launch", None)
+        if launch is not None:
+            self.state.setdefault("live", {}).setdefault(
+                "codex_reviewer_launches", []).append({"step": step, **launch})
         reply = self._covered(record.reply, changed_files)
         findings = sr.parse_review(reply, self.ledger)
         new = self.ledger.add_round(round_no, mechanical, findings)
@@ -959,6 +989,30 @@ class Run:
         _log(action, f"Run {self.state['run_id']} ended {reason} after step "
                      f"{self.state['step']}.", self.log_path)
 
+    def _keep_fire_log(self):
+        """Copy the run's rule-hook fire log (plan 7.6 item 3), which the trusted rule
+        hooks write outside the project, into the run record as ``fire-log.jsonl``,
+        every line re-escaped to ASCII like every run-record file; a line that is not
+        JSON is kept as a JSON string. Best effort, at every end: a failure is recorded
+        in ``cleanup`` and the run's end goes on."""
+        source = codex_rules.fire_log_path(self.state["run_id"])
+        try:
+            if not source.is_file():
+                return
+            lines = []
+            for raw in source.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    value = json.loads(raw)
+                except ValueError:
+                    value = raw
+                lines.append(json.dumps(value))
+            (self.run_dir / codex_rules.FIRE_LOG_NAME).write_text(
+                "".join(line + "\n" for line in lines), encoding="utf-8", newline="\n")
+        except Exception as exc:  # noqa: BLE001 - the run's end goes on
+            self.state.setdefault("cleanup", []).append(
+                {"what": "the rule-hook fire log, copied into the run record",
+                 "removed": False, "error": f"{type(exc).__name__}: {exc}"})
+
     def _after_end(self, reason):
         """Plan 7.3, after the report is written. If this run (or its resume) started
         Docker, stop it; a stop that fails is written into the report and the stop
@@ -967,6 +1021,7 @@ class Run:
         removal that fails is written into the report too. The report is written again
         afterwards, so it records what happened here. Nothing here raises: the run
         has already ended and reported."""
+        self._keep_fire_log()
         docker = self.state.setdefault("docker", {"started_by_run": False, "events": []})
         if docker.get("started_by_run"):
             try:
@@ -984,7 +1039,11 @@ class Run:
                     ("the frozen folder", lambda: self.deps.remove_frozen(
                         self.state["frozen_dir"]) if self.state.get("frozen_dir") else None),
                     ("the clean copies", lambda: self.deps.remove_copies(
-                        self.state["run_id"]))):
+                        self.state["run_id"])),
+                    ("the rule-hook fire log", lambda: shutil.rmtree(
+                        codex_rules.fire_log_path(self.state["run_id"]).parent)
+                        if codex_rules.fire_log_path(self.state["run_id"]).parent.exists()
+                        else None)):
                 try:
                     action()
                     cleanup.append({"what": what, "removed": True})
@@ -1267,7 +1326,8 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
     docker_started, docker_note = _docker_at_start(deps, dry_run)
     try:
         try:
-            reading = deps.read_codex(root)
+            # No frozen folder yet: the reading uses an empty temporary folder.
+            reading = deps.read_codex(root, None)
         except Exception as exc:
             raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
                               f"{exc}"]) from exc
@@ -1515,7 +1575,7 @@ def resume(run, rounds=None, dry_run=False):
         raise RunRefused([f"a run that ended {last} cannot be resumed; only "
                           f"{', '.join(sr.RESUMABLE)} can"])
     try:
-        reading = run.deps.read_codex(run.root)
+        reading = run.deps.read_codex(run.root, run.state.get("frozen_dir"))
     except Exception as exc:
         raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
                           f"{exc}"]) from exc
