@@ -37,11 +37,12 @@ def _load(name):
 brief = _load("brief")
 approver = _load("approver")
 codex_rules = _load("codex_rules")
+container = _load("container")  # checks imports container
 checks = _load("checks")
-container = _load("container")
 frozen = _load("frozen")
 
 RUN_ID = "20261008-140000-ab12"
+IMAGE_TAG = "bookdragon-checks:0123456789ab"  # hook.json carries it (plan 7.1 item 5)
 
 # What trusted/ must hold, written out here rather than read from frozen.TRUSTED_CODE,
 # so a folder dropped from that tuple is still expected (code review R22-2): the four
@@ -109,7 +110,7 @@ class FixtureCase(unittest.TestCase):
 
     def setup_run(self, **changes):
         options = {"public_head": self.head, "edit_paths": ["notes/"], "builder": "codex",
-                   "temp_root": self.temp}
+                   "image_tag": IMAGE_TAG, "temp_root": self.temp}
         options.update(changes)
         return frozen.setup(self.root, RUN_ID, **options)
 
@@ -150,7 +151,11 @@ class SetupTests(FixtureCase):
         self.assertEqual(json.loads((folder / "hook.json").read_text(encoding="utf-8")),
                          {"run_id": RUN_ID, "edit_paths": ["notes/"],
                           "project_root": str(self.root), "builder_provider": "codex",
-                          "public_head": self.head})
+                          "public_head": self.head, "image_tag": IMAGE_TAG})
+        # S6b: checks.run_all reads trusted/ and the floor by the names checks.py
+        # holds, so they must be the frozen folder's own.
+        self.assertEqual(checks.TRUSTED_DIR, frozen.TRUSTED_DIR)
+        self.assertEqual(checks.START_IGNORED, codex_rules.START_IGNORED)
         floor = container.read_start_ignored(folder / "start-ignored.txt")
         self.assertIn("memory/", floor)
         self.assertIn(".env", floor)
@@ -229,7 +234,7 @@ class SetupTests(FixtureCase):
                 with self.assertRaisesRegex(frozen.FrozenError, "not a run id"):
                     frozen.setup(self.root, run_id, public_head=self.head,
                                  edit_paths=["notes/"], builder="codex",
-                                 temp_root=self.temp)
+                                 image_tag=IMAGE_TAG, temp_root=self.temp)
         self.assertFalse((self.temp / "book-dragon-orchestration").exists())
 
     def test_positive_remove_clears_read_only_files(self):

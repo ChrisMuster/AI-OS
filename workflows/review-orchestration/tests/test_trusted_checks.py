@@ -38,6 +38,7 @@ def _load(name):
 
 
 brief = _load("brief")
+container = _load("container")  # checks imports container
 checks = _load("checks")
 
 FAKE_NAME = "Zedwick Quornby"
@@ -550,6 +551,171 @@ class TrustedHostChecksTests(unittest.TestCase):
         self.assertEqual([f["title"] for f in found],
                          ["audit", "doc_sync", "personal_data", "link_check"])
         self.assertEqual(text, "audit\ndoc_sync\npersonal_data\nlink_check")
+
+
+class StartCheckReadOnlyTests(unittest.TestCase):
+    """Plan 7.1 item 2 (S6b): the start check runs the verifier read-only, so it writes
+    no log or result file and a dry run can make it."""
+
+    def argv(self, **kwargs):
+        with mock.patch.object(checks, "_run", return_value=(0, '{"gates": []}', "")) as spy:
+            self.assertTrue(checks.close_out_start(Path("R"), "py", **kwargs)["clean"])
+        return spy.call_args.args[1]
+
+    def test_positive_read_only_passes_the_flag(self):
+        self.assertEqual(self.argv(read_only=True),
+                         ["py", "workflows/close-out/scripts/run.py", "--json", "--read-only"])
+
+    def test_negative_control_without_it_the_flag_is_absent(self):
+        self.assertNotIn("--read-only", self.argv())
+
+
+class RunAllTests(unittest.TestCase):
+    """Plan 7.2 (S6b): ``run_all`` runs the close-out verifier and each acceptance
+    command in the container over one fresh clean copy, removed afterwards, then the
+    four trusted host checks from the frozen folder's ``trusted/``. Docker and the copy
+    are fakes; no test starts a container."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.frozen = Path(temp.name) / "frozen"
+        self.frozen.mkdir()
+        container.write_start_ignored([".env", "memory/"],
+                                      self.frozen / checks.START_IGNORED)
+        self.dest = Path(temp.name) / "copy-1"
+        self.events = []
+        self.outputs = {}
+        self.run_error = None
+        self.copy_error = None
+        self.host = None
+
+    def fake_run(self, dest, argv, image):
+        self.events.append(("run", dest, list(argv), image))
+        if self.run_error is not None:
+            raise self.run_error
+        return self.outputs.get(argv[1] if len(argv) > 1 else "",
+                                (0, '{"status": "pass", "gates": []}', ""))
+
+    def fake_copy(self, root, dest, head, floor):
+        self.events.append(("copy", root, dest, head, list(floor)))
+        if self.copy_error is not None:
+            raise self.copy_error
+        return dest
+
+    def run_all(self, commands=('python -c "print(1)"',)):
+        def host(root, python, trusted, edit_paths, directories, round_dir):
+            self.events.append(("host", trusted, list(edit_paths), list(directories),
+                                round_dir))
+            return self.host if self.host is not None else ([], "host checks: clean")
+        with mock.patch.object(checks.container, "next_copy", return_value=self.dest), \
+                mock.patch.object(checks.container, "make_copy", self.fake_copy), \
+                mock.patch.object(checks.container, "run_in_container", self.fake_run), \
+                mock.patch.object(checks.container, "remove_copy",
+                                  lambda dest: self.events.append(("remove", dest))), \
+                mock.patch.object(checks, "trusted_host_checks", host):
+            return checks.run_all(Path("R"), ["work/"], ["work"], list(commands),
+                                  python="py", run_id="20261009-130000-ab12",
+                                  frozen_dir=self.frozen, public_head="h" * 40,
+                                  image="bookdragon-checks:0123456789ab",
+                                  round_dir=Path("D"))
+
+    def test_positive_the_container_part_then_the_host_part(self):
+        found, text = self.run_all()
+        self.assertEqual(found, [])
+        image = "bookdragon-checks:0123456789ab"
+        self.assertEqual(self.events, [
+            ("copy", Path("R"), self.dest, "h" * 40, [".env", "memory/"]),
+            ("run", self.dest, ["python", "workflows/close-out/scripts/run.py",
+                                "--read-only", "--json"], image),
+            ("run", self.dest, ["python", "-c", "print(1)"], image),
+            ("remove", self.dest),
+            ("host", self.frozen / "trusted", ["work/"], ["work"], Path("D"))])
+        self.assertIn("close-out verifier: pass", text)
+        self.assertIn("acceptance check PASS", text)
+        self.assertIn("host checks: clean", text)
+
+    def test_rejection_a_failing_gate_and_a_failing_command_are_findings(self):
+        self.outputs["workflows/close-out/scripts/run.py"] = (1, json.dumps(
+            {"status": "fail", "gates": [{"name": "tests", "passed": False}]}), "")
+        self.outputs["-c"] = (1, "", "boom")
+        self.host = ([{"title": "dead link: x"}], "link check: dead x")
+        found, _ = self.run_all()
+        self.assertEqual([f["title"] for f in found],
+                         ["close-out gate failed: tests",
+                          'acceptance check failed: python -c "print(1)"',
+                          "dead link: x"])
+
+    def test_rejection_an_unreadable_close_out_in_the_container_is_a_blocker(self):
+        self.outputs["workflows/close-out/scripts/run.py"] = (2, "not json", "trace")
+        found, _ = self.run_all(commands=())
+        self.assertEqual([(f["severity"], f["title"]) for f in found],
+                         [("blocker", "close-out verifier did not run")])
+
+    def test_rejection_a_docker_failure_raises_and_still_removes_the_copy(self):
+        self.run_error = container.ContainerError("engine gone")
+        with self.assertRaisesRegex(container.ContainerError, "engine gone"):
+            self.run_all()
+        self.assertEqual(self.events[-1], ("remove", self.dest))
+        self.assertNotIn("host", [e[0] for e in self.events])
+
+    def test_rejection_docker_failing_to_run_a_check_raises(self):
+        # Code review R26-1: `docker run` exits 125 with its own "docker:" error when it
+        # cannot reach the daemon; that is no check result, so run_all raises and the
+        # run ends error, with no host check run and the copy still removed.
+        for argv1, label in (("workflows/close-out/scripts/run.py", "close-out"),
+                             ("-c", "acceptance command")):
+            with self.subTest(failing=label):
+                self.events, self.outputs = [], {
+                    argv1: (125, "", "Unable to find image 'x' locally\n"
+                                     "docker: Cannot connect to the Docker daemon at "
+                                     "npipe:////./pipe/docker_engine.\n")}
+                with self.assertRaisesRegex(container.ContainerError,
+                                            "Docker could not run .*Cannot connect"):
+                    self.run_all()
+                self.assertEqual(self.events[-1], ("remove", self.dest))
+                self.assertNotIn("host", [e[0] for e in self.events])
+
+    def test_negative_a_check_that_itself_exits_125_is_a_finding(self):
+        self.outputs["-c"] = (125, "", "my check gave up\n")
+        found, _ = self.run_all()
+        self.assertEqual([f["title"] for f in found],
+                         ['acceptance check failed: python -c "print(1)"'])
+        self.assertIn("host", [e[0] for e in self.events])
+
+    def test_rejection_a_copy_failure_raises_and_runs_nothing(self):
+        self.copy_error = container.ContainerError("link refused")
+        with self.assertRaisesRegex(container.ContainerError, "link refused"):
+            self.run_all()
+        self.assertEqual([e[0] for e in self.events], ["copy", "remove"])
+
+    def test_positive_the_trusted_link_check_reaches_the_findings(self):
+        # Section 8: a dead link from the trusted link check is a finding, and a link
+        # check that does not run is a blocker, through run_all's host part.
+        for raw, expected in (
+                (json.dumps({"dead_links": [{"file": "a/CONTEXT.md", "target": "b"}]}),
+                 [("major", "dead link: [[b]] in a/CONTEXT.md")]),
+                ("not json", [("blocker", "link check did not run")])):
+            with self.subTest(raw=raw):
+                self.events = []
+                clean = ([], ["clean"])
+                with mock.patch.object(checks.container, "next_copy",
+                                       return_value=self.dest), \
+                        mock.patch.object(checks.container, "make_copy", self.fake_copy), \
+                        mock.patch.object(checks.container, "run_in_container",
+                                          self.fake_run), \
+                        mock.patch.object(checks.container, "remove_copy", lambda d: None), \
+                        mock.patch.object(checks, "audit", lambda *a, **k: clean), \
+                        mock.patch.object(checks, "doc_sync", lambda *a, **k: clean), \
+                        mock.patch.object(checks, "personal_data", lambda *a, **k: clean), \
+                        mock.patch.object(checks, "_trusted_run",
+                                          return_value=(0, raw, "")) as trusted:
+                    found, _ = checks.run_all(
+                        Path("R"), ["work/"], [], [], python="py",
+                        run_id="20261009-130000-ab12", frozen_dir=self.frozen,
+                        public_head="h" * 40, image="i", round_dir=Path("D"))
+                self.assertEqual([(f["severity"], f["title"]) for f in found], expected)
+                self.assertEqual(trusted.call_args.args[2], self.frozen / "trusted")
 
 
 class FixtureHelperTests(unittest.TestCase):

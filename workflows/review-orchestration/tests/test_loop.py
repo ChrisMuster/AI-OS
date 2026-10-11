@@ -60,8 +60,8 @@ providers = _load("providers")
 runrecord = _load("runrecord")
 packet = _load("packet")
 worktree = _load("worktree")
+container = _load("container")  # checks imports container
 checks = _load("checks")
-container = _load("container")
 frozen = _load("frozen")
 loop = _load("loop")
 run_py = _load("run")
@@ -227,12 +227,80 @@ class Harness:
         self.codex_totals = []
         # What a fake Codex builder reports as its launch record (11.2), per launch.
         self.launch_records = []
+        # Orchestrator isolation S6b: a fake Docker and image step. No test starts or
+        # stops the real Docker. ``docker_calls`` records every Docker action in order.
+        self.docker_up = True
+        self.docker_calls = []
+        self.docker_start_error = None
+        self.docker_stop_error = None
+        self.docker_status_error = None
+        self.constraints_missing = False
+        self.reports_at_stop = []
+        self.image_tag = "bookdragon-checks:0123456789ab"
+        self.image_exists = True
+        self.image_error = None
+        self.image_calls = []
+        self.start_check_calls = []
+        self.removed = []
+        self.check_calls = []
+        self.check_error = None
 
-    def start_check(self, root, python):
+    def start_check(self, root, python, read_only=False):
         """The start-of-run close-out check: clean unless a test says otherwise."""
+        self.start_check_calls.append({"read_only": read_only})
         if self.start_check_writes:
             self.start_check_writes()
         return self.baseline
+
+    def docker_running(self):
+        self.docker_calls.append("status")
+        if self.docker_status_error is not None:
+            raise self.docker_status_error
+        return self.docker_up
+
+    def ensure_docker(self):
+        self.docker_calls.append("status")
+        if self.docker_up:
+            return False
+        self.docker_calls.append("start")
+        if self.docker_start_error is not None:
+            raise self.docker_start_error
+        self.docker_up = True
+        return True
+
+    def stop_docker(self):
+        self.docker_calls.append("stop")
+        # Plan 7.3's order, report first (code review R30-3): whether a run's report
+        # already existed at the moment Docker was stopped.
+        self.reports_at_stop.append(bool(list(Path(self.root).glob("runs/*/report.md"))))
+        if self.docker_stop_error is not None:
+            raise self.docker_stop_error
+        self.docker_up = False
+
+    def prepare_image(self, root, python, work_dir, *, dry_run=False):
+        """Stands in for container.prepare_image (its own tests are in
+        test_container.py): writes the constraints file into the given folder, as the
+        real one does, and records whether the run folder existed at that moment."""
+        constraints = Path(work_dir) / "constraints.txt"
+        constraints.write_bytes(b"pkg==1.0\n")
+        self.image_calls.append({"work_dir": Path(work_dir), "dry_run": dry_run,
+                                 "runs_existed": [p.name for p in Path(root).glob("runs/*")]})
+        if self.image_error is not None:
+            raise self.image_error
+        if dry_run:
+            self.docker_calls.append("status")
+            if not self.docker_up:
+                return {"tag": self.image_tag, "would": "unknown: Docker is not running"}
+            self.docker_calls.append("inspect")
+            return {"tag": self.image_tag, "would": "reuse" if self.image_exists else "build"}
+        self.docker_calls.append("inspect")
+        built = not self.image_exists
+        if built:
+            self.docker_calls.append("build")
+            self.image_exists = True
+        if self.constraints_missing:  # the copy after the run record will fail
+            constraints = Path(work_dir) / "gone.txt"
+        return {"tag": self.image_tag, "built": built, "constraints": constraints}
 
     def deps(self):
         return loop.Deps(make_builder=self.make_builder, make_reviewer=self.make_reviewer,
@@ -242,14 +310,22 @@ class Harness:
                          capture_problems=lambda root, git_dir: [],
                          inventory=self.inventory, claude_usage=lambda: self.usage,
                          setup_frozen=self.setup_frozen,
+                         docker_running=self.docker_running,
+                         ensure_docker=self.ensure_docker, stop_docker=self.stop_docker,
+                         prepare_image=self.prepare_image,
+                         remove_frozen=lambda folder: self.removed.append(
+                             ("frozen", Path(folder).as_posix())),
+                         remove_copies=lambda run_id: self.removed.append(
+                             ("copies", run_id)),
                          sleep=self.slept.append, now=lambda: self.clock)
 
-    def setup_frozen(self, root, run_id, *, public_head, edit_paths, builder):
+    def setup_frozen(self, root, run_id, *, public_head, edit_paths, builder, image_tag):
         """Stands in for frozen.setup (its own tests are in test_frozen.py): records
         what the loop asked for and gives the swapped builder's folder, or a fresh one
         beside the project."""
         self.frozen_calls.append({"root": root, "run_id": run_id, "public_head": public_head,
-                                  "edit_paths": list(edit_paths), "builder": builder})
+                                  "edit_paths": list(edit_paths), "builder": builder,
+                                  "image_tag": image_tag})
         if self.frozen_error is not None:
             raise self.frozen_error
         if self.frozen is not None:
@@ -257,7 +333,7 @@ class Harness:
         folder = (self.frozen_parent or Path(root).parent / "frozen") / run_id
         folder.mkdir(parents=True)
         if self.on_frozen is not None:
-            self.on_frozen(folder, root, run_id, edit_paths, builder, public_head)
+            self.on_frozen(folder, root, run_id, edit_paths, builder, public_head, image_tag)
         return folder
 
     def inventory(self, root, git_dir, category_a):
@@ -277,7 +353,13 @@ class Harness:
     def read_codex(self, root):
         return self.readings.pop(0) if self.readings else reading()
 
-    def run_checks(self, root, edit_paths, directories, commands, python=None):
+    def run_checks(self, root, edit_paths, directories, commands, python=None, *, run_id,
+                   frozen_dir, public_head, image, round_dir):
+        self.check_calls.append({"run_id": run_id, "frozen_dir": frozen_dir,
+                                 "public_head": public_head, "image": image,
+                                 "round_dir": Path(round_dir)})
+        if self.check_error is not None:
+            raise self.check_error
         if self.check_writes:
             self.check_writes()  # a check that writes a file, as close-out writes its log
         found = self.mechanical.pop(0) if self.mechanical else []
@@ -626,20 +708,18 @@ class RunTests(LoopCase):
         with zipfile.ZipFile(run.run_dir / "rounds/R1/files.zip") as bundle:
             self.assertIn(b"check wrote this", bundle.read("work/a.txt"))
 
-    def test_positive_the_start_check_write_is_recorded_and_named(self):
-        def append_log():
-            path = self.root / "work" / "a.txt"
-            path.write_bytes(path.read_bytes() + b"start check wrote\n")
-        self.h.start_check_writes = append_log
+    def test_positive_the_start_check_is_read_only_and_no_start_capture_is_kept(self):
+        # Rewritten for orchestrator isolation S6b (plan 7.1 items 2 and 3): the start
+        # check runs the verifier read-only, so it writes nothing, and the start-of-run
+        # check-writes capture it once needed is gone. The per-round capture stays.
         self.h.builder_script = [lambda p: ((self.root / "work" / "b.txt").write_bytes(
             b"builder\n"), "wrote b")[1]]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertTrue((run.run_dir / "start/check-writes.patch").is_file())
-        written = self.h.review_calls[0][0].split(
-            "FILES THE ORCHESTRATOR'S OWN CHECKS CHANGED")[1].split("THE DIFF")[0]
-        self.assertIn("+start check wrote", written)
-        self.assertNotIn("+builder", written)  # the builder's line is not the check's
+        self.assertEqual(self.h.start_check_calls, [{"read_only": True}])
+        self.assertFalse((run.run_dir / "start/check-writes.patch").exists())
+        self.assertEqual(run.state["check_writes"], [])
+        self.assertNotIn("start-of-run", self.h.review_calls[0][0])
 
     def test_rejection_a_failure_while_saving_a_failed_step_still_ends_the_run(self):
         # The classification reads at preflight, then breaks after the builder's turn,
@@ -1050,22 +1130,22 @@ class PreflightTests(LoopCase):
         self.assertFalse(self.runs.exists())
         self.assertFalse(self.log.exists())
 
-    def test_rejection_a_dry_run_never_claims_the_check_it_did_not_run(self):
-        # The tree's checks are not clean; a dry run cannot run them (the verifier
-        # writes its own log), so it must say they were not checked (R6-1).
+    def test_rejection_a_dry_run_makes_the_start_check_and_refuses_on_it(self):
+        # Rewritten for orchestrator isolation S6b (plan 7.1 item 2; it replaces R6-1's
+        # "NOT checked" preview): the read-only verifier lets a dry run make the check,
+        # so an unclean tree refuses a dry run exactly as it refuses a real start, and
+        # the image step is never reached.
         self.h.baseline = {"clean": False, "status": "fail", "problems": ["x"]}
-        called = []
-        deps = self.h.deps()
-        deps.baseline_checks = lambda root, python: called.append(1) or self.h.baseline
         err = io.StringIO()
-        with redirect_stderr(err):
-            loop.start("brief.md", "demo", str(self.personal), root=self.root, deps=deps,
-                       log_path=self.log, runs_dir=self.runs, dry_run=True,
-                       settings=self.settings)
-        text = err.getvalue()
-        self.assertEqual(called, [])  # the check that writes was not run
-        self.assertIn("NOT checked: the close-out verifier's clean-start check", text)
-        self.assertNotIn("preflight passed", text)
+        with redirect_stderr(err), self.assertRaises(loop.RunRefused) as caught:
+            loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                       deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                       dry_run=True, settings=self.settings)
+        self.assertIn("not clean", " ".join(caught.exception.args[0]))
+        self.assertEqual(self.h.start_check_calls, [{"read_only": True}])
+        self.assertEqual(self.h.image_calls, [])
+        self.assertNotIn("NOT checked", err.getvalue())
+        self.assertNotIn("preflight passed", err.getvalue())
         self.assertFalse(self.runs.exists())
 
     def test_positive_the_capture_check_on_a_clean_repository(self):
@@ -1099,7 +1179,8 @@ class FrozenFolderStartTests(LoopCase):
                 call, = self.h.frozen_calls
                 self.assertEqual(call, {"root": self.root, "run_id": run.state["run_id"],
                                         "public_head": head, "edit_paths": ["work/"],
-                                        "builder": builder})
+                                        "builder": builder,
+                                        "image_tag": self.h.image_tag})
                 self.assertTrue(run.state["frozen_dir"])
                 self.assertTrue(Path(run.state["frozen_dir"]).is_dir())
 
@@ -1140,17 +1221,55 @@ class FrozenFolderStartTests(LoopCase):
         self.assertFalse(self.log.exists(), "no started entry")
 
     def test_rejection_a_run_record_that_cannot_be_made_removes_the_frozen_folder(self):
+        # Since code review R29-1 a failing create_run is a refusal, not a traceback.
         def refuse(*args, **kwargs):
             raise ValueError("refused")
         original = runrecord.create_run
         runrecord.create_run = refuse
         try:
-            with self.assertRaises(ValueError):
+            with self.assertRaises(loop.RunRefused) as caught:
                 self.start()
         finally:
             runrecord.create_run = original
+        self.assertIn("the run record could not be made: ValueError: refused",
+                      " ".join(caught.exception.args[0]))
         call, = self.h.frozen_calls
         self.assertFalse((self.root.parent / "frozen" / call["run_id"]).exists())
+
+    def test_rejection_a_first_state_write_that_fails_removes_the_half_made_folder(self):
+        # Code review R29-1: create_run made the folder, then its first state.json
+        # write failed. The folder this attempt made goes, with the frozen folder; the
+        # start is refused and the Docker it started is stopped.
+        self.h.docker_up = False
+        original = runrecord.write_state
+
+        def refuse(run_dir, state):
+            raise PermissionError(13, "Access is denied", str(run_dir))
+        runrecord.write_state = refuse
+        try:
+            with redirect_stderr(io.StringIO()), \
+                    self.assertRaises(loop.RunRefused) as caught:
+                self.start()
+        finally:
+            runrecord.write_state = original
+        self.assertIn("the run record could not be made: PermissionError",
+                      " ".join(caught.exception.args[0]))
+        call, = self.h.frozen_calls
+        self.assertFalse((self.runs / call["run_id"]).exists())
+        self.assertFalse((self.root.parent / "frozen" / call["run_id"]).exists())
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+
+    def test_negative_a_run_folder_that_was_already_there_is_never_removed(self):
+        # The run id's folder existing before the attempt: create_run refuses it, and
+        # the start refuses without removing what it did not make.
+        clash = "20261009-120000-abcd"
+        (self.runs / clash).mkdir(parents=True)
+        (self.runs / clash / "keep.txt").write_bytes(b"someone else's\n")
+        with mock.patch.object(loop.runrecord, "new_run_id", return_value=clash), \
+                redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused) as caught:
+            self.start()
+        self.assertIn("FileExistsError", " ".join(caught.exception.args[0]))
+        self.assertEqual((self.runs / clash / "keep.txt").read_bytes(), b"someone else's\n")
 
     def test_negative_a_dry_run_makes_no_frozen_folder(self):
         with redirect_stderr(io.StringIO()):
@@ -1180,7 +1299,501 @@ class FrozenFolderStartTests(LoopCase):
             self.assertNotIn("run.py", text, reason)
 
 
-def make_trusted(folder, root, run_id, edit_paths, builder, public_head):
+class DockerStartTests(LoopCase):
+    """Orchestrator isolation S6b, plan 7.1 items 1 to 4 and section 8 ("Dry run",
+    "Refused start and Docker"): Docker at the start, the read-only start check, and
+    the image step, against the harness's fake Docker (no test touches the real one)."""
+
+    def dry(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertIsNone(loop.start("brief.md", "demo", str(self.personal),
+                                         root=self.root, deps=self.h.deps(),
+                                         log_path=self.log, runs_dir=self.runs,
+                                         dry_run=True, settings=self.settings))
+        return err.getvalue()
+
+    def refused(self, **kwargs):
+        with redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused) as caught:
+            loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                       deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                       settings=self.settings, builder="claude", **kwargs)
+        return " ".join(caught.exception.args[0])
+
+    def test_positive_a_clean_dry_run_previews_the_check_passed_and_a_reuse(self):
+        text = self.dry()
+        self.assertIn("the close-out verifier's clean-start check passed", text)
+        self.assertIn("Docker is running", text)
+        self.assertIn(f"The check image {self.h.image_tag}: a real start would reuse it",
+                      text)
+        self.assertEqual(self.h.start_check_calls, [{"read_only": True}])
+        self.assertEqual(self.h.docker_calls, ["status", "status", "inspect"])
+        call, = self.h.image_calls
+        self.assertTrue(call["dry_run"])
+        self.assertFalse(call["work_dir"].exists(), "the temporary folder is removed")
+        self.assertFalse(self.runs.exists())
+        self.assertFalse(self.log.exists())
+
+    def test_positive_a_dry_run_previews_a_build_when_the_tag_is_absent(self):
+        self.h.image_exists = False
+        text = self.dry()
+        self.assertIn("a real start would build it", text)
+        self.assertNotIn("build", self.h.docker_calls)
+
+    def test_rejection_a_dry_run_with_docker_stopped_starts_nothing(self):
+        # R24-1: only the engine can say whether the tag exists, and a dry run never
+        # starts it, so the image is reported unknown.
+        self.h.docker_up = False
+        text = self.dry()
+        self.assertIn("Docker is not running; a real start would start it", text)
+        self.assertIn("The check image bookdragon-checks:0123456789ab: unknown: Docker is "
+                      "not running", text)  # written out, not read from the code (R29-3)
+        self.assertEqual(set(self.h.docker_calls), {"status"})
+        self.assertFalse(self.h.docker_up)
+
+    def test_rejection_a_failing_real_start_check_never_reaches_the_image_step(self):
+        self.h.baseline = {"clean": False, "status": "fail", "problems": ["x"]}
+        self.assertIn("not clean", self.refused())
+        self.assertEqual(self.h.image_calls, [])
+        self.assertNotIn("stop", self.h.docker_calls)  # Docker was already running
+        self.assertFalse(self.runs.exists())
+
+    def test_rejection_a_start_that_started_docker_stops_it_once_when_the_check_refuses(self):
+        self.h.docker_up = False
+        self.h.baseline = {"clean": False, "status": "fail", "problems": ["x"]}
+        self.refused()
+        self.assertEqual(self.h.docker_calls, ["status", "start", "stop"])
+
+    def test_rejection_a_start_that_started_docker_stops_it_once_when_the_image_refuses(self):
+        self.h.docker_up = False
+        self.h.image_error = container.ContainerError("build failed")
+        text = self.refused()
+        self.assertIn("the check image: build failed", text)
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+        self.assertEqual(self.h.docker_calls[-1], "stop")
+        call, = self.h.image_calls
+        self.assertFalse(call["work_dir"].exists(), "no temporary folder left")
+        self.assertFalse(self.runs.exists())
+
+    def test_rejection_a_start_that_started_docker_stops_it_when_the_usage_refuses(self):
+        self.h.docker_up = False
+        self.h.readings = [reading(percent=95)]
+        self.assertIn("usage", self.refused())
+        self.assertEqual(self.h.docker_calls, ["status", "start", "stop"])
+
+    def test_rejection_a_file_error_in_the_image_step_is_a_refusal(self):
+        # Code review R30-1: a constraints or build-context write failing is the image
+        # step's refusal through run.py (exit 3), not a traceback; the temporary folder
+        # goes and the Docker this run started is stopped.
+        self.h.docker_up = False
+        self.h.image_error = PermissionError(13, "Access is denied")
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = run_py.main(["--run", "brief.md", "--builder", "claude", "--item",
+                                "demo", "--git-dir", str(self.personal)],
+                               root=self.root, log_path=self.log, deps=self.h.deps(),
+                               runs_dir=self.runs)
+        self.assertEqual(code, run_py.REFUSED)
+        self.assertIn("the check image: PermissionError", out.getvalue())
+        call, = self.h.image_calls
+        self.assertFalse(call["work_dir"].exists())
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+
+    def keep_image_folder(self):
+        """Code review R31-1: the image step's temporary folder cannot be removed;
+        every other removal works as usual."""
+        original = container.remove_copy
+
+        def remove(folder):
+            if Path(folder).name.startswith("book-dragon-image-"):
+                raise PermissionError(13, "Access is denied", str(folder))
+            return original(folder)
+        return mock.patch.object(loop.container, "remove_copy", remove)
+
+    def test_rejection_an_image_folder_left_after_a_start_is_reported_not_hidden(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        err = io.StringIO()
+        with self.keep_image_folder(), redirect_stderr(err):
+            run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN, "the start went ahead")
+        self.assertIn("WARNING: the image step's temporary folder", err.getvalue())
+        left = [c for c in run.state["cleanup"]
+                if c["what"] == "the image step's temporary folder"]
+        self.assertEqual(len(left), 1)
+        self.assertFalse(left[0]["removed"])
+        self.assertIn("delete it by hand", left[0]["error"])
+        shutil.rmtree(self.h.image_calls[0]["work_dir"], ignore_errors=True)
+
+    def test_rejection_an_image_folder_left_after_a_refusal_is_in_the_refusal(self):
+        self.h.image_error = container.ContainerError("build failed")
+        with self.keep_image_folder():
+            text = self.refused()
+        self.assertIn("the check image: build failed", text)
+        self.assertIn("the image step's temporary folder", text)
+        self.assertIn("could not be removed", text)
+        shutil.rmtree(self.h.image_calls[0]["work_dir"], ignore_errors=True)
+
+    def test_rejection_a_temporary_folder_that_cannot_be_made_is_a_refusal(self):
+        self.h.docker_up = False
+        with mock.patch.object(loop.tempfile, "mkdtemp",
+                               side_effect=PermissionError(13, "Access is denied")):
+            text = self.refused()
+        self.assertIn("its temporary folder could not be made", text)
+        self.assertEqual(self.h.image_calls, [])
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+
+    def test_negative_docker_already_running_is_left_running_after_a_refusal(self):
+        self.h.image_error = container.ContainerError("build failed")
+        self.refused()
+        self.assertNotIn("stop", self.h.docker_calls)
+        self.assertTrue(self.h.docker_up)
+
+    def test_rejection_a_failing_stop_is_printed_with_the_refusal_and_keeps_its_code(self):
+        self.h.docker_up = False
+        self.h.docker_stop_error = container.ContainerError("stop refused")
+        self.h.baseline = {"clean": False, "status": "fail", "problems": ["x"]}
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = run_py.main(["--run", "brief.md", "--builder", "claude", "--item",
+                                "demo", "--git-dir", str(self.personal)],
+                               root=self.root, log_path=self.log, deps=self.h.deps(),
+                               runs_dir=self.runs)
+        self.assertEqual(code, run_py.REFUSED)
+        text = out.getvalue()
+        self.assertIn("not clean", text)
+        self.assertIn("could not be stopped again: stop refused", text)
+
+    def test_rejection_a_dry_run_whose_docker_status_fails_is_refused(self):
+        # Code review R27-1: a status query that cannot run refuses a dry start as it
+        # refuses a real one, rather than escaping as a traceback.
+        self.h.docker_status_error = container.ContainerError(
+            "`docker desktop status` did not answer within 60 s")
+        with redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused) as caught:
+            loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                       deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                       dry_run=True, settings=self.settings)
+        self.assertIn("Docker: `docker desktop status` did not answer",
+                      " ".join(caught.exception.args[0]))
+        self.assertEqual(self.h.start_check_calls, [])
+        self.assertEqual(self.h.image_calls, [])
+        self.assertFalse(self.runs.exists())
+
+    def test_rejection_docker_that_cannot_be_started_refuses_with_nothing_to_stop(self):
+        self.h.docker_up = False
+        self.h.docker_start_error = container.ContainerError("no engine")
+        self.assertIn("Docker: no engine", self.refused())
+        self.assertNotIn("stop", self.h.docker_calls)
+        self.assertEqual(self.h.start_check_calls, [])
+
+
+class ConstraintsFileTests(LoopCase):
+    """Decision 32 and R24-3 (plan 5.2, 7.1 item 4): the image step runs before the run
+    record exists, writing its constraints file to a temporary folder; a started run
+    keeps the file as runs/<run-id>/image/constraints.txt and the folder is removed."""
+
+    def test_positive_the_file_is_copied_into_the_run_record_once_it_exists(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        call, = self.h.image_calls
+        self.assertFalse(call["dry_run"])
+        self.assertEqual(call["runs_existed"], [], "the image step ran before the record")
+        self.assertEqual((run.run_dir / "image" / "constraints.txt").read_bytes(),
+                         b"pkg==1.0\n")
+        self.assertFalse(call["work_dir"].exists(), "the temporary folder is removed")
+        self.assertEqual(self.h.frozen_calls[0]["image_tag"], self.h.image_tag)
+        self.assertEqual(run.state["image"], {"tag": self.h.image_tag, "built": False})
+
+    def test_rejection_a_start_refused_after_the_image_leaves_no_folder_and_no_record(self):
+        self.h.frozen_error = frozen.FrozenError("no folder")
+        with redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused):
+            loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                       deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                       settings=self.settings, builder="claude")
+        call, = self.h.image_calls
+        self.assertFalse(call["work_dir"].exists())
+        self.assertFalse(self.runs.exists())
+
+    def test_rejection_a_failure_after_the_record_is_made_removes_it_and_refuses(self):
+        # Code review R28-1: a write failing once runs/<run-id>/ exists (here the
+        # constraints copy) removes the new record and frozen folder, refuses the start
+        # through run.py (exit 3, no traceback), stops a Docker this run started, and
+        # appends no started entry.
+        self.h.docker_up = False
+        self.h.constraints_missing = True
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = run_py.main(["--run", "brief.md", "--builder", "claude", "--item",
+                                "demo", "--git-dir", str(self.personal)],
+                               root=self.root, log_path=self.log, deps=self.h.deps(),
+                               runs_dir=self.runs)
+        self.assertEqual(code, run_py.REFUSED)
+        self.assertIn("the run record could not be completed: FileNotFoundError",
+                      out.getvalue())
+        call, = self.h.frozen_calls
+        self.assertEqual(list(self.runs.glob("*")), [], "no half-made run record")
+        self.assertFalse((self.root.parent / "frozen" / call["run_id"]).exists())
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+        self.assertFalse(self.log.exists(), "no started entry")
+
+    def test_rejection_a_half_made_record_that_cannot_be_removed_is_named(self):
+        self.h.constraints_missing = True
+        original = container.remove_copy
+
+        def refuse(folder):
+            if Path(folder).parent == self.runs:
+                raise PermissionError(13, "Access is denied", str(folder))
+            return original(folder)
+        with mock.patch.object(loop.container, "remove_copy", refuse), \
+                redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused) as caught:
+            loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                       deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                       settings=self.settings, builder="claude")
+        text = " ".join(caught.exception.args[0])
+        self.assertIn("the half-made run record", text)
+        self.assertIn("could not be removed", text)
+        self.assertIn("delete it by hand", text)
+        call, = self.h.frozen_calls
+        self.assertFalse((self.root.parent / "frozen" / call["run_id"]).exists(),
+                         "the frozen folder is still removed")
+
+    def test_positive_a_built_image_is_recorded_as_built(self):
+        self.h.image_exists = False
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(run.state["image"]["built"], True)
+        self.assertIn("build", self.h.docker_calls)
+        self.assertIn(f"image {self.h.image_tag}: built at the start",
+                      (run.run_dir / "report.md").read_text(encoding="utf-8"))
+
+
+class EndOfRunTests(LoopCase):
+    """Plan 7.3: after the report, Docker is stopped if this run started it, and at a
+    stop reason a resume cannot continue the frozen folder and the run's clean copies
+    are removed; on max-rounds, usage-limit and error both are kept."""
+
+    def test_positive_a_run_that_cannot_resume_removes_its_folder_and_copies(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.h.removed, [("frozen", run.state["frozen_dir"]),
+                                          ("copies", run.state["run_id"])])
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("- removed the frozen folder", report)
+        self.assertIn("- removed the clean copies", report)
+
+    def test_negative_a_resumable_end_keeps_both(self):
+        for name, setup in (
+                ("max-rounds", lambda: setattr(self.h, "reviews", [[finding()]])),
+                ("error", lambda: setattr(self.h, "check_error",
+                                          container.ContainerError("engine gone"))),
+                ("usage-limit", lambda: setattr(self.h, "readings",
+                                                [reading(), reading(percent=95)]))):
+            with self.subTest(reason=name):
+                self.reset_work()
+                self.h = Harness(self.root)
+                setup()
+                self.h.builder_script = [edit(self.root, "x\n")]
+                run = self.start(cap=1, item=name.replace("-", "_"))
+                self.assertEqual(self.reason(run), name)
+                self.assertEqual(self.h.removed, [])
+
+    def test_rejection_a_docker_failure_after_a_turn_ends_the_run_error(self):
+        self.h.check_error = container.ContainerError("engine gone")
+        self.h.builder_script = [edit(self.root, "x\n")]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertIn("engine gone", json.dumps(run.state["stop_reasons"][-1]))
+
+    def test_positive_a_run_that_started_docker_stops_it_after_the_report(self):
+        self.h.docker_up = False
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(self.h.docker_calls.count("start"), 1)
+        self.assertEqual(self.h.docker_calls[-1], "stop")
+        self.assertEqual(self.h.reports_at_stop, [True], "the report came first (R30-3)")
+        self.assertFalse(run.state["docker"]["started_by_run"])
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("Docker, started by this run, was stopped", report)
+
+    def test_rejection_a_failing_stop_is_reported_and_the_stop_reason_stands(self):
+        self.h.docker_up = False
+        self.h.docker_stop_error = container.ContainerError("stop refused")
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("could not be stopped: stop refused", report)
+        self.assertIn("`reviewed-clean`", report)
+
+    def test_rejection_a_failing_end_write_still_stops_docker_and_removes(self):
+        # Code review R30-2: the report cannot be written at the end; Docker this run
+        # started is still stopped and a run that cannot resume still removes its
+        # folders, and the write's error is still raised.
+        self.h.docker_up = False
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        with mock.patch.object(loop, "write_report",
+                               side_effect=PermissionError(13, "Access is denied")), \
+                redirect_stderr(io.StringIO()), self.assertRaises(Exception):
+            self.start()
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+        self.assertFalse(self.h.docker_up)
+        self.assertEqual([what for what, _ in self.h.removed], ["frozen", "copies"])
+
+    def test_negative_docker_already_running_is_never_stopped(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        self.start()
+        self.assertNotIn("stop", self.h.docker_calls)
+
+    def test_positive_the_checks_are_given_the_runs_folder_head_image_and_round(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        call, = self.h.check_calls
+        self.assertEqual(call["run_id"], run.state["run_id"])
+        self.assertEqual(call["frozen_dir"], run.state["frozen_dir"])
+        self.assertEqual(call["public_head"], run.state["start"]["public_head"])
+        self.assertEqual(call["image"], self.h.image_tag)
+        self.assertEqual(call["round_dir"], run.run_dir / "rounds" / "R1")
+
+
+class ResumeDockerTests(LoopCase):
+    """Decision 31 and R24-2: a resume starts Docker as a start does and records it,
+    so the run's next end stops it again; a dry resume only reports."""
+
+    def ended_at_max_rounds(self):
+        self.h.docker_up = False
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        run = self.start(cap=1)
+        self.assertEqual(self.reason(run), sr.MAX_ROUNDS)
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+        self.assertFalse(self.h.docker_up)
+        return run
+
+    def test_positive_a_resume_starts_docker_and_its_end_stops_it_again(self):
+        run = self.ended_at_max_rounds()
+        again = self.resume(run, rounds=1)
+        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.h.docker_calls.count("start"), 2)
+        self.assertEqual(self.h.docker_calls.count("stop"), 2)
+        self.assertEqual(self.h.docker_calls[-1], "stop")
+        whats = [e["what"] for e in again.state["docker"]["events"]]
+        self.assertIn("Docker was started by this resume", whats)
+
+    def test_negative_a_resume_with_docker_running_starts_and_stops_nothing(self):
+        run = self.ended_at_max_rounds()
+        self.h.docker_up = True  # started by someone else since
+        again = self.resume(run, rounds=1)
+        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.h.docker_calls.count("start"), 1)
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+
+    def test_rejection_a_dry_resume_with_docker_stopped_starts_nothing(self):
+        run = self.ended_at_max_rounds()
+        before = list(self.h.docker_calls)
+        state = (run.run_dir / "state.json").read_bytes()
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            loop.resume(again, dry_run=True)
+        self.assertIn("Docker is not running; a real resume would start it", err.getvalue())
+        self.assertEqual(self.h.docker_calls[len(before):], ["status"])
+        self.assertFalse(self.h.docker_up)
+        self.assertEqual((run.run_dir / "state.json").read_bytes(), state)
+
+    def test_rejection_a_resume_whose_state_cannot_be_saved_stops_its_docker(self):
+        # Code review R29-2: the resume started Docker, then its state save failed.
+        # It stops the Docker it started and refuses; the saved run is unchanged and so
+        # still resumable.
+        run = self.ended_at_max_rounds()
+        state = (run.run_dir / "state.json").read_bytes()
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        original = runrecord.write_state
+
+        def refuse(run_dir, saved):
+            raise PermissionError(13, "Access is denied", str(run_dir))
+        runrecord.write_state = refuse
+        try:
+            with self.assertRaises(loop.RunRefused) as caught:
+                loop.resume(again, rounds=1)
+        finally:
+            runrecord.write_state = original
+        self.assertIn("the resume could not be recorded: PermissionError",
+                      " ".join(caught.exception.args[0]))
+        self.assertEqual(self.h.docker_calls.count("start"), 2)
+        self.assertEqual(self.h.docker_calls.count("stop"), 2)
+        self.assertFalse(self.h.docker_up)
+        self.assertEqual((run.run_dir / "state.json").read_bytes(), state)
+
+    def test_rejection_a_resume_whose_log_line_fails_saves_nothing_and_stops_docker(self):
+        # The R30 exception-path audit: the started line is written before the state,
+        # so a log that cannot be written leaves the run saved as it was (still
+        # resumable) rather than saved as running, and the Docker it started stops.
+        run = self.ended_at_max_rounds()
+        state = (run.run_dir / "state.json").read_bytes()
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        with mock.patch.object(loop, "_log", side_effect=PermissionError(13, "denied")), \
+                self.assertRaises(loop.RunRefused) as caught:
+            loop.resume(again, rounds=1)
+        self.assertIn("the resume could not be recorded: PermissionError",
+                      " ".join(caught.exception.args[0]))
+        self.assertEqual((run.run_dir / "state.json").read_bytes(), state)
+        self.assertEqual(self.h.docker_calls.count("stop"), 2)
+        self.assertFalse(self.h.docker_up)
+
+    def test_negative_a_resume_save_failure_with_docker_already_running_stops_nothing(self):
+        run = self.ended_at_max_rounds()
+        self.h.docker_up = True
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        original = runrecord.write_state
+        runrecord.write_state = lambda run_dir, saved: (_ for _ in ()).throw(
+            PermissionError(13, "Access is denied"))
+        try:
+            with self.assertRaises(loop.RunRefused):
+                loop.resume(again, rounds=1)
+        finally:
+            runrecord.write_state = original
+        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+        self.assertTrue(self.h.docker_up)
+
+    def test_rejection_a_dry_resume_whose_docker_status_fails_is_refused(self):
+        # Code review R27-1, for the dry resume, which asks the same question.
+        run = self.ended_at_max_rounds()
+        state = (run.run_dir / "state.json").read_bytes()
+        self.h.docker_status_error = container.ContainerError("docker could not be run")
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        with redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused) as caught:
+            loop.resume(again, dry_run=True)
+        self.assertIn("Docker: docker could not be run", " ".join(caught.exception.args[0]))
+        self.assertEqual((run.run_dir / "state.json").read_bytes(), state)
+
+    def test_rejection_a_resume_whose_docker_cannot_start_leaves_the_run_unchanged(self):
+        run = self.ended_at_max_rounds()
+        state = (run.run_dir / "state.json").read_bytes()
+        self.h.docker_start_error = container.ContainerError("no engine")
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs)
+        with self.assertRaises(loop.RunRefused) as caught:
+            loop.resume(again, rounds=1)
+        self.assertIn("Docker: no engine", " ".join(caught.exception.args[0]))
+        self.assertEqual((run.run_dir / "state.json").read_bytes(), state)
+
+
+def make_trusted(folder, root, run_id, edit_paths, builder, public_head,
+                 image_tag="bookdragon-checks:0123456789ab"):
     """A frozen folder as frozen.setup makes it, with trusted/ copied from this working
     tree rather than git-archived (frozen.setup's own archive is tested in
     test_frozen.py): the orchestrator's scripts, config and prompts, and the sync
@@ -1194,7 +1807,8 @@ def make_trusted(folder, root, run_id, edit_paths, builder, public_head):
                     Path(folder) / "trusted" / "workflows" / "sync-architecture" / "scripts",
                     ignore=skip)
     frozen.populate(folder, workflow / "scripts", workflow / "config",
-                    frozen.hook_config(run_id, root, edit_paths, builder, public_head))
+                    frozen.hook_config(run_id, root, edit_paths, builder, public_head,
+                                       image_tag))
 
 
 class TrustedCopyTests(LoopCase):
@@ -1376,28 +1990,38 @@ class TrustedCopyTests(LoopCase):
         return {p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(Path(folder).rglob("*")) if p.is_file()}
 
-    def test_negative_a_trusted_stop_and_advance_write_nothing_in_the_frozen_folder(self):
+    def test_negative_a_trusted_advance_writes_nothing_in_the_frozen_folder(self):
         # Plan 7.0 item 3 and code review R20-1: after setup only the hook's decisions
-        # file and the helper's calls file may be written there; neither a stop nor an
-        # advance writes either, so the folder must be byte-identical, no bytecode
-        # cache included.
-        run, folder = self.paused()
-        before = self.folder_state(folder)
-        done = self.trusted(folder, "--stop", run.state["run_id"])
-        self.assertIn("ended stopped-by-user", done.stdout, done.stderr)
-        self.assertEqual(self.folder_state(folder), before)
-        self.assertEqual(list(folder.rglob("__pycache__")), [])
+        # file and the helper's calls file may be written there, so an advance ending
+        # on a stop reason that keeps the folder (error, plan 7.3) must leave it
+        # byte-identical, no bytecode cache included. (Rewritten for S6b: a stop now
+        # removes the folder, tested below.)
         run, folder = self.started()
         loop_copy = frozen.trusted_run_py(folder).parent / "loop.py"
         with open(loop_copy, "a", encoding="utf-8", newline="\n") as handle:
             handle.write("\n\nasync def _stub_advance(self):\n"
-                         "    self.end(sr.REVIEWED_CLEAN, {'stub': True})\n\n\n"
+                         "    self.end(sr.ERROR, {'stub': True})\n\n\n"
                          "Run.advance = _stub_advance\n")
         before = self.folder_state(folder)
         done = self.trusted(folder, "--advance", run.state["run_id"])
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         self.assertEqual(self.folder_state(folder), before)
         self.assertEqual(list(folder.rglob("__pycache__")), [])
+
+    def test_positive_a_trusted_stop_removes_the_frozen_folder_it_runs_from(self):
+        # Plan 7.3 (S6b): stopped-by-user cannot be resumed, so the run removes its
+        # frozen folder, from the trusted copy running inside it: the removal the plan
+        # asks to be tested on Windows. The run record and log stay under the project.
+        run, folder = self.paused()
+        done = self.trusted(folder, "--stop", run.state["run_id"])
+        self.assertIn("ended stopped-by-user", done.stdout, done.stderr)
+        self.assertFalse(folder.exists(), done.stdout + done.stderr)
+        state = runrecord.read_state(self.runs / run.state["run_id"])
+        self.assertEqual(state["cleanup"][0], {"what": "the frozen folder",
+                                               "removed": True})
+        self.assertIn("- removed the frozen folder",
+                      (self.runs / run.state["run_id"] / "report.md")
+                      .read_text(encoding="utf-8"))
 
     def test_positive_a_start_hands_the_run_to_its_trusted_copy(self):
         run, folder = self.started()

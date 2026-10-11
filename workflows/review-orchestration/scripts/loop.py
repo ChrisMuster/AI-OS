@@ -34,6 +34,12 @@ followed by a check of the whole project against an inventory taken just before 
 turn, and a run of either pairing does not start while a ``.env``-named file is
 neither tracked nor ignored.
 
+Orchestrator isolation (stage S6b): a start or resume starts Docker if it is not
+running and the run's end stops it again; a start builds the check image if its tag
+is absent; the checks before every review run builder-written code only in that image,
+offline, over a clean copy, and the host checks from the frozen folder's trusted copies;
+and a run that cannot be resumed removes its frozen folder and clean copies.
+
 Nothing here stages, commits, pushes or changes branch (plan section 3). Every entry
 point to an SDK or a subprocess that talks to one is a replaceable dependency
 (``Deps``), which is how the tests drive a whole run with no model call.
@@ -49,6 +55,7 @@ import statistics
 import string
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -59,6 +66,7 @@ import approver as approver_mod
 import brief as brief_mod
 import checks as checks_mod
 import codex_rules
+import container
 import frozen as frozen_mod
 import limits
 import packet as packet_mod
@@ -173,6 +181,14 @@ class Deps:
     capture_problems: Callable = None
     inventory: Callable = None
     setup_frozen: Callable = None
+    # Docker and the image (plan 7.1 to 7.3): container.py's, replaced by fakes in
+    # the tests so that no test starts or stops the real Docker.
+    docker_running: Callable = None
+    ensure_docker: Callable = None
+    stop_docker: Callable = None
+    prepare_image: Callable = None
+    remove_frozen: Callable = None
+    remove_copies: Callable = None
     claude_usage: Callable = limits.ClaudeUsage
     sleep: Callable = time.sleep
     now: Callable = time.time
@@ -199,6 +215,18 @@ class Deps:
             self.capture_problems = capture_problems
         if self.setup_frozen is None:
             self.setup_frozen = frozen_mod.setup
+        if self.docker_running is None:
+            self.docker_running = container.docker_running
+        if self.ensure_docker is None:
+            self.ensure_docker = container.ensure_running
+        if self.stop_docker is None:
+            self.stop_docker = container.stop_docker
+        if self.prepare_image is None:
+            self.prepare_image = container.prepare_image
+        if self.remove_frozen is None:
+            self.remove_frozen = frozen_mod.remove
+        if self.remove_copies is None:
+            self.remove_copies = container.remove_copies
 
 
 # ------------------------------------------------------------------ small helpers
@@ -789,9 +817,16 @@ class Run:
         before_checks = worktree.contents(self.root, edit_paths, category_a)
         directories = worktree.changed_dirs(worktree.changed(
             start_snapshot, _hashes(before_checks)))
+        # Builder-written code runs only in the container, over a clean copy; the
+        # host checks run from the frozen folder's trusted copies (plan 7.2). A Docker
+        # or copy failure raises, and the run ends error.
         mechanical, mechanical_text = self.deps.run_checks(
             self.root, edit_paths, directories, self.state["acceptance"],
-            python=self.python)
+            python=self.python, run_id=self.state["run_id"],
+            frozen_dir=self.state["frozen_dir"],
+            public_head=self.state["start"]["public_head"],
+            image=self.state["image"]["tag"],
+            round_dir=self.run_dir / "rounds" / f"R{round_no}")
         category_a = self.deps.category_a(self.root)
         after_checks = worktree.contents(self.root, edit_paths, category_a)
         written = worktree.delta(before_checks, after_checks,
@@ -910,13 +945,58 @@ class Run:
 
     def end(self, reason, evidence=None):
         sr.record_stop(self.state, reason, evidence)
-        self.save()
-        if self.ledger.findings:
-            self.write_packet()
-        write_report(self)
+        # The Docker stop and the removals run even when a write before them fails, so
+        # a run never leaves Docker running for a record it could not write; the
+        # write's own error is raised afterwards (code review R30-2).
+        try:
+            self.save()
+            if self.ledger.findings:
+                self.write_packet()
+            write_report(self)
+        finally:
+            self._after_end(reason)
         action = "failed" if reason == sr.ERROR else "completed"
         _log(action, f"Run {self.state['run_id']} ended {reason} after step "
                      f"{self.state['step']}.", self.log_path)
+
+    def _after_end(self, reason):
+        """Plan 7.3, after the report is written. If this run (or its resume) started
+        Docker, stop it; a stop that fails is written into the report and the stop
+        reason stands. At a stop reason a resume cannot continue, remove the run's
+        frozen folder and its clean copies, which a resume would need otherwise; a
+        removal that fails is written into the report too. The report is written again
+        afterwards, so it records what happened here. Nothing here raises: the run
+        has already ended and reported."""
+        docker = self.state.setdefault("docker", {"started_by_run": False, "events": []})
+        if docker.get("started_by_run"):
+            try:
+                self.deps.stop_docker()
+                docker["started_by_run"] = False
+                docker.setdefault("events", []).append(
+                    _docker_event("end", "Docker, started by this run, was stopped"))
+            except Exception as exc:  # noqa: BLE001 - the stop reason stands
+                docker.setdefault("events", []).append(
+                    _docker_event("end", f"Docker, started by this run, could not be "
+                                         f"stopped: {exc}"))
+        if reason not in sr.RESUMABLE:
+            cleanup = self.state.setdefault("cleanup", [])
+            for what, action in (
+                    ("the frozen folder", lambda: self.deps.remove_frozen(
+                        self.state["frozen_dir"]) if self.state.get("frozen_dir") else None),
+                    ("the clean copies", lambda: self.deps.remove_copies(
+                        self.state["run_id"]))):
+                try:
+                    action()
+                    cleanup.append({"what": what, "removed": True})
+                except Exception as exc:  # noqa: BLE001
+                    cleanup.append({"what": what, "removed": False,
+                                    "error": f"{type(exc).__name__}: {exc}"})
+        try:
+            self.save()
+            write_report(self)
+        except Exception as exc:  # noqa: BLE001 - the run has already ended and reported
+            print(f"Run {self.state['run_id']}: the record of its end could not be "
+                  f"updated: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 # ------------------------------------------------------------------------ report
@@ -1015,6 +1095,8 @@ def write_report(run):
                             if (state.get("usage_source") or {}).get("codex")
                             == limits.UNAVAILABLE else {})},
         "packet": packet_mod.packet_path(".", state["item"]).as_posix(),
+        "image": state.get("image"), "docker": state.get("docker"),
+        "cleanup": state.get("cleanup", []),
     }
     _write_json(run.run_dir / "report.json", report)
     lines = [f"# Run {state['run_id']}", ""]
@@ -1055,6 +1137,17 @@ def write_report(run):
     lines += [f"- {a['step']} ({a['role']}): {a['tokens']} tokens, more than twice the "
               f"median {a['median']} of earlier runs" for a in report["price_alarm"]] \
         or ["None."]
+    lines += ["", "## Docker and the check image", ""]
+    if report["image"]:
+        lines.append(f"- image {report['image']['tag']}: "
+                     f"{'built' if report['image'].get('built') else 'reused'} at the start")
+    lines += [f"- {e['when']} ({e['at']}): {e['what']}"
+              for e in (report["docker"] or {}).get("events", [])]
+    lines += [f"- removed {c['what']}" if c.get("removed") else
+              f"- {c['what']} could not be removed: {c.get('error')}"
+              for c in report["cleanup"]]
+    if lines[-1] == "":
+        lines.append("None.")
     lines += ["", "## Live checks", ""]
     lines += [f"- {key}: {' '.join(str(value).split())}"
               for key, value in report["live"].items()] or ["None."]
@@ -1065,10 +1158,51 @@ def write_report(run):
 # ------------------------------------------------------------ start, resume, stop
 
 
+def _stop_docker_after_refusal(deps, refusal):
+    """A start refused after this run started Docker stops it before it exits (plan
+    7.1 item 1). A stop that fails is added to the refusal's reasons, so it is printed
+    with them, and the refusal stands as it was."""
+    try:
+        deps.stop_docker()
+    except Exception as exc:  # noqa: BLE001 - the refusal is what the caller reports
+        if isinstance(refusal, RunRefused) and refusal.args and isinstance(
+                refusal.args[0], list):
+            refusal.args[0].append(f"Docker Desktop, started by this run, could not be "
+                                   f"stopped again: {exc}")
+
+
+def _docker_event(when, what):
+    """One line of a run's Docker record (``state.json`` ``docker.events``)."""
+    return {"when": when, "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "what": what}
+
+
+def _docker_at_start(deps, dry_run):
+    """Docker for a start or a resume (plan 7.1 item 1, decision 31): a real one starts
+    it if it is not running and says whether it did; a dry one only asks, and says
+    whether a real one would start it. Returns (started, note)."""
+    # A Docker that cannot even report its status refuses a dry run as it refuses a
+    # real one, so the two reach the same verdict (code review R27-1).
+    try:
+        if dry_run:
+            running = deps.docker_running()
+            return False, ("Docker is running" if running else
+                           "Docker is not running; a real start would start it")
+        started = deps.ensure_docker()
+    except container.ContainerError as exc:
+        raise RunRefused([f"Docker: {exc}"]) from exc
+    return started, ("Docker was started by this run" if started
+                     else "Docker was already running")
+
+
 def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, settings=None,
-              builder=None):
+              builder=None, dry_run=False):
     """Every read-only check a run makes before it creates anything. Returns what the
     run needs; raises RunRefused with every reason it cannot start.
+
+    After the checks that need nothing running, Docker (plan 7.1 item 1): a real start
+    starts it if it is not running, and records whether it did, in ``docker_started``;
+    a dry run only asks. A refusal after this run started Docker stops it again.
 
     ``builder`` is the provider the user named to build (``--builder``); the other
     reviews (the chunk (d) short plan, 11.1). A caller passing ``settings`` that already
@@ -1130,21 +1264,28 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
         problems.append(f"the sync classification cannot be read: {exc}")
     if problems:
         raise RunRefused(problems)
+    docker_started, docker_note = _docker_at_start(deps, dry_run)
     try:
-        reading = deps.read_codex(root)
-    except Exception as exc:
-        raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
-                          f"{exc}"]) from exc
-    stop = limits.check_ceiling([reading], settings["usage_ceiling_percent"])
-    if stop is not None:
-        raise RunRefused([f"usage: {stop.reason} ({reading.summary()})"])
-    credits = credit_snapshot(reading)
-    reason = untrackable(credits)
-    if reason is not None:
-        raise RunRefused([f"Codex credits cannot be tracked: {reason} "
-                          f"({reading.summary()})"])
+        try:
+            reading = deps.read_codex(root)
+        except Exception as exc:
+            raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
+                              f"{exc}"]) from exc
+        stop = limits.check_ceiling([reading], settings["usage_ceiling_percent"])
+        if stop is not None:
+            raise RunRefused([f"usage: {stop.reason} ({reading.summary()})"])
+        credits = credit_snapshot(reading)
+        reason = untrackable(credits)
+        if reason is not None:
+            raise RunRefused([f"Codex credits cannot be tracked: {reason} "
+                              f"({reading.summary()})"])
+    except BaseException as exc:
+        if docker_started:
+            _stop_docker_after_refusal(deps, exc)
+        raise
     return {"settings": settings, "brief": brief, "credits": credits,
-            "reading": reading, "category_a": category_a}
+            "reading": reading, "category_a": category_a,
+            "docker_started": docker_started, "docker_note": docker_note}
 
 
 def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LOG_PATH,
@@ -1158,36 +1299,120 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
         raise RunRefused([f"--inject-limit {inject!r} is not a step name (build, "
                           "review-R<n>, fix-R<n>)"])
     ready = preflight(brief_arg, item, git_dir, root=root, deps=deps, settings=settings,
-                      builder=builder)
+                      builder=builder, dry_run=dry_run)
+    try:
+        return _start(ready, brief_arg, item, git_dir, root=root, deps=deps,
+                      log_path=log_path, runs_dir=runs_dir, inject=inject,
+                      dry_run=dry_run, wait=wait, python=python)
+    except BaseException as exc:
+        # Refused, or failed, at any point after this run started Docker and before
+        # the run exists: Docker is stopped again (plan 7.1 item 1).
+        if ready["docker_started"]:
+            _stop_docker_after_refusal(deps, exc)
+        raise
+
+
+def _start(ready, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir, inject,
+           dry_run, wait, python):
     settings, brief = ready["settings"], ready["brief"]
-    if dry_run:
-        # The clean-start check is not run here: the close-out verifier writes its own
-        # log and result file every time it runs, so it cannot run in a dry run. The
-        # preview says so rather than claim more than it checked (review finding R6-1).
-        print(f"[DRY RUN] the read-only preflight checks passed ({ready['reading'].summary()})."
-              " NOT checked: the close-out verifier's clean-start check, which writes its "
-              "own log and so cannot run in a dry run; a real start runs it first and "
-              "refuses the run if the checks are not clean. If it passes, the run would "
-              f"create a run record for item {item}, {settings['roles']['builder']} "
-              f"building and {settings['roles']['reviewer']} reviewing, with edit paths "
-              f"{', '.join(brief['edit_paths'])}, then build and review up to "
-              f"{settings['round_caps']['build_review']} round(s).", file=sys.stderr)
-        return None
+    python = python or sys.executable
     # A run starts only from a tree where the close-out checks are clean, so nothing
-    # failing during it can predate it (the user's re-plan of R2-5, after R5-3). What
-    # the check itself writes under the edit paths (its own LOG.md) is kept as an exact
-    # diff and named to every reviewer as the orchestrator's (R5-2).
-    before_start_check = worktree.contents(root, brief["edit_paths"], ready["category_a"])
-    baseline = deps.baseline_checks(root, python or sys.executable)
+    # failing during it can predate it (the user's re-plan of R2-5, after R5-3). The
+    # check runs read-only, so it writes nothing and a dry run makes it too (plan 7.1
+    # items 2 and 3), and a failing one never reaches the image step.
+    baseline = deps.baseline_checks(root, python, read_only=True)
     if not baseline.get("clean"):
         raise RunRefused(["the close-out checks are not clean, and a run starts only "
                           "from a tree where they are: "
                           + "; ".join(baseline.get("problems") or ["no detail"])
                           + ". Make them pass, then start the run"])
-    start_writes = worktree.delta(before_start_check,
-                                  worktree.contents(root, brief["edit_paths"],
-                                                    ready["category_a"]),
-                                  "the start-of-run close-out check")
+    # The image (plan 7.1 item 4). The constraints file is written to a temporary
+    # folder, since the run record does not exist yet (it is made after the frozen
+    # folder, which holds the image tag), and copied into it once it does (decision
+    # 32). The folder is removed however the start ends, and a removal that fails is
+    # said (R31-1).
+    # Any failure of the image step, Docker's or the file system's (a constraints or
+    # build-context write, the temporary folder itself), is the start's refusal, never
+    # a traceback (code review R30-1).
+    try:
+        work = Path(tempfile.mkdtemp(prefix="book-dragon-image-"))
+    except OSError as exc:
+        raise RunRefused([f"the check image: its temporary folder could not be made: "
+                          f"{exc}"]) from exc
+    try:
+        result = _with_image(ready, work, brief_arg, item, git_dir, root=root, deps=deps,
+                             log_path=log_path, runs_dir=runs_dir, inject=inject,
+                             dry_run=dry_run, wait=wait, python=python, baseline=baseline)
+    except RunRefused as refusal:
+        left = _remove_work(work)
+        if left:
+            refusal.args[0].append(left)
+        raise
+    except BaseException:
+        _remove_work(work)
+        raise
+    # The temporary folder holds no personal data and nothing later reuses, so a
+    # removal that fails does not stop a good start; it is said, never hidden (code
+    # review R31-1): printed, and recorded in a started run's cleanup list.
+    left = _remove_work(work)
+    if left:
+        print(f"WARNING: {left}", file=sys.stderr)
+        if result is not None:
+            result.state.setdefault("cleanup", []).append(
+                {"what": "the image step's temporary folder", "removed": False,
+                 "error": left})
+            try:
+                result.save()
+            except Exception as exc:  # noqa: BLE001 - the warning above says it
+                print(f"WARNING: that could not be recorded in the run: {exc}",
+                      file=sys.stderr)
+    return result
+
+
+def _remove_work(work):
+    """Remove the image step's temporary folder. Returns None, or what to say about a
+    folder that could not be removed."""
+    try:
+        container.remove_copy(work)
+        return None
+    except OSError as exc:
+        return (f"the image step's temporary folder {Path(work).as_posix()} could not "
+                f"be removed ({exc}); delete it by hand")
+
+
+def _with_image(ready, work, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir,
+                inject, dry_run, wait, python, baseline):
+    """The image step and, for a real start, the run's creation. Returns the Run, or
+    None for a dry run. The caller removes ``work`` however this ends."""
+    settings, brief = ready["settings"], ready["brief"]
+    try:
+        image = deps.prepare_image(root, python, work, dry_run=dry_run)
+    except (container.ContainerError, OSError) as exc:
+        why = (str(exc) if isinstance(exc, container.ContainerError)
+               else f"{type(exc).__name__}: {exc}")
+        raise RunRefused([f"the check image: {why}"]) from exc
+    if dry_run:
+        would = image["would"]
+        print(f"[DRY RUN] the read-only preflight checks passed "
+              f"({ready['reading'].summary()}), and the close-out verifier's "
+              f"clean-start check passed. {ready['docker_note']}. The check image "
+              f"{image['tag']}: "
+              + ({"reuse": "a real start would reuse it",
+                  "build": "a real start would build it"}.get(would, would))
+              + f". A real start would create a run record for item {item}, "
+              f"{settings['roles']['builder']} building and "
+              f"{settings['roles']['reviewer']} reviewing, with edit paths "
+              f"{', '.join(brief['edit_paths'])}, then build and review up to "
+              f"{settings['round_caps']['build_review']} round(s).", file=sys.stderr)
+        return None
+    return _create(ready, image, brief_arg, item, git_dir, root=root, deps=deps,
+                   log_path=log_path, runs_dir=runs_dir, inject=inject, wait=wait,
+                   python=python, baseline=baseline)
+
+
+def _create(ready, image, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir,
+            inject, wait, python, baseline):
+    settings, brief = ready["settings"], ready["brief"]
     started_ns = time.time_ns()
     # The run's frozen folder, made by the orchestrator for either builder before
     # anything else of the run exists (orchestrator isolation plan 6 item 1 and 7.1
@@ -1197,18 +1422,54 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
         public_head = worktree.git(root, "rev-parse", "HEAD").strip()
         frozen_dir = deps.setup_frozen(root, run_id, public_head=public_head,
                                        edit_paths=brief["edit_paths"],
-                                       builder=settings["roles"]["builder"])
+                                       builder=settings["roles"]["builder"],
+                                       image_tag=image["tag"])
     except (frozen_mod.FrozenError, worktree.GitError) as exc:
         raise RunRefused([str(exc)]) from exc
+    # create_run makes the folder, then writes its first state.json; a failure in
+    # between leaves a folder this attempt made, removed here with the frozen folder.
+    # A folder that was already there is never touched (code review R29-1).
+    run_folder = Path(runs_dir) / run_id
+    existed = run_folder.exists()
     try:
         run_dir = runrecord.create_run(run_id, runs_dir=runs_dir)
-    except BaseException:
+    except BaseException as exc:
         frozen_mod.remove(frozen_dir)
-        raise
-    if start_writes:
-        (run_dir / "start").mkdir(parents=True, exist_ok=True)
-        (run_dir / "start" / "check-writes.patch").write_text(
-            start_writes, encoding="utf-8", newline="\n")
+        if not isinstance(exc, Exception):
+            raise
+        problems = [f"the run record could not be made: {type(exc).__name__}: {exc}"]
+        if not existed and run_folder.exists():
+            try:
+                container.remove_copy(run_folder)
+            except OSError as gone:
+                problems.append(f"the half-made run record {run_folder.as_posix()} could "
+                                f"not be removed ({gone}); delete it by hand")
+        raise RunRefused(problems) from exc
+    try:
+        return _fill(ready, image, brief_arg, item, git_dir, run_dir, frozen_dir,
+                     started_ns, root=root, deps=deps, log_path=log_path, inject=inject,
+                     wait=wait, python=python, baseline=baseline)
+    except Exception as exc:
+        # Code review R28-1: anything failing between the run record's creation and
+        # its started entry would leave a half-made run no resume can continue. The
+        # start removes both folders it made and refuses, naming the cause and any
+        # folder it could not remove; the caller stops Docker as for any refusal.
+        problems = [f"the run record could not be completed: {type(exc).__name__}: {exc}"]
+        for what, folder in (("run record", run_dir), ("frozen folder", frozen_dir)):
+            try:
+                container.remove_copy(folder)
+            except OSError as gone:
+                problems.append(f"the half-made {what} {Path(folder).as_posix()} could "
+                                f"not be removed ({gone}); delete it by hand")
+        raise RunRefused(problems) from exc
+
+
+def _fill(ready, image, brief_arg, item, git_dir, run_dir, frozen_dir, started_ns, *,
+          root, deps, log_path, inject, wait, python, baseline):
+    """Fill a new run record and append its started entry. Returns the Run."""
+    settings, brief = ready["settings"], ready["brief"]
+    (run_dir / "image").mkdir()
+    shutil.copyfile(image["constraints"], run_dir / "image" / container.CONSTRAINTS_NAME)
     shutil.copyfile(Path(root) / brief_arg, run_dir / "brief.md")
     _write_json(run_dir / "settings.json", {**settings, "sdk_versions": sdk_versions()})
     heads = worktree.record_start(run_dir, root, brief["edit_paths"], git_dir)
@@ -1223,8 +1484,11 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
         "steps": [], "refusals": [], "readings": [], "live": {},
         "inject": {"step": inject, "fired": False} if inject else None,
         "baseline": baseline, "started_ns": started_ns, "usage_source": {},
-        "check_writes": (["start/check-writes.patch"] if start_writes else []),
+        "check_writes": [],
         "frozen_dir": Path(frozen_dir).as_posix(),
+        "image": {"tag": image["tag"], "built": image["built"]},
+        "docker": {"started_by_run": ready["docker_started"],
+                   "events": [_docker_event("start", ready["docker_note"])]},
         "step": "preflight",
     })
     run = Run(run_dir, state, settings, root=root, deps=deps, log_path=log_path,
@@ -1260,25 +1524,58 @@ def resume(run, rounds=None, dry_run=False):
     if reason is not None:
         raise RunRefused([f"Codex credits cannot be tracked: {reason} "
                           f"({reading.summary()}); the run is unchanged"])
+    # Docker, as a start has it (decision 31): the run's last end stopped it if the run
+    # had started it, and the checks after every builder turn need it. A real resume
+    # starts it if it is not running; a dry one only asks. A failure refuses the resume
+    # with the run unchanged.
+    started, note = _docker_at_start(run.deps, dry_run)
     if dry_run:
         # Every check above has run and nothing has changed (review finding R3-3).
         last_round = max([f["round"] for f in run.ledger.findings.values()] or [0])
         cap = last_round + rounds if rounds is not None else run.state["round_cap"]
         where = f"ended {last}" if status == sr.ENDED else f"paused {run.state.get('pause')}"
+        note = note.replace("a real start", "a real resume")
         print(f"[DRY RUN] would resume run {run.state['run_id']} ({where}) from its "
               f"last completed step {run.state['step']}; "
               f"next step {run.next_step()}; round cap {cap}; Codex credits {credits}; "
-              f"{reading.summary()}. Nothing was changed.", file=sys.stderr)
+              f"{reading.summary()}; {note}. Nothing was changed.", file=sys.stderr)
         return
-    sr.continue_run(run.state)
-    if rounds is not None:
-        last_round = max([f["round"] for f in run.ledger.findings.values()] or [0])
-        run.state["round_cap"] = last_round + rounds
-    run.state["credits"] = credits
-    run.note_codex(reading)
-    run.save()
-    _log("started", f"Run {run.state['run_id']} resumed from step {run.state['step']}.",
-         run.log_path)
+    # Anything failing between Docker's start and the resumed state being saved stops
+    # the Docker this resume started and refuses; the saved run is untouched, so it is
+    # still resumable (code review R29-2).
+    logged = False
+    try:
+        docker = run.state.setdefault("docker", {"started_by_run": False, "events": []})
+        # A stop that failed at the last end leaves the flag set, so the next end tries
+        # again; otherwise it is whether this resume started Docker.
+        docker["started_by_run"] = bool(docker.get("started_by_run")) or started
+        docker.setdefault("events", []).append(
+            _docker_event("resume", note.replace("this run", "this resume")))
+        sr.continue_run(run.state)
+        if rounds is not None:
+            last_round = max([f["round"] for f in run.ledger.findings.values()] or [0])
+            run.state["round_cap"] = last_round + rounds
+        run.state["credits"] = credits
+        run.note_codex(reading)
+        # The log line first, then the state: a log that cannot be written refuses the
+        # resume with nothing saved, rather than leaving a run saved as running that the
+        # next resume would refuse (the R30 exception-path audit).
+        _log("started", f"Run {run.state['run_id']} resumed from step "
+                        f"{run.state['step']}.", run.log_path)
+        logged = True
+        run.save()
+    except Exception as exc:
+        refusal = RunRefused([f"the resume could not be recorded: {type(exc).__name__}: "
+                              f"{exc}; the saved run is unchanged"])
+        if logged:
+            try:  # the started line is already there; say the resume did not happen
+                _log("failed", f"Run {run.state['run_id']} resume refused: its state "
+                               "could not be saved.", run.log_path)
+            except Exception:  # noqa: BLE001 - the refusal says what happened
+                pass
+        if started:
+            _stop_docker_after_refusal(run.deps, refusal)
+        raise refusal from exc
 
 
 def load(run_id, *, root=PROJECT_ROOT, deps=None, log_path=LOG_PATH,

@@ -14,15 +14,15 @@ builder's reach. It holds:
   the frozen files  ``codex_rules.FROZEN_MODULES`` and ``FROZEN_LISTS``, copied from
                     ``trusted/``, so they are the commit's too: the Codex hook and the
                     check helper run from here.
-  hook.json         the run id, edit paths, project root, builder provider and public
-                    head. The image tag is added with the image step (S6b).
+  hook.json         the run id, edit paths, project root, builder provider, public
+                    head and the image tag from the run's image step (plan 7.1 item 5).
   start-ignored.txt the ignore floor (plan 5.3), recorded once, at the start.
   tripwire/         ``sitecustomize.py``, a copy of ``tripwire.py`` (plan 7.8).
 
 ``setup`` refuses a folder that already exists and removes what it made if any part
 fails, so a start that is refused here leaves nothing behind. Nothing writes in the
 folder after ``setup`` except the Codex hook's decisions file and the check helper's
-calls file. Removing it by stop reason is S6b (plan 7.3).
+calls file. The run removes it at a stop reason a resume cannot continue (plan 7.3).
 """
 
 import json
@@ -35,7 +35,7 @@ import codex_rules
 import container
 
 FROZEN_PARENT = "book-dragon-orchestration"
-TRUSTED_DIR = "trusted"
+TRUSTED_DIR = checks_mod.TRUSTED_DIR  # one name: the checks after each turn read it
 TRIPWIRE_DIR = "tripwire"
 TRIPWIRE_FILE = "sitecustomize.py"
 ORCHESTRATOR = "workflows/review-orchestration"
@@ -58,9 +58,10 @@ def trusted_run_py(frozen):
     return Path(frozen) / TRUSTED_DIR / ORCHESTRATOR / "scripts" / "run.py"
 
 
-def hook_config(run_id, root, edit_paths, builder, public_head):
+def hook_config(run_id, root, edit_paths, builder, public_head, image_tag):
     return {"run_id": run_id, "edit_paths": list(edit_paths), "project_root": str(root),
-            "builder_provider": builder, "public_head": public_head}
+            "builder_provider": builder, "public_head": public_head,
+            "image_tag": image_tag}
 
 
 def populate(dest, scripts_dir, config_dir, config):
@@ -79,7 +80,7 @@ def populate(dest, scripts_dir, config_dir, config):
     return dest
 
 
-def setup(root, run_id, *, public_head, edit_paths, builder, temp_root=None):
+def setup(root, run_id, *, public_head, edit_paths, builder, image_tag, temp_root=None):
     """Make the run's frozen folder. Returns its path; raises FrozenError, having
     removed whatever it made, if any part cannot be done."""
     if not codex_rules.RUN_ID.match(run_id or ""):
@@ -105,7 +106,7 @@ def setup(root, run_id, *, public_head, edit_paths, builder, temp_root=None):
                                                   workflows=TRUSTED_CODE)
         code = trusted / ORCHESTRATOR
         populate(dest, code / "scripts", code / "config",
-                 hook_config(run_id, root, edit_paths, builder, public_head))
+                 hook_config(run_id, root, edit_paths, builder, public_head, image_tag))
         container.write_start_ignored(container.start_ignored(root),
                                       dest / codex_rules.START_IGNORED)
     except (checks_mod.TrustedCopyError, container.ContainerError, OSError,

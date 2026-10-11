@@ -109,14 +109,6 @@ def _tail(name, text):
     return f"--- {name} (last {OUTPUT_TAIL} of {len(text)} characters) ---\n{text[-OUTPUT_TAIL:]}"
 
 
-def _next_copy(run_id):
-    """The next unused copy folder for the run: one past the highest number there."""
-    parent = container.copy_dir(run_id, 0).parent
-    numbers = [int(path.name[5:]) for path in parent.glob("copy-*")
-               if path.name[5:].isdigit()] if parent.is_dir() else []
-    return container.copy_dir(run_id, max(numbers, default=0) + 1)
-
-
 def _record(folder, command, allowed, code, seconds):
     """Append the call's line. Non-ASCII is escaped, as every run record file is."""
     line = {"command": command if isinstance(command, str) else repr(command),
@@ -145,7 +137,7 @@ def run_check(command, folder=FOLDER, clock=time.monotonic):
         dest = None
         try:
             floor = container.read_start_ignored(Path(folder) / codex_rules.START_IGNORED)
-            dest = _next_copy(config["run_id"])
+            dest = container.next_copy(config["run_id"])
             container.make_copy(config["project_root"], dest, config["public_head"], floor)
             code, out, err = container.run_in_container(dest, shlex.split(trimmed),
                                                         config["image_tag"])

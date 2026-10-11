@@ -50,8 +50,8 @@ approver = _load("approver")
 codex_rules = _load("codex_rules")
 stopreasons = _load("stopreasons")
 providers = _load("providers")
+container = _load("container")  # checks imports container
 checks = _load("checks")
-container = _load("container")
 frozen = _load("frozen")
 CONFIG = WORKFLOW / "config"
 
@@ -64,7 +64,8 @@ def make_frozen(folder, root, edit_paths=("notes/",), run_id=None):
     folder.mkdir(parents=True)
     return frozen.populate(folder, SCRIPTS, CONFIG,
                            frozen.hook_config(run_id or folder.name, root, edit_paths,
-                                              "codex", "0" * 40))
+                                              "codex", "0" * 40,
+                                              "bookdragon-checks:0123456789ab"))
 
 try:
     from claude_agent_sdk import (AssistantMessage, PermissionResultAllow,

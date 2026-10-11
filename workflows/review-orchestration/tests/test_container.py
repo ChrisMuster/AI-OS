@@ -126,6 +126,42 @@ class DockerStateTests(DockerCase):
         # A poll every 2 s from 0 s; the 180 s check comes after the poll at 178 s.
         self.assertEqual(fake.calls.count(["info"]), 90)
 
+    def test_rejection_docker_this_call_started_is_stopped_when_the_engine_never_answers(self):
+        # Code review R26-2: the start succeeded, so the caller never learns it started
+        # Docker; the call stops it again itself, once, before it raises.
+        now = iter(range(0, 1000, 2))
+        fake = self.fake((["desktop", "status"], self.STATUS_STOPPED),
+                         (["info"], done(1)))
+        with self.assertRaisesRegex(container.ContainerError,
+                                    "within 180 s.*was stopped again"):
+            container.ensure_running(sleep=lambda _s: None, clock=lambda: next(now))
+        self.assertEqual(fake.calls.count(["desktop", "stop"]), 1)
+        self.assertEqual(fake.calls[-1], ["desktop", "stop"])
+
+    def test_rejection_an_info_that_times_out_also_stops_docker_again(self):
+        def info(_args):
+            raise container.ContainerError("`docker info` did not answer within 60 s")
+        fake = self.fake((["desktop", "status"], self.STATUS_STOPPED), (["info"], info))
+        with self.assertRaisesRegex(container.ContainerError,
+                                    "did not answer within 60 s.*was stopped again"):
+            container.ensure_running(sleep=lambda _s: None, clock=lambda: 0)
+        self.assertEqual(fake.calls[-1], ["desktop", "stop"])
+
+    def test_rejection_a_stop_that_fails_too_is_named(self):
+        now = iter(range(0, 1000, 2))
+        self.fake((["desktop", "status"], self.STATUS_STOPPED), (["info"], done(1)),
+                  (["desktop", "stop"], done(1, err="busy")))
+        with self.assertRaisesRegex(container.ContainerError,
+                                    "within 180 s.*could not be stopped again.*busy"):
+            container.ensure_running(sleep=lambda _s: None, clock=lambda: next(now))
+
+    def test_negative_a_start_that_failed_stops_nothing(self):
+        fake = self.fake((["desktop", "status"], self.STATUS_STOPPED),
+                         (["desktop", "start"], done(1, err="needs an update")))
+        with self.assertRaises(container.ContainerError):
+            container.ensure_running(sleep=lambda _s: None)
+        self.assertNotIn(["desktop", "stop"], fake.calls)
+
     def test_positive_stop_and_a_failed_stop(self):
         fake = self.fake()
         container.stop_docker()
@@ -812,6 +848,144 @@ class CopyPlaceTests(unittest.TestCase):
             os.chmod(dest / "obj", 0o444)
             container.remove_copy(dest)
             self.assertFalse(dest.exists())
+
+    def placed(self, tmp):
+        return mock.patch.object(container, "copy_dir",
+                                 lambda run_id, n: Path(tmp) / run_id / f"copy-{n}")
+
+    def test_positive_next_copy_is_one_past_the_highest_left(self):
+        # S6b: the loop's checks and the check helper share this numbering.
+        with tempfile.TemporaryDirectory() as tmp, self.placed(tmp):
+            self.assertEqual(container.next_copy("r"), Path(tmp) / "r" / "copy-1")
+            for name in ("copy-1", "copy-3", "copy-x"):
+                (Path(tmp) / "r" / name).mkdir(parents=True)
+            self.assertEqual(container.next_copy("r"), Path(tmp) / "r" / "copy-4")
+
+    def test_positive_remove_copies_removes_the_runs_whole_folder_only(self):
+        # Plan 7.3: at a stop reason a resume cannot continue.
+        with tempfile.TemporaryDirectory() as tmp, self.placed(tmp):
+            write(Path(tmp) / "r" / "copy-2" / "obj")
+            write(Path(tmp) / "other" / "copy-1" / "obj")
+            container.remove_copies("r")
+            container.remove_copies("never-made")  # nothing there is not an error
+            self.assertFalse((Path(tmp) / "r").exists())
+            self.assertTrue((Path(tmp) / "other" / "copy-1" / "obj").exists())
+
+
+class DockerFailedTests(unittest.TestCase):
+    """Code review R26-1: Docker's own failure inside `docker run` (exit 125 and a line
+    of its own starting "docker: ") is told apart from a check's own exit."""
+
+    def test_positive_dockers_own_error_is_docker_failing(self):
+        for err in ("docker: Cannot connect to the Docker daemon at npipe:x.\n",
+                    "Unable to find image 'x' locally\n"
+                    "docker: Error response from daemon: pull access denied.\n"):
+            with self.subTest(err=err):
+                self.assertTrue(container.docker_failed(125, err))
+
+    def test_negative_a_checks_own_exit_or_output_is_not(self):
+        for code, err in ((125, "my check gave up\n"), (125, ""), (125, None),
+                          (1, "docker: Cannot connect to the Docker daemon\n"),
+                          (125, "the word docker: inside a line\n")):
+            with self.subTest(code=code, err=err):
+                self.assertFalse(container.docker_failed(code, err))
+
+
+class CloneRetryTests(unittest.TestCase):
+    """Decision 30, S6b: the copy's ``git clone`` retries git being refused permission
+    to write one of its own object files, and fails at once on anything else."""
+
+    REFUSED = done(128, err="error: unable to write file .git/objects/ab/cdef: "
+                            "Permission denied\nfatal: cannot store pack file\n")
+
+    def clone(self, answers):
+        calls, slept = [], []
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "copy"
+
+            def run(argv, **kwargs):
+                calls.append(dest.exists())  # a failed attempt's clone is gone first
+                write(dest / "partial")
+                return answers.pop(0)
+            result = container._clone(Path(tmp) / "project", dest, run=run,
+                                      sleep=slept.append)
+        return result, calls, slept
+
+    def test_positive_a_refusal_that_clears_is_retried(self):
+        result, calls, slept = self.clone([self.REFUSED, done(0)])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(calls, [False, False])
+        # Decision 30's values written out, not read from the code (code review R29-3).
+        self.assertEqual(slept, [0.5])
+
+    def test_rejection_a_refusal_that_never_clears_fails_after_three_attempts(self):
+        # More refusals queued than attempts allowed, so the count is the code's own.
+        result, calls, slept = self.clone([self.REFUSED] * 6)
+        self.assertEqual(result.returncode, 128)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(slept, [0.5, 0.5])
+
+    def test_rejection_any_other_failure_fails_at_once(self):
+        for err in ("fatal: repository not found", "error: Permission denied"):
+            with self.subTest(err=err):
+                result, calls, slept = self.clone([done(128, err=err), done(0)])
+                self.assertEqual(result.returncode, 128)
+                self.assertEqual((len(calls), slept), (1, []))
+
+
+class PrepareImageTests(ImageCase):
+    """Plan 7.1 item 4 and R24-1 (S6b): the run's image step. The constraints file goes
+    to the given folder (decision 32); a dry run builds nothing and reports reuse,
+    build, or unknown while Docker is not running, asking only its status then."""
+
+    STATUS_RUNNING = DockerStateTests.STATUS_RUNNING
+    STATUS_STOPPED = DockerStateTests.STATUS_STOPPED
+
+    def prepare(self, **kwargs):
+        work = self.tmp / "work"
+
+        def constraints(python, dest):
+            write(Path(dest), b"alpha==1.0\n")
+            return Path(dest)
+        with mock.patch.object(container, "write_constraints", constraints), \
+                mock.patch.object(container, "host_trust_bundle", return_value=""):
+            return container.prepare_image(self.root, "py", work, **kwargs), work
+
+    def test_rejection_a_dry_run_with_docker_stopped_reports_unknown(self):
+        fake = self.fake((["desktop", "status"], self.STATUS_STOPPED))
+        result, work = self.prepare(dry_run=True)
+        self.assertEqual(result["would"], "unknown: Docker is not running")  # R29-3
+        self.assertTrue(result["tag"].startswith("bookdragon-checks:"))
+        self.assertEqual(fake.calls, [["desktop", "status"]])
+        self.assertTrue((work / "constraints.txt").is_file())
+
+    def test_positive_a_dry_run_reports_reuse_or_build_by_the_tag(self):
+        for code, would in ((0, "reuse"), (1, "build")):
+            with self.subTest(would=would):
+                fake = self.fake((["desktop", "status"], self.STATUS_RUNNING),
+                                 (["image", "inspect"], done(code)))
+                result, work = self.prepare(dry_run=True)
+                self.assertEqual(result["would"], would)
+                # The whole command (code review R31-2): Docker is asked about the tag
+                # the preview reports, which is the tag of these requirements and
+                # this constraints file (TagTests prove the hash itself).
+                self.assertEqual(result["tag"], container.image_tag(
+                    self.root, container.requirements_files(self.root),
+                    work / "constraints.txt", ""))
+                self.assertEqual(fake.calls, [["desktop", "status"],
+                                              ["image", "inspect", result["tag"]]])
+
+    def test_positive_a_real_start_builds_from_the_folder_it_was_given(self):
+        seen = []
+
+        def build(root, constraints, context):
+            seen.append((Path(constraints), Path(context)))
+            return "bookdragon-checks:abc", True
+        with mock.patch.object(container, "build_image", build):
+            result, work = self.prepare()
+        self.assertEqual(result, {"tag": "bookdragon-checks:abc", "built": True,
+                                  "constraints": work / "constraints.txt"})
+        self.assertEqual(seen, [(work / "constraints.txt", work / "context")])
 
 
 # ---------------------------------------------------------------------------

@@ -11,9 +11,11 @@ Four parts, standard library only:
   The image     ``requirements_files`` (the root requirements.txt with every file it
                 includes, resolved as pip resolves them, plus this workflow's own),
                 ``write_constraints`` (``pip freeze --exclude-editable`` from the
-                project .venv), ``image_tag`` (a hash over both) and ``build_image``,
+                project .venv), ``image_tag`` (a hash over both), ``build_image``,
                 which builds from a generated Dockerfile when the tag is absent and
-                then compares the image's package versions with the constraints.
+                then compares the image's package versions with the constraints, and
+                ``prepare_image``, a run's image step (a build, or a dry run's
+                preview).
   The copy      ``start_ignored`` (the ignore floor, recorded once at run start),
                 ``make_copy`` (a clone at the start commit with the live tracked and
                 unignored files over it, nothing on the floor, no link of any kind)
@@ -24,8 +26,8 @@ Four parts, standard library only:
 Every Docker command goes through ``docker()``, so the tests replace that one
 function. Every process started here runs on the host, so none is given the
 clean-copy marker; only the container gets it, with ``-e``. Built and tested in S4;
-the loop starts calling it in S6b and the check helper in S7 (the user's decision A,
-2026-10-07; decision 28).
+the loop calls it since S6b (Docker at a run's start, resume and end, the image step,
+and the checks after every builder turn) and the check helper from S7 (decision 28).
 """
 
 import hashlib
@@ -106,7 +108,12 @@ def docker_running():
 
 def ensure_running(sleep=time.sleep, clock=time.monotonic):
     """Start Docker Desktop if it is not running and wait for the engine. Returns
-    True if this call started it, False if it was already running."""
+    True if this call started it, False if it was already running.
+
+    A Docker Desktop this call started whose engine then never answers is stopped
+    again before the error is raised, and the error says whether that stop worked
+    (code review R26-2): the caller learns it started Docker only from a return value
+    it never gets, so it could not stop it itself."""
     if docker_running():
         return False
     started = docker(["desktop", "start"], timeout=START_TIMEOUT)
@@ -115,13 +122,24 @@ def ensure_running(sleep=time.sleep, clock=time.monotonic):
                              + ((started.stderr or started.stdout).strip() or
                                 f"exit {started.returncode}"))
     deadline = clock() + START_TIMEOUT
-    while True:
-        if docker(["info"], timeout=60).returncode == 0:
-            return True
-        if clock() >= deadline:
-            raise ContainerError(f"the Docker engine did not answer within "
-                                 f"{START_TIMEOUT} s of starting Docker Desktop")
-        sleep(POLL_SECONDS)
+    try:
+        while True:
+            if docker(["info"], timeout=60).returncode == 0:
+                return True
+            if clock() >= deadline:
+                raise ContainerError(f"the Docker engine did not answer within "
+                                     f"{START_TIMEOUT} s of starting Docker Desktop")
+            sleep(POLL_SECONDS)
+    except BaseException as exc:
+        try:
+            stop_docker()
+            outcome = "Docker Desktop, started by this call, was stopped again"
+        except ContainerError as stop_exc:
+            outcome = (f"Docker Desktop, started by this call, could not be stopped "
+                       f"again: {stop_exc}")
+        if isinstance(exc, ContainerError):
+            raise ContainerError(f"{exc}; {outcome}") from exc
+        raise
 
 
 def stop_docker():
@@ -352,6 +370,28 @@ def build_image(root, constraints, context_dir, trust=None):
     return tag, True
 
 
+UNKNOWN_IMAGE = "unknown: Docker is not running"
+
+
+def prepare_image(root, python, work_dir, *, dry_run=False):
+    """The run's image step (plan 7.1 item 4). Writes the constraints file into
+    ``work_dir`` (a temporary folder: decision 32), then for a real start builds the
+    image unless its tag exists and returns ``{"tag", "built", "constraints"}``. A dry
+    run builds nothing and returns ``{"tag", "would"}``, ``would`` being "reuse",
+    "build", or ``UNKNOWN_IMAGE`` while Docker is not running, since only the engine
+    can say whether the tag exists and a dry run never starts it (R24-1)."""
+    work_dir = Path(work_dir)
+    constraints = write_constraints(python, work_dir / CONSTRAINTS_NAME)
+    if dry_run:
+        files = requirements_files(root)
+        tag = image_tag(root, files, constraints, host_trust_bundle())
+        if not docker_running():
+            return {"tag": tag, "would": UNKNOWN_IMAGE}
+        return {"tag": tag, "would": "reuse" if image_exists(tag) else "build"}
+    tag, built = build_image(root, constraints, work_dir / "context")
+    return {"tag": tag, "built": built, "constraints": constraints}
+
+
 def _remove_unverified(staging, reason):
     """Remove an image whose version check did not pass, and raise saying whether
     the removal worked (code review R12-2). It never had the real tag, so it is
@@ -453,6 +493,32 @@ def _refuse_link_in_copy(dest, rel):
                                  + "/".join(parts[:i]))
 
 
+# Decision 30: on this machine git can be refused permission to write one of its own
+# object files in a new repository in the temp folder (most likely an antivirus scan
+# holding a just-written file). That one failure is retried; every other fails at once.
+OBJECT_WRITE_REFUSED = re.compile(r"unable to write file .*objects.*Permission denied",
+                                  re.IGNORECASE | re.DOTALL)
+CLONE_ATTEMPTS = 3
+CLONE_PAUSE = 0.5
+
+
+def _clone(root, dest, run=subprocess.run, sleep=time.sleep):
+    """``git clone`` of ``root`` into ``dest``, retried while git is refused permission
+    to write one of its own object files (decision 30). A failed attempt's partial
+    clone is removed before the next. Returns the last attempt's result."""
+    argv = ["git", "clone", "--quiet", "--no-hardlinks", "--config", "core.autocrlf=false",
+            "--config", "core.symlinks=false", str(root), str(dest)]
+    for attempt in range(1, CLONE_ATTEMPTS + 1):
+        result = run(argv, capture_output=True, encoding="utf-8", errors="replace",
+                     env=_host_env())
+        if (result.returncode == 0 or attempt == CLONE_ATTEMPTS
+                or not OBJECT_WRITE_REFUSED.search(result.stderr or "")):
+            return result
+        remove_copy(dest)
+        sleep(CLONE_PAUSE)
+    return result
+
+
 def make_copy(root, dest, public_head, floor):
     """A clean copy of the project for the container, at ``dest``: ``git clone`` at
     ``public_head``, then the live tree's tracked and unignored files over it and
@@ -481,11 +547,7 @@ def make_copy(root, dest, public_head, floor):
     # core.symlinks=false: a link in the start commit is checked out as a plain file
     # holding its target's path, so nothing in the copy can point anywhere (code
     # review R12-3); a file written over it stays inside the copy.
-    clone = subprocess.run(["git", "clone", "--quiet", "--no-hardlinks",
-                            "--config", "core.autocrlf=false",
-                            "--config", "core.symlinks=false", str(root), str(dest)],
-                           capture_output=True, encoding="utf-8", errors="replace",
-                           env=_host_env())
+    clone = _clone(root, dest)
     if clone.returncode != 0:
         raise ContainerError(f"git clone failed: {clone.stderr.strip()}")
     _git(dest, "checkout", "--quiet", public_head)
@@ -516,6 +578,22 @@ def copy_dir(run_id, n):
     return Path(tempfile.gettempdir()) / COPIES_DIR / run_id / f"copy-{n}"
 
 
+def next_copy(run_id):
+    """The next unused copy folder for the run: one past the highest number there. The
+    loop's checks after a builder turn and the check helper share it, so their copies
+    never collide."""
+    parent = copy_dir(run_id, 0).parent
+    numbers = [int(path.name[5:]) for path in parent.glob("copy-*")
+               if path.name[5:].isdigit()] if parent.is_dir() else []
+    return copy_dir(run_id, max(numbers, default=0) + 1)
+
+
+def remove_copies(run_id):
+    """Remove the run's whole copies folder, ``book-dragon-copies/<run-id>/`` (plan
+    7.3, at a stop reason a resume cannot continue)."""
+    remove_copy(copy_dir(run_id, 0).parent)
+
+
 def remove_copy(dest):
     """Remove a copy, read-only git objects included."""
     def writable(func, path, _exc):
@@ -535,6 +613,19 @@ def docker_path(copy):
     if _UNSAFE_PATH.search(text):
         raise ContainerError(f"the copy path holds a space or a quote: {text}")
     return text
+
+
+# Docker's own failure inside ``docker run`` (it cannot reach the daemon, cannot find the
+# image) exits 125 and reports on stderr in lines that start "docker:"; a check that
+# merely exits 125 does not write them (code review R26-1).
+DOCKER_RUN_FAILED = 125
+_DOCKER_OWN_ERROR = re.compile(r"^docker: ", re.MULTILINE)
+
+
+def docker_failed(code, err):
+    """Whether a ``run_in_container`` result is Docker failing to run the command,
+    rather than the command's own exit: exit 125 with Docker's own error line."""
+    return code == DOCKER_RUN_FAILED and bool(_DOCKER_OWN_ERROR.search(err or ""))
 
 
 def run_in_container(copy, argv, image, timeout=RUN_TIMEOUT):

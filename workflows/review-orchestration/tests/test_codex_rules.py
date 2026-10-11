@@ -47,8 +47,8 @@ approver = _load("approver")
 codex_rules = _load("codex_rules")
 providers = _load("providers")
 runrecord = _load("runrecord")
+container = _load("container")  # checks imports container
 checks = _load("checks")
-container = _load("container")
 frozen = _load("frozen")
 
 EDIT_PATHS = ["workflows/doc-sync-guard/", "notes/plan.md"]
@@ -692,7 +692,7 @@ class HookTests(unittest.TestCase):
         self.builder.frozen_dir.mkdir(parents=True)
         frozen.populate(self.builder.frozen_dir, SCRIPTS, CONFIG,
                         frozen.hook_config(RUN_ID, self.root, EDIT_PATHS, "codex",
-                                           "0" * 40))
+                                           "0" * 40, "bookdragon-checks:0123456789ab"))
         self.builder._freeze()  # the launch's own check finds it whole
         self.frozen = self.builder.frozen_dir
         self.decisions = self.frozen / "hook-decisions.jsonl"
@@ -734,7 +734,8 @@ class HookTests(unittest.TestCase):
         config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
         self.assertEqual(config, {"run_id": RUN_ID, "edit_paths": EDIT_PATHS,
                                   "project_root": str(self.root),
-                                  "builder_provider": "codex", "public_head": "0" * 40})
+                                  "builder_provider": "codex", "public_head": "0" * 40,
+                                  "image_tag": "bookdragon-checks:0123456789ab"})
         for name in codex_rules.FROZEN_MODULES:
             self.assertEqual((self.frozen / name).read_bytes(), (SCRIPTS / name).read_bytes())
 

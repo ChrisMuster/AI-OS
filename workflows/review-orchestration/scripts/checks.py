@@ -41,8 +41,13 @@ outside the project; ``trusted_host_checks`` runs them from there against the li
 project (``BOOK_DRAGON_ROOT``), with bytecode off, and reads their results: the
 targeted audit and doc-sync as above, ``personal_data`` (the file and the kind of
 each hit, never the matched text) and ``link_check`` (each dead link). Built in
-stage S3; the loop starts calling them in S6b (the user's decision A, 2026-10-07;
-decision 28).
+stage S3.
+
+After every builder turn (plan 7.2, stage S6b), ``run_all`` runs builder-written code
+only in the container: ``container_checks`` makes one clean copy, runs the close-out
+verifier (read-only) and each acceptance command in the run's image, and removes the
+copy; then ``trusted_host_checks`` runs the four host checks from the frozen folder's
+``trusted/``. A Docker or copy failure raises, and the run ends ``error``.
 """
 
 import io
@@ -54,7 +59,13 @@ import sys
 import tarfile
 from pathlib import Path
 
+import container
+
 CHECK_TIMEOUT = 1800
+# Names inside a run's frozen folder, as frozen.py and codex_rules.py give them; held
+# here too since frozen.py imports this module.
+TRUSTED_DIR = "trusted"
+START_IGNORED = "start-ignored.txt"
 EVIDENCE_TAIL = 1500
 PYTHON_NAMES = {"python", "python3", "py", "python.exe"}
 
@@ -111,13 +122,21 @@ def _inside(directory, edit_paths):
                for edit in edit_paths)
 
 
-def _close_out_result(root, python):
-    """The close-out verifier's JSON result, or (None, why it could not be read)."""
-    code, out, err = _run(root, [python, "workflows/close-out/scripts/run.py", "--json"])
+def _parse_close_out(code, out, err):
+    """A close-out run's JSON result, or (None, why it could not be read)."""
     try:
         return json.loads(out), None
     except ValueError:
         return None, (out + err).strip() or f"exit {code}"
+
+
+def _close_out_result(root, python, read_only=False):
+    """The close-out verifier's JSON result on the host, or (None, why it could not be
+    read). ``read_only`` passes ``--read-only``, so the verifier writes no log and no
+    result file (plan 4.1, 7.1 item 2)."""
+    code, out, err = _run(root, [python, "workflows/close-out/scripts/run.py", "--json",
+                                 *(["--read-only"] if read_only else [])])
+    return _parse_close_out(code, out, err)
 
 
 def _problems(result):
@@ -141,12 +160,14 @@ def _problems(result):
     return problems
 
 
-def close_out_start(root, python=None):
+def close_out_start(root, python=None, read_only=False):
     """The close-out verifier at the start of a run. A run starts only from a clean
     tree (the user's re-plan of R2-5 after R5-3, 2026-10-01): every gate passed and
     no scope skipped. Returns ``{"clean": bool, "status": ..., "problems": [...]}``;
-    a result that cannot be read is not clean."""
-    result, why = _close_out_result(root, python or sys.executable)
+    a result that cannot be read is not clean. The loop passes ``read_only=True``
+    for a real start and a dry run alike, so the check writes nothing (plan 7.1 item
+    2) and a dry run can make it."""
+    result, why = _close_out_result(root, python or sys.executable, read_only)
     if result is None:
         return {"clean": False, "status": "unreadable",
                 "problems": [f"the close-out verifier's result could not be read: "
@@ -155,10 +176,12 @@ def close_out_start(root, python=None):
     return {"clean": not problems, "status": result.get("status"), "problems": problems}
 
 
-def close_out(root, python):
+def close_out(root, python, result=None):
     """Every failed gate and every skipped scope is a finding. The run started from a
-    clean tree, so none of them predates it."""
-    result, why = _close_out_result(root, python)
+    clean tree, so none of them predates it. ``result`` is a ``(result, why)`` pair
+    already read (the container's run, plan 7.2); without it the verifier runs on the
+    host."""
+    result, why = result if result is not None else _close_out_result(root, python)
     if result is None:
         return ([_finding("close-out verifier did not run", "blocker", "(close-out)",
                           why, "Make the close-out verifier run and pass.")],
@@ -258,13 +281,16 @@ def audit(root, python, directories, trusted=None):
     return findings, lines
 
 
-def acceptance(root, python, commands):
+def acceptance(root, python, commands, runner=None):
+    """``runner`` takes an argv and returns (code, stdout, stderr): the container's
+    (plan 7.2), where ``python`` is the image's own interpreter. Without it each
+    command runs on the host, ``python`` swapped for the project's."""
     findings, lines = [], []
     for command in commands:
         argv = shlex.split(command)
         if argv and argv[0].lower() in PYTHON_NAMES:
             argv[0] = python
-        code, out, err = _run(root, argv)
+        code, out, err = runner(argv) if runner is not None else _run(root, argv)
         ok = code == 0
         lines.append(f"acceptance check {'PASS' if ok else 'FAIL'} "
                      f"(exit {code}): {command}")
@@ -435,12 +461,52 @@ def trusted_host_checks(root, python, trusted, edit_paths, directories, round_di
     return findings, "\n".join(lines)
 
 
-def run_all(root, edit_paths, directories, commands, python=None):
-    """Run the four checks. Returns (findings, text for the prompts and the report)."""
+CONTAINER_PYTHON = "python"
+CONTAINER_CLOSE_OUT = [CONTAINER_PYTHON, "workflows/close-out/scripts/run.py",
+                       "--read-only", "--json"]
+
+
+def container_checks(root, commands, *, run_id, frozen_dir, public_head, image):
+    """The checks that run builder-written code (plan 7.2 item 1): in the run's image,
+    offline, over one fresh clean copy at the run's public head with the start-of-run
+    ignore floor, the close-out verifier (read-only, default scope) and each
+    acceptance command, then the copy is removed. Returns (findings, lines). A Docker
+    or copy failure raises ``container.ContainerError``: it is not a finding the
+    builder could fix, so the run ends ``error`` (plan 7.2)."""
+    floor = container.read_start_ignored(Path(frozen_dir) / START_IGNORED)
+    dest = container.next_copy(run_id)
+    try:
+        container.make_copy(root, dest, public_head, floor)
+
+        def runner(argv):
+            code, out, err = container.run_in_container(dest, argv, image)
+            # Docker itself failing (exit 125 with its own error) is not a check
+            # result: the run ends error and resumes once Docker is back (R26-1).
+            if container.docker_failed(code, err):
+                raise container.ContainerError(
+                    f"Docker could not run `{' '.join(argv)}` in the container: "
+                    + " ".join(err.split())[-500:])
+            return code, out, err
+
+        found, lines = [], []
+        for part in (close_out(None, None, _parse_close_out(*runner(CONTAINER_CLOSE_OUT))),
+                     acceptance(None, CONTAINER_PYTHON, commands, runner=runner)):
+            found += part[0]
+            lines += part[1]
+    finally:
+        container.remove_copy(dest)
+    return found, lines
+
+
+def run_all(root, edit_paths, directories, commands, python=None, *, run_id, frozen_dir,
+            public_head, image, round_dir):
+    """The checks after every builder turn (plan 7.2): the container's (close-out and
+    the acceptance commands, over a clean copy), then the four trusted host checks
+    from the frozen folder's ``trusted/`` (targeted audit, doc-sync, personal-data
+    guard, link check). Returns (findings, text for the prompts and the report)."""
     python = python or sys.executable
-    findings, lines = [], []
-    for part in (close_out(root, python), doc_sync(root, python, edit_paths),
-                 audit(root, python, directories), acceptance(root, python, commands)):
-        findings += part[0]
-        lines += part[1]
-    return findings, "\n".join(lines)
+    found, lines = container_checks(root, commands, run_id=run_id, frozen_dir=frozen_dir,
+                                    public_head=public_head, image=image)
+    host, text = trusted_host_checks(root, python, Path(frozen_dir) / TRUSTED_DIR,
+                                     edit_paths, directories, round_dir)
+    return found + host, "\n".join(lines + ([text] if text else []))
