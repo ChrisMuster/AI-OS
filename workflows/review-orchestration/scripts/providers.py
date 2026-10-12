@@ -111,6 +111,13 @@ SERVER_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 # (milliseconds), given to the CLI's environment.
 CHECK_HELPER = "check_server.py"
 CHECK_TOOL_TIMEOUT_SECONDS = 1800
+# Decision 36 (plan 7.5): under approval policy `untrusted` Codex asks approval for
+# every MCP tool call with `mcpServer/elicitation/request`, which carries no call id to
+# match to the hook's decision line (proof run 1, 2026-10-12). The check helper's tools
+# are judged by the run's hook and by the helper itself, so Codex is told not to ask
+# for that server only; the launch reads the setting back, and a request that still
+# arrives ends the turn.
+CHECKS_APPROVAL = "approve"
 CLAUDE_MCP_ENV = {"MCP_TOOL_TIMEOUT": str(CHECK_TOOL_TIMEOUT_SECONDS * 1000)}
 # The tools the project's Claude rule hooks are registered for in
 # `.claude/settings.json`; the Claude builder's callback runs the trusted copy for
@@ -177,6 +184,14 @@ def _counting(listing, allowed=()):
     return [server for server in (listing or {}).get("data", [])
             if isinstance(server, dict) and server.get("name") not in allowed
             and (server.get("tools") or server.get("toolsError"))]
+
+
+def checks_approval(config):
+    """The check helper's `default_tools_approval_mode` as `config/read` reports it, or
+    None when the key, the server or the reply's shape is absent (decision 36)."""
+    servers = ((config or {}).get("config") or {}).get("mcp_servers")
+    entry = servers.get(CHECKS_SERVER) if isinstance(servers, dict) else None
+    return entry.get("default_tools_approval_mode") if isinstance(entry, dict) else None
 
 
 def counting_servers(listing, allowed=()):
@@ -663,6 +678,12 @@ class CodexBuilder:
         if search != "disabled":
             problems.append(f"web search is not switched off (web_search reads "
                             f"{search!r}), and a web search needs no approval")
+        approval = checks_approval(config)
+        if approval != CHECKS_APPROVAL:
+            problems.append(f"Codex does not report the check helper's approval setting "
+                            f"(default_tools_approval_mode reads {approval!r}, not "
+                            f"{CHECKS_APPROVAL!r}), so it would ask approval for each "
+                            "check, a request the run does not answer")
         extra = counting_servers(servers, allowed=(CHECKS_SERVER,))
         if extra:
             problems.append("an MCP server other than the check helper is in force: "
@@ -699,6 +720,7 @@ class CodexBuilder:
             "mcp_servers": server_record(servers),
             "self_test": "passed",
             "web_search": ((config or {}).get("config") or {}).get("web_search"),
+            "checks_approval": checks_approval(config),
             "thread": {"method": "resume" if self.resume is not None else "start",
                        "id": self._thread_id, "sandbox": reply.get("sandbox"),
                        "approvalPolicy": reply.get("approvalPolicy")},
@@ -717,7 +739,8 @@ class CodexBuilder:
             helper = _quotable(self.frozen_dir / CHECK_HELPER)
             checks_override = (f'mcp_servers.{CHECKS_SERVER}={{command="{python}", '
                                f'args=["{helper}"], '
-                               f'tool_timeout_sec={CHECK_TOOL_TIMEOUT_SECONDS}}}')
+                               f'tool_timeout_sec={CHECK_TOOL_TIMEOUT_SECONDS}, '
+                               f'default_tools_approval_mode="{CHECKS_APPROVAL}"}}')
             base = (hook_override, WEB_SEARCH_OFF, PLUGINS_OFF, APPS_OFF, checks_override)
             # Step 4: ask Codex for the hook's key and fingerprint, to supply its trust,
             # for the project hooks' keys, to switch them off (plan 7.6 item 2), and for

@@ -917,7 +917,20 @@ class FakeCodexClient:
                               "warnings": []}]}
         if method == "config/read":
             off = providers.WEB_SEARCH_OFF in self.overrides and world.search_off
-            return {"config": {"web_search": "disabled" if off else "live"}, "origins": {}}
+            config = {"web_search": "disabled" if off else "live"}
+            # As the config probe of 2026-10-12 showed (decision 36): the check helper's
+            # entry carries default_tools_approval_mode only when the launch sent it. A
+            # test may make Codex report something else (`report_approval`).
+            sent = [o for o in self.overrides if o.startswith("mcp_servers.checks=")]
+            if sent:
+                found = re.search(r'default_tools_approval_mode="([a-z]+)"', sent[0])
+                mode = (world.report_approval if world.report_approval != "as sent"
+                        else found.group(1) if found else None)
+                entry = {"command": "python", "enabled": True}
+                if mode is not None:
+                    entry["default_tools_approval_mode"] = mode
+                config["mcp_servers"] = {"checks": entry}
+            return {"config": config, "origins": {}}
         if method == "mcpServerStatus/list":
             return servers_listing(world.servers, self.overrides, world.keep_counting)
         if method in ("thread/start", "thread/resume"):
@@ -972,7 +985,8 @@ class CodexBuilderTests(unittest.TestCase):
             models=["gpt-6-sol", "gpt-6-astra"],
             thread_reply={"thread": {"id": THREAD}, "model": "gpt-6-sol",
                           "sandbox": dict(SANDBOX), "approvalPolicy": "untrusted"},
-            script=[], servers=builder_servers(), ignore_disable=False, keep_counting=())
+            script=[], servers=builder_servers(), ignore_disable=False, keep_counting=(),
+            report_approval="as sent")
         self.clients = []
         self.frozen = self.temp / providers.FROZEN_PARENT / RUN_ID
         self.decisions = self.frozen / "hook-decisions.jsonl"
@@ -1158,10 +1172,11 @@ class CodexBuilderTests(unittest.TestCase):
                 f'{python} {self.frozen.as_posix()}/codex_hook.py {RUN_ID}", '
                 'timeout=30}]}]')
         # Plan 7.5 and 7.6: plugins off, and the check helper from the frozen folder as
-        # the builder's one MCP server, with a call limit no shorter than a check's.
+        # the builder's one MCP server, with a call limit no shorter than a check's and
+        # Codex told not to ask approval for its tools (decision 36).
         checks = (f'mcp_servers.checks={{command="{python}", '
                   f'args=["{self.frozen.as_posix()}/check_server.py"], '
-                  'tool_timeout_sec=1800}')
+                  'tool_timeout_sec=1800, default_tools_approval_mode="approve"}')
         base = (hook, 'web_search="disabled"', "features.plugins=false",
                 "features.apps=false", checks)
         self.assertEqual(first.overrides, base)
@@ -1205,6 +1220,7 @@ class CodexBuilderTests(unittest.TestCase):
                                           "timeoutSec": 30, "matcher": ".*"})
         self.assertEqual(record["self_test"], "passed")
         self.assertEqual(record["web_search"], "disabled")
+        self.assertEqual(record["checks_approval"], "approve")  # live check 3
         self.assertEqual(record["thread"], {"method": "start", "id": THREAD,
                                             "sandbox": dict(SANDBOX),
                                             "approvalPolicy": "untrusted"})
@@ -1244,6 +1260,13 @@ class CodexBuilderTests(unittest.TestCase):
             ("no matcher reported", {"matcher": None},
              "the run's hook applies to None, not\\s+to every tool"),
             ("web search on", {"search_off": False}, "web search is not switched off"),
+            # Decision 36: Codex not reporting the check helper's approval setting, or
+            # reporting another value, is refused before any turn.
+            ("the approval setting not reported", {"report_approval": None},
+             "does not report the check helper's approval setting \\(default_tools_"
+             "approval_mode reads None"),
+            ("the approval setting reported as prompt", {"report_approval": "prompt"},
+             "default_tools_approval_mode reads 'prompt', not 'approve'"),
             # Plan 7.6 item 2: Codex not honouring the switch-off is refused.
             ("a project hook still on", {"ignore_disable": True},
              "the project's preToolUse hook \\('Bash'\\) is not switched off"),
@@ -1561,6 +1584,28 @@ class CodexBuilderTests(unittest.TestCase):
                    said_codex("unreached"), turn_done(),
                    reason="a request the orchestrator does not answer: "
                           "item/permissions/requestApproval")
+        self.assertEqual(replies, [{}])
+
+    def test_rejection_a_check_helper_approval_request_still_ends_the_turn(self):
+        # Decision 36: with the setting in force none should arrive, but one that does
+        # (a Codex that renamed or ignored it) is still not answered: the turn ends,
+        # even after the hook allowed the call. The request is as proof run 1 recorded.
+        builder = self.started()
+        replies = []
+        request = {"threadId": THREAD, "turnId": BUILD_TURN, "serverName": "checks",
+                   "mode": "form", "message": 'Allow the checks MCP server to run tool '
+                   '"run_check"?', "requestedSchema": {"type": "object", "properties": {}},
+                   "_meta": {"codex_approval_kind": "mcp_tool_call",
+                             "persist": ["session", "always"],
+                             "tool_params": {"command": "python -m py_compile x.py"}}}
+        self.ended(builder,
+                   self.decided("exec-1", "allow", tool="mcp__checks__run_check"),
+                   hook_done("exec-1"),
+                   lambda client: replies.append(client.handler(
+                       "mcpServer/elicitation/request", request)),
+                   said_codex("unreached"), turn_done(),
+                   reason="a request the orchestrator does not answer: "
+                          "mcpServer/elicitation/request")
         self.assertEqual(replies, [{}])
 
     def test_positive_refusals_are_kept_when_the_turn_fails(self):
