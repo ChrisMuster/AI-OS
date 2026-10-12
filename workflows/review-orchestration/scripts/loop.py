@@ -49,6 +49,7 @@ import asyncio
 import hashlib
 import importlib.metadata
 import json
+import os
 import re
 import shutil
 import statistics
@@ -161,6 +162,33 @@ def _read_codex_live(root, folder=None):
     finally:
         if empty is not None:
             shutil.rmtree(empty, ignore_errors=True)
+
+
+# What Codex answers when the usage reading is made inside its sandbox (probed on
+# 2026-10-12: the same reading from a Codex session failed sandboxed and read normally
+# with escalated permissions, and Codex gives both the same environment). A process a
+# Codex session starts carries CODEX_THREAD_ID; one started anywhere else does not.
+SANDBOX_AUTH_TEXT = "authentication required to read rate limits"
+CODEX_SESSION_ENV = "CODEX_THREAD_ID"
+
+
+def sandbox_refusal(reading, environ=None):
+    """The plain refusal for a Codex reading that failed because the run was started
+    inside a Codex session's sandbox, or None.
+
+    Codex gives a sandboxed command and an escalated one the same environment, so the
+    sandbox cannot be seen before the reading; its answer is the signal. Both halves are
+    required: the error text alone, outside a Codex session, is some other login
+    problem and keeps the ordinary refusal."""
+    environ = os.environ if environ is None else environ
+    if (reading.source != limits.UNAVAILABLE
+            or SANDBOX_AUTH_TEXT not in (reading.reason or "")
+            or not environ.get(CODEX_SESSION_ENV)):
+        return None
+    return ("the Codex usage reading was refused the Codex login "
+            f"({reading.summary()}): this was started from a Codex session inside "
+            "Codex's sandbox, where the login cannot be used; run the same command "
+            "again outside the sandbox (approve Codex's escalation when it asks)")
 
 
 def capture_problems(root, git_dir, python=None):
@@ -1331,6 +1359,9 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
         except Exception as exc:
             raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
                               f"{exc}"]) from exc
+        sandboxed = sandbox_refusal(reading)
+        if sandboxed is not None:
+            raise RunRefused([sandboxed])
         stop = limits.check_ceiling([reading], settings["usage_ceiling_percent"])
         if stop is not None:
             raise RunRefused([f"usage: {stop.reason} ({reading.summary()})"])
@@ -1579,6 +1610,9 @@ def resume(run, rounds=None, dry_run=False):
     except Exception as exc:
         raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
                           f"{exc}"]) from exc
+    sandboxed = sandbox_refusal(reading)
+    if sandboxed is not None:
+        raise RunRefused([f"{sandboxed}; the run is unchanged"])
     credits = credit_snapshot(reading)
     reason = untrackable(credits)
     if reason is not None:

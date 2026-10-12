@@ -916,6 +916,78 @@ class UsageTests(LoopCase):
         self.assertIn("Codex usage not reported: x", caught.exception.args[0][0])
         self.assertIn("the run is unchanged", caught.exception.args[0][0])
 
+    SANDBOXED = ("InvalidRequestError: JSON-RPC error -32600: codex account "
+                 "authentication required to read rate limits")
+
+    def sandboxed_reading(self, reason=SANDBOXED):
+        return limits.Reading(limits.CODEX, limits.UNAVAILABLE, reason=reason,
+                              raw={"rateLimits": {}})
+
+    def test_rejection_a_start_inside_codex_sandbox_is_refused_saying_so(self):
+        """The reading Codex answers inside its sandbox, in a process a Codex session
+        started (probed 2026-10-12), refuses the start naming the sandbox and the way
+        out, with nothing created, instead of "credits cannot be tracked". Docker starts
+        stopped, so the start launches it before the reading and the refusal must stop
+        it again (code review R1-1)."""
+        self.h.docker_up = False
+        self.h.readings = [self.sandboxed_reading()]
+        with mock.patch.dict(os.environ, {loop.CODEX_SESSION_ENV: "thread-1"}):
+            with self.assertRaises(loop.RunRefused) as caught:
+                self.start()
+        message = caught.exception.args[0][0]
+        self.assertIn("inside Codex's sandbox", message)
+        self.assertIn("run the same command again outside the sandbox", message)
+        self.assertIn("authentication required to read rate limits", message)
+        self.assertNotIn("credits cannot be tracked", message)
+        self.assertEqual(self.h.docker_calls, ["status", "start", "stop"])
+        self.assertFalse(self.h.docker_up)
+        self.assertFalse(self.runs.exists())
+
+    def test_rejection_a_resume_inside_codex_sandbox_is_refused_unchanged(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start(inject="build")
+        state = (run.run_dir / "state.json").read_bytes()
+        self.h.readings = [self.sandboxed_reading()]
+        with mock.patch.dict(os.environ, {loop.CODEX_SESSION_ENV: "thread-1"}):
+            with self.assertRaises(loop.RunRefused) as caught:
+                loop.resume(run)
+        message = caught.exception.args[0][0]
+        self.assertIn("inside Codex's sandbox", message)
+        self.assertTrue(message.endswith("; the run is unchanged"))
+        self.assertEqual((run.run_dir / "state.json").read_bytes(), state)
+
+    def test_negative_the_same_answer_outside_a_codex_session_keeps_the_old_refusal(self):
+        """Without a Codex session the error is some other login problem, so the
+        ordinary refusal, which names what Codex answered, stands."""
+        self.h.readings = [self.sandboxed_reading()]
+        with mock.patch.dict(os.environ):
+            os.environ.pop(loop.CODEX_SESSION_ENV, None)
+            with self.assertRaises(loop.RunRefused) as caught:
+                self.start()
+        message = caught.exception.args[0][0]
+        self.assertIn("credits cannot be tracked", message)
+        self.assertNotIn("sandbox", message)
+
+    def test_negative_another_failure_inside_a_codex_session_keeps_the_old_refusal(self):
+        self.h.readings = [self.sandboxed_reading(reason="TimeoutError: no answer")]
+        with mock.patch.dict(os.environ, {loop.CODEX_SESSION_ENV: "thread-1"}):
+            with self.assertRaises(loop.RunRefused) as caught:
+                self.start()
+        self.assertIn("credits cannot be tracked", caught.exception.args[0][0])
+        self.assertNotIn("sandbox", caught.exception.args[0][0])
+
+    def test_negative_sandbox_refusal_needs_an_unavailable_reading(self):
+        env = {loop.CODEX_SESSION_ENV: "thread-1"}
+        self.assertIsNotNone(loop.sandbox_refusal(self.sandboxed_reading(), env))
+        self.assertIsNone(loop.sandbox_refusal(reading(), env))
+        reported = limits.Reading(limits.CODEX, limits.REPORTED, percent=30,
+                                  reason=self.SANDBOXED)
+        self.assertIsNone(loop.sandbox_refusal(reported, env))
+        self.assertIsNone(loop.sandbox_refusal(self.sandboxed_reading(), {}))
+        self.assertIsNone(loop.sandbox_refusal(
+            self.sandboxed_reading(), {loop.CODEX_SESSION_ENV: ""}))
+
     def test_negative_no_credits_and_not_unlimited_needs_no_balance(self):
         self.h.readings = [reading(credits={"hasCredits": False, "unlimited": False})] * 3
         self.h.builder_script = [edit(self.root, "x\n")]
