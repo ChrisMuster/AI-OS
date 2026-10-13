@@ -72,7 +72,7 @@ def make_frozen(folder, root, edit_paths=("notes/",), run_id=None):
 try:
     from claude_agent_sdk import (AssistantMessage, PermissionResultAllow,
                                   PermissionResultDeny, ResultMessage, SystemMessage,
-                                  TextBlock)
+                                  TextBlock, ToolUseBlock)
     from claude_agent_sdk._internal.message_parser import parse_message
     HAVE_CLAUDE = True
 except ImportError:
@@ -122,6 +122,12 @@ def said(text, error=None):
     return AssistantMessage(content=[TextBlock(text=text)], model=MODEL, error=error)
 
 
+def used(tool, call_id):
+    """An assistant message holding one tool-use block, as the SDK yields it."""
+    return AssistantMessage(content=[ToolUseBlock(id=call_id, name=tool, input={})],
+                            model=MODEL)
+
+
 def result(text="final answer", session_id="sess-1", is_error=False, subtype="success",
            errors=None):
     return ResultMessage(subtype=subtype, duration_ms=1, duration_api_ms=1,
@@ -137,7 +143,10 @@ def hook_call(tool_name, tool_input):
 
 
 class FakeClaudeClient:
-    """Stands in for ClaudeSDKClient: records what it is given, replays messages."""
+    """Stands in for ClaudeSDKClient: records what it is given, replays messages. A
+    scripted item may be an async function, run where it stands (the PreToolUse callback
+    firing during the turn, as the SDK calls it), or an exception, raised there (a reply
+    stream that fails after it began); ``query_errors`` makes sending a prompt fail."""
 
     instances = []
 
@@ -145,6 +154,7 @@ class FakeClaudeClient:
         self.options = options
         self.prompts = []
         self.script = []
+        self.query_errors = []
         self.connected = False
         self.disconnected = False
         FakeClaudeClient.instances.append(self)
@@ -154,9 +164,16 @@ class FakeClaudeClient:
 
     async def query(self, prompt):
         self.prompts.append(prompt)
+        if self.query_errors:
+            raise self.query_errors.pop(0)
 
     async def receive_response(self):
         for message in self.script.pop(0):
+            if isinstance(message, BaseException):
+                raise message
+            if callable(message):
+                await message()
+                continue
             yield message
 
     async def disconnect(self):
@@ -196,6 +213,8 @@ class ClaudeBuilderTests(unittest.TestCase):
     def rule_hook(self, python, frozen_dir, ai, event, root, run_id, *, temp_root=None):
         self.rule_calls.append({"python": python, "frozen": frozen_dir, "ai": ai,
                                 "event": event, "root": root, "run_id": run_id})
+        if isinstance(self.rule_answer, BaseException):  # interrupted or failing (R49-2)
+            raise self.rule_answer
         return self.rule_answer
 
     def make(self, **kwargs):
@@ -375,7 +394,146 @@ class ClaudeBuilderTests(unittest.TestCase):
                          ("claude", RUN_ID, self.frozen, self.root))
         self.assertEqual(seen["event"]["tool_name"], "Write")
         self.assertEqual(seen["event"]["hook_event_name"], "PreToolUse")
-        self.assertEqual(self.builder.callback_calls, ["Write"])
+        self.assertEqual(self.builder.callback_calls,
+                         [{"tool": "Write", "id": "use-1", "decision": "allow"}])
+
+    # ------------------------------- the callback's record (decision 39)
+
+    def fires(self, tool, call_id, tool_input=None):
+        """A scripted step: the callback judging one call mid-turn, as the SDK calls
+        it before running the tool."""
+        builder = self.builder
+        return lambda: builder.pre_tool_use(
+            hook_call(tool, tool_input if tool_input is not None
+                      else {"file_path": "notes/a.md"}), call_id, None)
+
+    def test_positive_the_callback_records_name_id_and_decision(self):
+        self.rule_answer = None
+        asyncio.run(self.builder.pre_tool_use(
+            hook_call("Write", {"file_path": "notes/a.md"}), "w1", None))
+        asyncio.run(self.builder.pre_tool_use(
+            hook_call("Bash", {"command": "git status"}), "b1", None))
+        self.rule_answer = "BLOCKED: rule B3 says no"
+        asyncio.run(self.builder.pre_tool_use(
+            hook_call("Edit", {"file_path": "notes/a.md"}), "e1", None))
+        self.assertEqual(self.builder.callback_calls, [
+            {"tool": "Write", "id": "w1", "decision": "allow"},
+            {"tool": "Bash", "id": "b1", "decision": "deny"},
+            {"tool": "Edit", "id": "e1", "decision": "deny"}])
+
+    def test_positive_a_turn_records_its_calls_and_tool_uses_matching(self):
+        self.run_turns([init(), self.fires("Write", "t1"), used("Write", "t1"),
+                        self.fires("Read", "t2"), used("Read", "t2"), result()])
+        record = self.builder.callback_record()
+        self.assertEqual(record["judged"], [
+            {"tool": "Write", "id": "t1", "decision": "allow"},
+            {"tool": "Read", "id": "t2", "decision": "allow"}])
+        self.assertEqual(record["tool_uses"], [{"tool": "Write", "id": "t1"},
+                                               {"tool": "Read", "id": "t2"}])
+        self.assertEqual((record["not_judged"], record["not_in_transcript"],
+                          record["duplicate_ids"]), ([], [], []))
+
+    def test_rejection_a_tool_use_the_callback_never_saw(self):
+        self.run_turns([init(), self.fires("Write", "t1"), used("Write", "t1"),
+                        used("Read", "t2"), result()])
+        record = self.builder.callback_record()
+        self.assertEqual(record["not_judged"], [{"id": "t2", "tool": "Read"}])
+        self.assertEqual(record["not_in_transcript"], [])
+
+    def test_positive_each_turn_records_only_its_own_calls(self):
+        # R46-1: one session serves the build and the fix; each step's record holds
+        # only its own turn's calls.
+        records = []
+
+        async def go():
+            await self.builder.start()
+            client = FakeClaudeClient.instances[-1]
+            client.script = [
+                [init(), self.fires("Write", "b1"), used("Write", "b1"), result()],
+                [self.fires("Edit", "f1"), used("Edit", "f1"), result()]]
+            try:
+                for step in ("build", "fix-R1"):
+                    await self.builder.turn(step, "go")
+                    records.append(self.builder.callback_record())
+            finally:
+                await self.builder.close()
+        asyncio.run(go())
+        build, fix = records
+        self.assertEqual([c["id"] for c in build["judged"]], ["b1"])
+        self.assertEqual([u["id"] for u in build["tool_uses"]], ["b1"])
+        self.assertEqual([c["id"] for c in fix["judged"]], ["f1"])
+        self.assertEqual([u["id"] for u in fix["tool_uses"]], ["f1"])
+        for record in records:
+            self.assertEqual((record["not_judged"], record["not_in_transcript"],
+                              record["duplicate_ids"]), ([], [], []))
+
+    def failed_fix_record(self, fix_script, query_error=None):
+        """A build with one tool call, then a fix turn that fails; the fix's record."""
+        async def go():
+            await self.builder.start()
+            client = FakeClaudeClient.instances[-1]
+            client.script = [[init(), self.fires("Write", "b1"), used("Write", "b1"),
+                              result()], fix_script]
+            try:
+                await self.builder.turn("build", "go")
+                if query_error is not None:
+                    client.query_errors = [query_error]
+                with self.assertRaises(Exception):
+                    await self.builder.turn("fix-R1", "fix")
+                return self.builder.callback_record()
+            finally:
+                await self.builder.close()
+        return asyncio.run(go())
+
+    def test_rejection_a_fix_whose_prompt_cannot_be_sent_records_no_build_call(self):
+        # R47-1: the turn-local state is set before the prompt is sent.
+        record = self.failed_fix_record([], query_error=ConnectionError("send failed"))
+        self.assertEqual((record["judged"], record["tool_uses"], record["not_judged"],
+                          record["not_in_transcript"]), ([], [], [], []))
+
+    def test_rejection_a_fix_whose_reply_stream_fails_records_no_build_call(self):
+        record = self.failed_fix_record([init(), RuntimeError("stream broke")])
+        self.assertEqual((record["judged"], record["tool_uses"], record["not_judged"],
+                          record["not_in_transcript"]), ([], [], [], []))
+
+    def rate_limited(self, tool, call_id):
+        """An assistant message flagged as a usage limit that still carries a tool-use
+        block, a shape the SDK allows (R49-1)."""
+        return AssistantMessage(content=[ToolUseBlock(id=call_id, name=tool, input={})],
+                                model=MODEL, error="rate_limit")
+
+    def test_positive_a_rate_limited_message_keeps_its_tool_uses_in_the_record(self):
+        with self.assertRaises(limits.UsageLimitError):
+            self.run_turns([init(), self.fires("Write", "t1"),
+                            self.rate_limited("Write", "t1"), result()])
+        record = self.builder.callback_record()
+        self.assertEqual(record["tool_uses"], [{"tool": "Write", "id": "t1"}])
+        self.assertEqual((record["not_judged"], record["not_in_transcript"],
+                          record["undecided"]), ([], [], []))
+
+    def test_rejection_an_unjudged_call_in_a_rate_limited_message_is_not_hidden(self):
+        # Without collecting first, the failed turn would record no tool use and no
+        # judged call, an empty comparison that hides the call the callback never saw.
+        with self.assertRaises(limits.UsageLimitError):
+            self.run_turns([init(), self.rate_limited("Write", "t1"), result()])
+        self.assertEqual(self.builder.callback_record()["not_judged"],
+                         [{"id": "t1", "tool": "Write"}])
+
+    def test_rejection_an_interrupted_or_failing_callback_records_no_decision(self):
+        # R49-2: the callback gave the SDK no answer, so its record holds none.
+        for label, error in (("cancelled", asyncio.CancelledError()),
+                             ("failed", RuntimeError("rule hook crashed"))):
+            with self.subTest(label):
+                self.setUp()
+                self.rule_answer = error
+                with self.assertRaises(type(error)):
+                    asyncio.run(self.builder.pre_tool_use(
+                        hook_call("Write", {"file_path": "notes/a.md"}), "w1", None))
+                self.assertEqual(self.builder.callback_calls,
+                                 [{"tool": "Write", "id": "w1", "decision": "pending"}])
+                self.assertEqual(providers.callback_match(
+                    self.builder.callback_calls, [{"tool": "Write", "id": "w1"}])["undecided"],
+                    [{"id": "w1", "tool": "Write"}])
 
     def test_rejection_what_the_rule_hooks_block_is_denied_with_their_reason(self):
         self.rule_answer = "BLOCKED: rule B3 says no"
@@ -1933,6 +2091,55 @@ class MarkerTests(unittest.TestCase):
     def test_positive_the_marker_is_the_agents_md_clause(self):
         agents = (WORKFLOW.parent.parent / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn(f"`{providers.MARKER}`", agents)
+
+
+class CallbackMatchTests(unittest.TestCase):
+    """Decision 39 and R45-1: the comparison counts (id, tool) pairs on each side."""
+
+    def judged(self, *pairs):
+        return [{"tool": tool, "id": call_id, "decision": "allow"} for call_id, tool in pairs]
+
+    def uses(self, *pairs):
+        return [{"tool": tool, "id": call_id} for call_id, tool in pairs]
+
+    def test_positive_one_decision_per_call_matches(self):
+        self.assertEqual(providers.callback_match(self.judged(("a", "Write"), ("b", "Read")),
+                                                  self.uses(("b", "Read"), ("a", "Write"))),
+                         {"not_judged": [], "not_in_transcript": [], "duplicate_ids": [],
+                          "undecided": []})
+
+    def test_rejection_a_call_still_pending_is_undecided(self):
+        # R49-2: a callback that never returned leaves its call pending.
+        judged = self.judged(("a", "Write"))
+        judged[0]["decision"] = "pending"
+        match = providers.callback_match(judged, self.uses(("a", "Write")))
+        self.assertEqual(match["undecided"], [{"id": "a", "tool": "Write"}])
+        self.assertEqual((match["not_judged"], match["not_in_transcript"]), ([], []))
+
+    def test_rejection_the_same_call_recorded_twice(self):
+        match = providers.callback_match(self.judged(("a", "Write"), ("a", "Write")),
+                                         self.uses(("a", "Write")))
+        self.assertEqual(match["not_in_transcript"], [{"id": "a", "tool": "Write"}])
+        self.assertEqual(match["duplicate_ids"], ["a"])
+        self.assertEqual(match["not_judged"], [])
+
+    def test_rejection_an_id_recorded_under_another_tool(self):
+        match = providers.callback_match(self.judged(("a", "Read")),
+                                         self.uses(("a", "Write")))
+        self.assertEqual(match["not_judged"], [{"id": "a", "tool": "Write"}])
+        self.assertEqual(match["not_in_transcript"], [{"id": "a", "tool": "Read"}])
+        self.assertEqual(match["duplicate_ids"], [])
+
+    def test_rejection_a_call_with_no_decision_and_a_decision_with_no_call(self):
+        match = providers.callback_match(self.judged(("a", "Write"), ("x", "Bash")),
+                                         self.uses(("a", "Write"), ("b", "Read")))
+        self.assertEqual(match["not_judged"], [{"id": "b", "tool": "Read"}])
+        self.assertEqual(match["not_in_transcript"], [{"id": "x", "tool": "Bash"}])
+
+    def test_negative_an_empty_turn_matches(self):
+        self.assertEqual(providers.callback_match([], []),
+                         {"not_judged": [], "not_in_transcript": [], "duplicate_ids": [],
+                          "undecided": []})
 
 
 if __name__ == "__main__":

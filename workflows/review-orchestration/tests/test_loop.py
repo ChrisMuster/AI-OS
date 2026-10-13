@@ -230,6 +230,9 @@ class Harness:
         self.codex_totals = []
         # What a fake Codex builder reports as its launch record (11.2), per launch.
         self.launch_records = []
+        # Decision 39: what a fake Claude builder reports as each turn's callback
+        # record, one per turn; None gives the fake no callback_record at all.
+        self.callback_records = None
         # Orchestrator isolation S6b: a fake Docker and image step. No test starts or
         # stops the real Docker. ``docker_calls`` records every Docker action in order.
         self.docker_up = True
@@ -387,6 +390,8 @@ class FakeBuilder:
         self.frozen_dir = harness.frozen if harness.swapped else None
         self.refusals = []
         self.launch_record = None
+        if harness.callback_records is not None:
+            self.callback_record = lambda: harness.callback_records.pop(0)
 
     async def start(self):
         if self.harness.swapped and self.harness.launch_records:
@@ -3376,6 +3381,42 @@ class TodaysPairingTests(LoopCase):
         self.assertIn("You may read the code, but run no project code", review)
         self.assertNotIn("such as the tests", review)
         self.assertNotIn("cannot run anything", review)
+
+    # Decision 39: the Claude builder's callback record, one entry per step.
+    BUILD_RECORD = {"judged": [{"tool": "Write", "id": "b1", "decision": "allow"}],
+                    "tool_uses": [{"tool": "Write", "id": "b1"}], "not_judged": [],
+                    "not_in_transcript": [], "duplicate_ids": []}
+    FIX_RECORD = {"judged": [{"tool": "Edit", "id": "f1", "decision": "allow"}],
+                  "tool_uses": [{"tool": "Edit", "id": "f1"}], "not_judged": [],
+                  "not_in_transcript": [], "duplicate_ids": []}
+
+    def test_positive_each_claude_turn_stores_its_callback_record_with_its_step(self):
+        self.h.callback_records = [dict(self.BUILD_RECORD), dict(self.FIX_RECORD)]
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(run.state["live"]["claude_builder_callbacks"],
+                         [{"step": "build", **self.BUILD_RECORD},
+                          {"step": "fix-R1", **self.FIX_RECORD}])
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("- claude_builder_callbacks: ", report)
+
+    def test_positive_a_failed_claude_turn_still_stores_its_record(self):
+        def fails(prompt):
+            raise providers.ProviderError("the builder turn ended in error")
+        self.h.callback_records = [dict(self.BUILD_RECORD)]
+        self.h.builder_script = [fails]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertEqual(run.state["live"]["claude_builder_callbacks"],
+                         [{"step": "build", **self.BUILD_RECORD}])
+
+    def test_negative_a_builder_with_no_callback_record_adds_nothing(self):
+        self.h.builder_script = [edit(self.root, "done\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertNotIn("claude_builder_callbacks", run.state["live"])
 
 
 class TurnCheckTests(SwappedCase):

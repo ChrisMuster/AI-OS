@@ -668,7 +668,10 @@ class Run:
         a turn, ``worktree.TURN_RECORD_WRITES``), any change in either repository's git
         state, or any change to the frozen hook folder ends the run ``error``."""
         if not getattr(builder, "needs_turn_check", False):
-            return await builder.turn(step, prompt)
+            try:
+                return await builder.turn(step, prompt)
+            finally:
+                self._record_callbacks(step, builder)
         edit_paths, git_dir = self.state["edit_paths"], self.state["git_dir"]
         started = time.time()
         before = self.deps.inventory(self.root, git_dir, self.deps.category_a(self.root))
@@ -698,6 +701,14 @@ class Run:
         if failure is not None:
             raise failure
         return turn
+
+    def _record_callbacks(self, step, builder):
+        """A Claude builder's callback record for this step's turn (decision 39, live
+        check 4), stored in the run record whether the turn completed or failed."""
+        record = getattr(builder, "callback_record", None)
+        if callable(record):
+            self.state.setdefault("live", {}).setdefault(
+                "claude_builder_callbacks", []).append({"step": step, **record()})
 
     async def _close_builder(self):
         if self.builder is not None:

@@ -60,6 +60,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import codex_rules
@@ -192,6 +193,32 @@ def checks_approval(config):
     servers = ((config or {}).get("config") or {}).get("mcp_servers")
     entry = servers.get(CHECKS_SERVER) if isinstance(servers, dict) else None
     return entry.get("default_tools_approval_mode") if isinstance(entry, dict) else None
+
+
+PENDING = "pending"
+
+
+def callback_match(judged, tool_uses):
+    """Compare a Claude builder turn's judged calls with its tool-use blocks (decision
+    39). Pairs of ``(id, tool)`` are counted on each side, never ids alone (R45-1):
+    ``not_judged`` lists each pair the transcript holds more times than the callback
+    recorded it, ``not_in_transcript`` each pair the callback recorded more times than
+    the transcript holds it, ``duplicate_ids`` each id the callback recorded more than
+    once, and ``undecided`` each call whose callback never returned a decision, still
+    ``pending`` (R49-2). All four empty means one decision per tool call, under its own
+    name."""
+    seen = Counter((call.get("id"), call.get("tool")) for call in judged)
+    used = Counter((use.get("id"), use.get("tool")) for use in tool_uses)
+
+    def extra(more, less):
+        return [{"id": pair[0], "tool": pair[1]}
+                for pair in sorted(more, key=lambda p: (str(p[0]), str(p[1])))
+                for _ in range(more[pair] - less.get(pair, 0))]
+    ids = Counter(call.get("id") for call in judged)
+    return {"not_judged": extra(used, seen), "not_in_transcript": extra(seen, used),
+            "duplicate_ids": sorted((str(i) for i, n in ids.items() if n > 1)),
+            "undecided": [{"id": call.get("id"), "tool": call.get("tool")}
+                          for call in judged if call.get("decision") not in ("allow", "deny")]}
 
 
 def counting_servers(listing, allowed=()):
@@ -346,9 +373,13 @@ class ClaudeBuilder:
         self.session_id = resume
         self.stderr = []
         self.last_messages = []
-        # Every call the callback judged, in order, for live check 4 (the callback
-        # firing for every call with disableAllHooks set).
+        # Every call the callback judged, in order, as {"tool", "id", "decision"}, for
+        # live check 4 (the callback firing for every call with disableAllHooks set).
+        # It grows for the whole session; each turn's share starts at
+        # ``_turn_start`` (decision 39, R46-1).
         self.callback_calls = []
+        self._turn_start = 0
+        self._turn_tool_uses = []
 
     async def pre_tool_use(self, hook_input, tool_use_id, context):
         """A PreToolUse hook that puts every tool call past the approver, then the
@@ -367,7 +398,11 @@ class ClaudeBuilder:
         a timeout, a crash or an unreadable answer is a deny with that reason.
         """
         name, tool_input = hook_input.get("tool_name"), hook_input.get("tool_input")
-        self.callback_calls.append(name)
+        # Recorded as pending until the callback returns its answer (R49-2): a callback
+        # interrupted or failing while the rule hook runs gave the SDK no decision, and
+        # its record must not claim one.
+        judged = {"tool": name, "id": tool_use_id, "decision": PENDING}
+        self.callback_calls.append(judged)
         decision = self.approver.decide(name, tool_input)
         reason = None if decision.allowed else decision.reason
         if reason is None and name in CLAUDE_RULE_HOOK_TOOLS:
@@ -382,10 +417,22 @@ class ClaudeBuilder:
                     {"tool": name, "reason": reason,
                      "detail": text if len(text) <= 300 else text[:297] + "..."})
         if reason is None:
+            judged["decision"] = "allow"
             return {}
+        judged["decision"] = "deny"
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                        "permissionDecision": "deny",
                                        "permissionDecisionReason": reason}}
+
+    def callback_record(self):
+        """The current turn's callback record for the run record (decision 39): every
+        call the callback judged during the turn, every tool-use block the turn's
+        assistant messages held, and the comparison of the two (``callback_match``).
+        Built from the turn-local state alone, so an earlier turn never appears."""
+        judged = [dict(call) for call in self.callback_calls[self._turn_start:]]
+        tool_uses = [dict(use) for use in self._turn_tool_uses]
+        return {"judged": judged, "tool_uses": tool_uses,
+                **callback_match(judged, tool_uses)}
 
     async def can_use_tool(self, tool_name, tool_input, context):
         """The SDK's permission callback: the approver's answer, in SDK types. A second
@@ -433,6 +480,15 @@ class ClaudeBuilder:
 
     async def turn(self, name, prompt):
         """Send one prompt and collect the session's answer to it."""
+        # Every piece of turn-local state is set first, before anything that can raise
+        # (decision 39, R47-1): a turn that fails at any point records nothing of an
+        # earlier turn. The messages list is kept on the session as it grows, so a turn
+        # cut off by a usage limit or a provider failure still leaves its partial
+        # transcript for the run record.
+        messages, text, result, init_model = [], [], None, None
+        self.last_messages = messages
+        self._turn_start = len(self.callback_calls)
+        self._turn_tool_uses = []
         if self._client is None:
             raise ProviderError("the builder session has not been started")
         if not self._first_prompt_sent:
@@ -440,10 +496,6 @@ class ClaudeBuilder:
             self._first_prompt_sent = True
         started = time.time()
         await self._client.query(prompt)
-        messages, text, result, init_model = [], [], None, None
-        # Kept on the session as it grows, so a turn cut off by a usage limit or a
-        # provider failure still leaves its partial transcript for the run record.
-        self.last_messages = messages
         async for message in self._client.receive_response():
             messages.append(jsonable(message))
             kind = type(message).__name__
@@ -456,11 +508,18 @@ class ClaudeBuilder:
                                         f"requested {self.model!r}; a model is never "
                                         "substituted")
             elif kind == "AssistantMessage":
+                # Collected before any check on the message can raise (R49-1): a
+                # message flagged as a usage limit may still carry tool-use blocks, and
+                # a failed turn's record must hold them.
+                self._turn_tool_uses += [
+                    {"tool": block.name, "id": block.id}
+                    for block in getattr(message, "content", [])
+                    if type(block).__name__ == "ToolUseBlock"]
+                text += [block.text for block in getattr(message, "content", [])
+                         if type(block).__name__ == "TextBlock"]
                 hit = limits.claude_message_error(message)
                 if hit is not None:
                     raise hit
-                text += [block.text for block in getattr(message, "content", [])
-                         if type(block).__name__ == "TextBlock"]
             elif kind == "ResultMessage":
                 result = message
         if result is None:
