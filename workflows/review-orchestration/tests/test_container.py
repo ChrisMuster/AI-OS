@@ -207,6 +207,74 @@ class HostEnvTests(unittest.TestCase):
                 container.docker(["info"])
 
 
+class EmptyStdinTests(unittest.TestCase):
+    """Decision 37: every program the module starts gets an empty stdin, through
+    ``_start``. The check helper's own stdin is the MCP pipe, and a child inheriting it
+    held each check until the client closed the pipe (proof run 1, 2026-10-12)."""
+
+    PROCESS_FUNCTIONS = {"run", "Popen", "call", "check_call", "check_output",
+                         "getoutput", "getstatusoutput"}
+
+    def recorded(self, call):
+        """Run ``call`` with ``subprocess.run`` replaced by a recorder; the recorder
+        answers as each program would, so the call completes."""
+        seen = []
+
+        def record(argv, **options):
+            seen.append((argv, options))
+            if argv[1:2] == ["-c"]:
+                return done(out="[]")  # write_constraints' double-record probe
+            return done(out="pkg==1\n")
+        with mock.patch.object(container.subprocess, "run", side_effect=record):
+            call()
+        return seen
+
+    def test_positive_every_start_has_an_empty_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = {
+                "docker": lambda: container.docker(["info"]),
+                "_git": lambda: container._git(tmp, "status"),
+                "_clone": lambda: container._clone(Path(tmp) / "project",
+                                                   Path(tmp) / "copy"),
+                "write_constraints": lambda: container.write_constraints(
+                    Path("py"), Path(tmp) / "constraints.txt"),
+            }
+            for name, call in calls.items():
+                with self.subTest(name):
+                    seen = self.recorded(call)
+                    self.assertTrue(seen, f"{name} started no program")
+                    for argv, options in seen:
+                        self.assertIs(options.get("stdin"), subprocess.DEVNULL, argv)
+
+    def test_rejection_a_callers_own_stdin_is_overridden(self):
+        seen = self.recorded(lambda: container._start(["x"], stdin=None))
+        self.assertIs(seen[0][1]["stdin"], subprocess.DEVNULL)
+
+    def test_rejection_no_other_process_start_in_the_module(self):
+        # Read off the parse tree: outside ``_start``, no call to a ``subprocess``
+        # process function and no ``subprocess.run`` reference of any kind (a default
+        # argument bound to it, as ``_clone``'s once was, included), and no ``os``
+        # process start anywhere.
+        import ast
+        tree = ast.parse((SCRIPTS / "container.py").read_text(encoding="utf-8"))
+        start, = [node for node in tree.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "_start"]
+        inside = {id(node) for node in ast.walk(start)}
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+                continue
+            if (node.value.id == "subprocess" and node.attr in self.PROCESS_FUNCTIONS
+                    and id(node) not in inside):
+                found.append(f"subprocess.{node.attr} at line {node.lineno}")
+            if node.value.id == "os" and node.attr.startswith(
+                    ("system", "popen", "spawn", "exec", "posix_spawn", "startfile")):
+                found.append(f"os.{node.attr} at line {node.lineno}")
+        self.assertEqual(found, [])
+        self.assertIs(container._clone.__defaults__[0], container._start)
+        self.assertIs(container.write_constraints.__defaults__[0], container._start)
+
+
 # ---------------------------------------------------------------------------
 # The image
 # ---------------------------------------------------------------------------

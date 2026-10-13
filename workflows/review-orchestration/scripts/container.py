@@ -24,8 +24,12 @@ Four parts, standard library only:
                 process limits, the clean-copy marker, a list argv, never a shell.
 
 Every Docker command goes through ``docker()``, so the tests replace that one
-function. Every process started here runs on the host, so none is given the
-clean-copy marker; only the container gets it, with ``-e``. Built and tested in S4;
+function. Every program this module starts, Docker, git and pip alike, is started by
+``_start``, which gives it an empty stdin (decision 37): the check helper is a stdio
+MCP server, so an inherited stdin would be the MCP pipe, and a child holding it kept
+each check from answering until the client closed the pipe. Every process started
+here runs on the host, so none is given the clean-copy marker; only the container gets
+it, with ``-e``. Built and tested in S4;
 the loop calls it since S6b (Docker at a run's start, resume and end, the image step,
 and the checks after every builder turn) and the check helper from S7 (decision 28).
 """
@@ -71,6 +75,14 @@ def _host_env():
     return {k: v for k, v in os.environ.items() if k.upper() != CLEAN_COPY_ENV}
 
 
+def _start(argv, **options):
+    """Run one program and wait for it: ``subprocess.run`` with an empty stdin, always
+    (decision 37). The one process start in this module; every other function starts
+    programs through it, and a caller's own ``stdin`` is overridden."""
+    options["stdin"] = subprocess.DEVNULL
+    return subprocess.run(argv, **options)
+
+
 def docker(args, timeout=None, raise_timeout=False):
     """Run ``docker <args>`` on the host. The one place a Docker command is run.
 
@@ -78,8 +90,8 @@ def docker(args, timeout=None, raise_timeout=False):
     limit (code review R11-1), unless ``raise_timeout``: ``run_in_container`` takes
     the timeout itself, since it must then stop the container by name."""
     try:
-        return subprocess.run(["docker", *args], capture_output=True, encoding="utf-8",
-                              errors="replace", timeout=timeout, env=_host_env())
+        return _start(["docker", *args], capture_output=True, encoding="utf-8",
+                      errors="replace", timeout=timeout, env=_host_env())
     except OSError as exc:
         raise ContainerError(f"docker could not be run: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
@@ -90,8 +102,8 @@ def docker(args, timeout=None, raise_timeout=False):
 
 
 def _git(cwd, *args):
-    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True,
-                            encoding="utf-8", errors="surrogateescape", env=_host_env())
+    result = _start(["git", "-C", str(cwd), *args], capture_output=True,
+                    encoding="utf-8", errors="surrogateescape", env=_host_env())
     if result.returncode != 0:
         raise ContainerError(f"git {' '.join(args[:2])} failed: {result.stderr.strip()}")
     return result.stdout
@@ -197,7 +209,7 @@ _DOUBLE_RECORDS = (
     " if len(v) > 1)))\n")
 
 
-def write_constraints(python, dest, run=subprocess.run):
+def write_constraints(python, dest, run=_start):
     """Write ``pip freeze --exclude-editable`` from ``python`` (the project .venv's)
     to ``dest``. A constraint pins a package only when it is installed, so a
     Windows-only package in the freeze is never installed on Linux.
@@ -502,7 +514,7 @@ CLONE_ATTEMPTS = 3
 CLONE_PAUSE = 0.5
 
 
-def _clone(root, dest, run=subprocess.run, sleep=time.sleep):
+def _clone(root, dest, run=_start, sleep=time.sleep):
     """``git clone`` of ``root`` into ``dest``, retried while git is refused permission
     to write one of its own object files (decision 30). A failed attempt's partial
     clone is removed before the next. Returns the last attempt's result."""

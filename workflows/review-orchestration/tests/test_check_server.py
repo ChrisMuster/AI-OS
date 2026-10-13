@@ -475,6 +475,77 @@ class ServerTests(unittest.TestCase):
                  .read_text(encoding="utf-8").splitlines()]
         self.assertEqual((line["command"], line["allowed"]), ("git push", False))
 
+    # The stand-in steps for decision 37's test, appended to the frozen folder's copy of
+    # the real container.py: no git and no Docker, but the "check" starts, through the
+    # module's own process start, a program that reads its stdin to the end. With an
+    # inherited stdin that program would be reading the MCP pipe, and the call would
+    # not answer until the client closed it (proof run 1, 2026-10-12).
+    STAND_IN = (
+        "\n\n# --- test stand-ins (test_check_server.py, decision 37) ---\n"
+        "import sys as _sys\n"
+        "def copy_dir(run_id, n):\n"
+        "    return Path(__file__).resolve().parent.parent / 'copies' / run_id / f'copy-{n}'\n"
+        "def make_copy(root, dest, public_head, floor):\n"
+        "    Path(dest).mkdir(parents=True)\n"
+        "    return dest\n"
+        "def run_in_container(copy, argv, image, timeout=RUN_TIMEOUT):\n"
+        "    child = STARTER([_sys.executable, '-c', 'import sys; sys.stdin.read(); "
+        "print(\"stdin read to the end\")'], capture_output=True, encoding='utf-8',\n"
+        "        timeout=600)\n"
+        "    return child.returncode, child.stdout, child.stderr\n")
+
+    def call_helper_with_reading_child(self, starter="_start"):
+        """The real helper over a real stdio pipe, its container steps replaced by the
+        stand-ins. Returns ``{"reply": text}``, or ``{"timed_out": True}`` when no reply
+        came within 30 s; only in that case is an error while the client shuts the
+        held server down ignored (it is recorded as ``shutdown_error``)."""
+        source = (SCRIPTS / "container.py").read_text(encoding="utf-8")
+        (self.folder / "container.py").write_text(
+            source + self.STAND_IN.replace("STARTER", starter), encoding="utf-8",
+            newline="\n")
+        (self.folder / "start-ignored.txt").write_text(".env\n", encoding="utf-8",
+                                                       newline="\n")
+
+        outcome = {}
+
+        async def session():
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            params = StdioServerParameters(command=sys.executable,
+                                           args=[str(self.folder / "check_server.py")],
+                                           cwd=str(self.cwd))
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as client:
+                    await client.initialize()
+                    try:
+                        reply = await asyncio.wait_for(client.call_tool(
+                            "run_check", {"command": "python -m py_compile workflows/x.py"}),
+                            30)
+                        outcome["reply"] = reply.content[0].text
+                    except TimeoutError:
+                        outcome["timed_out"] = True
+        try:
+            asyncio.run(asyncio.wait_for(session(), 120))
+        except BaseException as exc:  # an exception group from the client's shutdown
+            if not outcome.get("timed_out"):
+                raise
+            outcome["shutdown_error"] = repr(exc)
+        return outcome
+
+    def test_positive_a_check_whose_program_reads_stdin_still_answers(self):
+        outcome = self.call_helper_with_reading_child()
+        self.assertNotIn("timed_out", outcome)
+        self.assertTrue(outcome["reply"].startswith("exit 0"), outcome["reply"])
+        self.assertIn("stdin read to the end", outcome["reply"])
+
+    def test_rejection_an_inherited_stdin_holds_the_reply(self):
+        # The same program started with the helper's own stdin, as every start was
+        # before decision 37: no reply comes within the 30 s limit. This is what the
+        # positive test above would see if `_start` lost its empty stdin.
+        outcome = self.call_helper_with_reading_child(starter="subprocess.run")
+        self.assertEqual(outcome.get("timed_out"), True, outcome)
+        self.assertNotIn("reply", outcome)
+
 
 if __name__ == "__main__":
     unittest.main()

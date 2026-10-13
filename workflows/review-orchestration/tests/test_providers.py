@@ -562,11 +562,14 @@ class CodexReviewerTests(unittest.TestCase):
     def setUp(self):
         self.frozen = Path(tempfile.gettempdir()) / providers.FROZEN_PARENT / RUN_ID
         self.wire = (self.frozen / "tripwire").as_posix()
+        # Another PYTHONPATH entry, a folder beside the run's (decision 38): no drive
+        # letter on Linux, so `os.pathsep` splits it as on Windows.
+        self.other = (self.frozen.parent / "other").as_posix()
         self.world = SimpleNamespace(
             project=project_hooks(), ignore_disable=False, honour_env=True,
             servers=[server("biblio-tools")], keep_counting=(),
             exec_reply={"exitCode": 0, "stderr": "",
-                        "stdout": f"{self.wire}{os.pathsep}C:/other\n"
+                        "stdout": f"{self.wire}{os.pathsep}{self.other}\n"
                                   f"{self.wire}/sitecustomize.py\n"})
         self.opened = []
 
@@ -617,7 +620,7 @@ class CodexReviewerTests(unittest.TestCase):
         self.assertEqual({e["enabled"] for e in record.launch["project_hooks"]}, {False})
 
     def test_rejection_each_reason_the_reviewer_does_no_review(self):
-        wire = self.wire
+        wire, other = self.wire, self.other
         cases = [
             ("a project hook still on", {"ignore_disable": True}, "is not switched off"),
             ("a plugin's server Codex does not switch off",
@@ -636,8 +639,8 @@ class CodexReviewerTests(unittest.TestCase):
              "self-test failed.*exited 1"),
             ("the tripwire not first",
              {"exec_reply": {"exitCode": 0,
-                             "stdout": f"C:/other{os.pathsep}{wire}\n{wire}/sitecustomize.py\n"}},
-             "PYTHONPATH starts 'C:/other', not the tripwire folder"),
+                             "stdout": f"{other}{os.pathsep}{wire}\n{wire}/sitecustomize.py\n"}},
+             f"PYTHONPATH starts '{re.escape(other)}', not the tripwire folder"),
             ("no sitecustomize loaded",
              {"exec_reply": {"exitCode": 0, "stdout": f"{wire}\n\n"}},
              "the sitecustomize it loaded is 'none'"),

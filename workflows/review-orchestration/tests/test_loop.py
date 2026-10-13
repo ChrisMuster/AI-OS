@@ -2293,12 +2293,16 @@ class TrustedCopyTests(LoopCase):
         # tripwire as sitecustomize. Run in a subprocess, so the audit hook it arms
         # never reaches this test process.
         run, folder = self.started()
+        # The entry already there, a folder in the test's own temporary directory
+        # (decision 38): no drive letter on Linux, so `os.pathsep` splits it as on
+        # Windows.
+        kept = str(self.elsewhere / "kept")
         code = (
             "import importlib.util, json, os, subprocess, sys\n"
             f"s = importlib.util.spec_from_file_location('run_under_test', r'{SCRIPTS / 'run.py'}')\n"
             "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
             "env = {k: v for k, v in os.environ.items() if k != 'BOOK_DRAGON_ROOT'}\n"
-            "env['PYTHONPATH'] = 'C:/kept'\n"
+            f"env['PYTHONPATH'] = r'{kept}'\n"
             f"problem = m.set_up_trusted(r'{folder}', env)\n"
             "child = subprocess.run([sys.executable, '-c', \"import sys; "
             "m = sys.modules.get('sitecustomize'); print(getattr(m, '__file__', ''))\"],"
@@ -2315,7 +2319,7 @@ class TrustedCopyTests(LoopCase):
         result = json.loads(done.stdout.strip().splitlines()[-1])
         self.assertIsNone(result["problem"])
         self.assertEqual(result["pythonpath"].split(os.pathsep),
-                         [str(folder / "tripwire"), "C:/kept"])
+                         [str(folder / "tripwire"), kept])
         self.assertTrue(os.path.samefile(result["child"],
                                          folder / "tripwire" / "sitecustomize.py"),
                         result["child_err"])
