@@ -1,6 +1,6 @@
 # Codex Rules
 
-**Last modified:** 2026-10-08
+**Last modified:** 2026-10-13
 
 ## Purpose
 Project-scoped Codex rules files: commands an interactive Codex session in this project may run outside its sandbox without an approval prompt. Codex reads every `*.rules` file here when the project is trusted.
@@ -23,9 +23,10 @@ N/A. This is a configuration directory, not a workflow.
 
 ## Known Issues
 - Measured on one machine and one Codex version (2026-10-04, the review-orchestration decision log, "Probes for fixes 5 and 1, and the live rules turn"): a live Codex applies a rule to the PowerShell-wrapped form it issues commands in on Windows, an allowed command runs outside the sandbox, and a `;`-joined command does not inherit the allow. `codex execpolicy check` does not unwrap the wrapper, so it cannot show the first of these; the test checks plain tokens only.
-- Only the `run` rule's shape was measured live, when it named `run.py`; the rules now name `start.py`, the same shape, and the starter rules have not yet been matched by a live Codex (the proof run after S7 does that).
+- The starter rules have been matched by a live Codex for `--run` and `--resume`: in the orchestrator isolation proof run (2026-10-13), from the VS Code Codex panel, a start, a dry resume and a real resume ran with no approval prompt and outside the sandbox. `--stop` has the same shape and has not been run from Codex.
 - A command allowed here runs with the user's full permissions. Widening the rules beyond these three modes is the user's decision.
 
 ## Revision History
 - 2026-10-04 - Initial creation, with `review-orchestration.rules` (the review-orchestration chunk (d) amendment, fix 1).
 - 2026-10-08 - The three rules name the starter, `start.py`, instead of `run.py` (orchestrator isolation stage S6a, plan 7.0 item 2).
+- 2026-10-13 - Known Issues: the starter rules are now shown matched by a live Codex for a start and a resume (the orchestrator isolation proof run); no rule changed.
