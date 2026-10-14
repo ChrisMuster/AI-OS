@@ -196,9 +196,25 @@ def checks_approval(config):
 
 
 PENDING = "pending"
+# The element Claude Code wraps its own refusal of a call in, a refusal made before any
+# PreToolUse hook runs (an Edit of a file not yet read, for one).
+TOOL_USE_ERROR = re.compile(r"<tool_use_error>.*?</tool_use_error>", re.DOTALL)
 
 
-def callback_match(judged, tool_uses):
+def tool_result_entry(block):
+    """A tool-result block as the callback record keeps it: its id, whether it is an
+    error, and whether its content holds a ``<tool_use_error>`` element."""
+    content = getattr(block, "content", None)
+    if isinstance(content, list):
+        content = "\n".join(str(part.get("text", "")) for part in content
+                            if isinstance(part, dict))
+    return {"id": getattr(block, "tool_use_id", None),
+            "is_error": getattr(block, "is_error", None) is True,
+            "tool_use_error": isinstance(content, str)
+            and TOOL_USE_ERROR.search(content) is not None}
+
+
+def callback_match(judged, tool_uses, tool_results=()):
     """Compare a Claude builder turn's judged calls with its tool-use blocks (decision
     39). Pairs of ``(id, tool)`` are counted on each side, never ids alone (R45-1):
     ``not_judged`` lists each pair the transcript holds more times than the callback
@@ -206,7 +222,12 @@ def callback_match(judged, tool_uses):
     the transcript holds it, ``duplicate_ids`` each id the callback recorded more than
     once, and ``undecided`` each call whose callback never returned a decision, still
     ``pending`` (R49-2). All four empty means one decision per tool call, under its own
-    name."""
+    name.
+
+    ``rejected_before_hook`` (plan 10.7) takes from ``not_judged`` each pair whose id
+    has, among ``tool_results`` (``tool_result_entry`` dicts), an error result holding
+    a ``<tool_use_error>`` element: a call Claude Code refused itself, before the hook,
+    so no callback could judge it. An error result of any other kind moves nothing."""
     seen = Counter((call.get("id"), call.get("tool")) for call in judged)
     used = Counter((use.get("id"), use.get("tool")) for use in tool_uses)
 
@@ -215,7 +236,12 @@ def callback_match(judged, tool_uses):
                 for pair in sorted(more, key=lambda p: (str(p[0]), str(p[1])))
                 for _ in range(more[pair] - less.get(pair, 0))]
     ids = Counter(call.get("id") for call in judged)
-    return {"not_judged": extra(used, seen), "not_in_transcript": extra(seen, used),
+    refused = {entry.get("id") for entry in tool_results
+               if entry.get("is_error") is True and entry.get("tool_use_error") is True}
+    unjudged = extra(used, seen)
+    return {"not_judged": [pair for pair in unjudged if pair["id"] not in refused],
+            "rejected_before_hook": [pair for pair in unjudged if pair["id"] in refused],
+            "not_in_transcript": extra(seen, used),
             "duplicate_ids": sorted((str(i) for i, n in ids.items() if n > 1)),
             "undecided": [{"id": call.get("id"), "tool": call.get("tool")}
                           for call in judged if call.get("decision") not in ("allow", "deny")]}
@@ -380,6 +406,8 @@ class ClaudeBuilder:
         self.callback_calls = []
         self._turn_start = 0
         self._turn_tool_uses = []
+        # The turn's tool-result blocks, as ``tool_result_entry`` dicts (plan 10.7).
+        self._turn_tool_results = []
 
     async def pre_tool_use(self, hook_input, tool_use_id, context):
         """A PreToolUse hook that puts every tool call past the approver, then the
@@ -427,12 +455,15 @@ class ClaudeBuilder:
     def callback_record(self):
         """The current turn's callback record for the run record (decision 39): every
         call the callback judged during the turn, every tool-use block the turn's
-        assistant messages held, and the comparison of the two (``callback_match``).
-        Built from the turn-local state alone, so an earlier turn never appears."""
+        assistant messages held, and the comparison of the two (``callback_match``),
+        with a call Claude Code refused before the hook in ``rejected_before_hook``
+        rather than ``not_judged``. Built from the turn-local state alone, so an
+        earlier turn never appears."""
         judged = [dict(call) for call in self.callback_calls[self._turn_start:]]
         tool_uses = [dict(use) for use in self._turn_tool_uses]
+        tool_results = [dict(entry) for entry in self._turn_tool_results]
         return {"judged": judged, "tool_uses": tool_uses,
-                **callback_match(judged, tool_uses)}
+                **callback_match(judged, tool_uses, tool_results)}
 
     async def can_use_tool(self, tool_name, tool_input, context):
         """The SDK's permission callback: the approver's answer, in SDK types. A second
@@ -489,6 +520,7 @@ class ClaudeBuilder:
         self.last_messages = messages
         self._turn_start = len(self.callback_calls)
         self._turn_tool_uses = []
+        self._turn_tool_results = []
         if self._client is None:
             raise ProviderError("the builder session has not been started")
         if not self._first_prompt_sent:
@@ -499,6 +531,13 @@ class ClaudeBuilder:
         async for message in self._client.receive_response():
             messages.append(jsonable(message))
             kind = type(message).__name__
+            # Tool results come back in user messages; collected from every message's
+            # blocks before any check on the message can raise (plan 10.7, as R49-1).
+            blocks = getattr(message, "content", None)
+            if isinstance(blocks, list):
+                self._turn_tool_results += [
+                    tool_result_entry(block) for block in blocks
+                    if type(block).__name__ == "ToolResultBlock"]
             if kind == "RateLimitEvent":
                 self.usage.observe(message)
             elif kind == "SystemMessage" and getattr(message, "subtype", None) == "init":

@@ -72,7 +72,8 @@ def make_frozen(folder, root, edit_paths=("notes/",), run_id=None):
 try:
     from claude_agent_sdk import (AssistantMessage, PermissionResultAllow,
                                   PermissionResultDeny, ResultMessage, SystemMessage,
-                                  TextBlock, ToolUseBlock)
+                                  TextBlock, ToolResultBlock, ToolUseBlock,
+                                  UserMessage)
     from claude_agent_sdk._internal.message_parser import parse_message
     HAVE_CLAUDE = True
 except ImportError:
@@ -126,6 +127,12 @@ def used(tool, call_id):
     """An assistant message holding one tool-use block, as the SDK yields it."""
     return AssistantMessage(content=[ToolUseBlock(id=call_id, name=tool, input={})],
                             model=MODEL)
+
+
+def returned(call_id, content, is_error=None):
+    """A user message holding one tool-result block, as the SDK yields it."""
+    return UserMessage(content=[ToolResultBlock(tool_use_id=call_id, content=content,
+                                                is_error=is_error)])
 
 
 def result(text="final answer", session_id="sess-1", is_error=False, subtype="success",
@@ -439,6 +446,44 @@ class ClaudeBuilderTests(unittest.TestCase):
         record = self.builder.callback_record()
         self.assertEqual(record["not_judged"], [{"id": "t2", "tool": "Read"}])
         self.assertEqual(record["not_in_transcript"], [])
+
+    # -------------------- calls Claude Code rejects before the hook (plan 10.7)
+
+    def test_positive_an_edit_claude_code_rejected_is_not_counted_unjudged(self):
+        # Claude Code refused the edit itself, before any PreToolUse hook ran, so the
+        # callback never saw it; the step's every call that ran was judged.
+        refusal = ("<tool_use_error>File has not been read yet. Read it first before "
+                   "writing to it.</tool_use_error>")
+        self.run_turns([init(), used("Edit", "e1"), returned("e1", refusal, is_error=True),
+                        self.fires("Write", "w1"), used("Write", "w1"),
+                        returned("w1", "File created"), result()])
+        record = self.builder.callback_record()
+        self.assertEqual(record["rejected_before_hook"], [{"id": "e1", "tool": "Edit"}])
+        self.assertEqual(record["not_judged"], [])
+        self.assertEqual(record["judged"], [{"tool": "Write", "id": "w1",
+                                             "decision": "allow"}])
+        self.assertEqual((record["not_in_transcript"], record["duplicate_ids"],
+                          record["undecided"]), ([], [], []))
+
+    def test_rejection_an_error_result_without_the_element_stays_not_judged(self):
+        # An error of any other kind is no evidence Claude Code refused the call before
+        # the hook, so the unjudged call is still reported as such.
+        self.run_turns([init(), used("Bash", "b1"),
+                        returned("b1", [{"type": "text", "text": "Exit code 1"}],
+                                 is_error=True), result()])
+        record = self.builder.callback_record()
+        self.assertEqual(record["not_judged"], [{"id": "b1", "tool": "Bash"}])
+        self.assertEqual(record["rejected_before_hook"], [])
+
+    def test_negative_a_turn_with_no_error_results_records_as_before(self):
+        self.run_turns([init(), self.fires("Write", "t1"), used("Write", "t1"),
+                        returned("t1", "ok", is_error=False), used("Read", "t2"),
+                        returned("t2", "text"), result()])
+        self.assertEqual(self.builder.callback_record(), {
+            "judged": [{"tool": "Write", "id": "t1", "decision": "allow"}],
+            "tool_uses": [{"tool": "Write", "id": "t1"}, {"tool": "Read", "id": "t2"}],
+            "not_judged": [{"id": "t2", "tool": "Read"}], "rejected_before_hook": [],
+            "not_in_transcript": [], "duplicate_ids": [], "undecided": []})
 
     def test_positive_each_turn_records_only_its_own_calls(self):
         # R46-1: one session serves the build and the fix; each step's record holds
@@ -2105,8 +2150,8 @@ class CallbackMatchTests(unittest.TestCase):
     def test_positive_one_decision_per_call_matches(self):
         self.assertEqual(providers.callback_match(self.judged(("a", "Write"), ("b", "Read")),
                                                   self.uses(("b", "Read"), ("a", "Write"))),
-                         {"not_judged": [], "not_in_transcript": [], "duplicate_ids": [],
-                          "undecided": []})
+                         {"not_judged": [], "rejected_before_hook": [],
+                          "not_in_transcript": [], "duplicate_ids": [], "undecided": []})
 
     def test_rejection_a_call_still_pending_is_undecided(self):
         # R49-2: a callback that never returned leaves its call pending.
@@ -2138,8 +2183,8 @@ class CallbackMatchTests(unittest.TestCase):
 
     def test_negative_an_empty_turn_matches(self):
         self.assertEqual(providers.callback_match([], []),
-                         {"not_judged": [], "not_in_transcript": [], "duplicate_ids": [],
-                          "undecided": []})
+                         {"not_judged": [], "rejected_before_hook": [],
+                          "not_in_transcript": [], "duplicate_ids": [], "undecided": []})
 
 
 if __name__ == "__main__":
