@@ -10,13 +10,16 @@ project goes through here (orchestrator isolation plan 7.0 items 2 and 3, stage 
                                     loads are committed, then runs run.py.
   start.py --resume <run-id> ...    No git check: a paused run is expected to have the
   start.py --stop <run-id> ...      builder's uncommitted edits. Refuses unless the run
-                                    id has the run-record form, its frozen folder holds
-                                    hook.json and the trusted run.py, and hook.json's
+  start.py --approve <run-id> ...   id has the run-record form, its frozen folder holds
+  start.py --amend <run-id> ...     hook.json and the trusted run.py, and hook.json's
                                     project_root is this project; then runs that
                                     trusted run.py, which loads nothing from the live
                                     tree. Everything after the run id is passed on
                                     unchanged, and the trusted run.py alone decides
-                                    which options are valid.
+                                    which options are valid. Approve and amend (plan
+                                    10.3 steps 6 and 8, A3) act on a run paused for
+                                    plan approval, so they take the same route; their
+                                    own checks are the trusted run.py's.
 
 A start or brief check also refuses a ``BOOK_DRAGON_ROOT`` naming any project but this
 one, since run.py would work on the project it names, which nothing here checked; for a
@@ -50,7 +53,11 @@ BRIEF_FOLDERS = ("workflows/review-orchestration", "workflows/sync-architecture/
 STARTER_MARKER = "BOOK_DRAGON_REVIEW_ORCHESTRATION_STARTER"
 ROOT_ENV = "BOOK_DRAGON_ROOT"
 USAGE = ("usage: start.py --run <brief> ... | --check-brief <brief> | "
-         "--resume <run-id> ... | --stop <run-id> ...")
+         "--resume <run-id> ... | --stop <run-id> ... | --approve <run-id> ... | "
+         "--amend <run-id> <revised-brief> ...")
+# The modes that act on an existing run through its trusted copy (plan 7.0 item 3, and
+# A3's approve and amend, plan 10.3 step 8).
+TRUSTED_MODES = ("--resume", "--stop", "--approve", "--amend")
 
 
 class Refused(Exception):
@@ -135,7 +142,7 @@ def command_for(argv, root=ROOT, temp_root=None, python=None, environ=None):
     environ = os.environ if environ is None else environ
     mode = argv[0]
     python = str(python or venv_python(root))
-    if mode in ("--resume", "--stop"):
+    if mode in TRUSTED_MODES:
         if len(argv) < 2:
             raise Refused(f"{mode} needs a run id. {USAGE}")
         trusted = trusted_target(argv[1], root, temp_root)
@@ -168,7 +175,7 @@ def main(argv=None, *, root=ROOT, temp_root=None, python=None, runner=subprocess
         print(f"REFUSED: {exc}")
         return REFUSED
     env = dict(environ, **{STARTER_MARKER: "1"})
-    if argv[0] in ("--resume", "--stop"):
+    if argv[0] in TRUSTED_MODES:
         # The trusted copy writes no bytecode cache in its frozen folder (code review
         # R20-1); it also turns that off itself, so this is a second layer.
         env["PYTHONDONTWRITEBYTECODE"] = "1"

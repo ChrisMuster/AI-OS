@@ -231,16 +231,26 @@ class ResumeStopTests(StarterCase):
         for argv in (["--resume", RUN_ID], ["--resume", RUN_ID, "--rounds", "2"],
                      ["--resume", RUN_ID, "--wait"], ["--resume", RUN_ID, "--dry-run"],
                      ["--stop", RUN_ID], ["--stop", RUN_ID, "--dry-run"],
-                     ["--resume", RUN_ID, "--no-such-option"]):
+                     ["--resume", RUN_ID, "--no-such-option"],
+                     ["--approve", RUN_ID], ["--approve", RUN_ID, "--dry-run"],
+                     ["--amend", RUN_ID, "revised.md"],
+                     ["--amend", RUN_ID, "revised.md", "--dry-run"]):
             with self.subTest(argv=argv):
                 self.assertEqual(self.handed(argv), [str(self.python), str(trusted), *argv])
+
+    def test_positive_the_trusted_route_is_exactly_the_four_modes(self):
+        # A3 (plan 10.3 step 8): approve and amend act on a paused run, so they take
+        # resume's and stop's route and no other; a start or brief check never does.
+        self.assertEqual(start.TRUSTED_MODES,
+                         ("--resume", "--stop", "--approve", "--amend"))
 
     def test_positive_resume_and_stop_ask_for_no_bytecode_and_a_start_does_not(self):
         # Code review R20-1: the trusted copy runs from the frozen folder, where no
         # bytecode cache may be written; the live run.py at a start is not there.
         self.make_frozen()
         for argv, wanted in ((["--resume", RUN_ID], "1"), (["--stop", RUN_ID], "1"),
-                             (RUN_ARGS, None)):
+                             (["--approve", RUN_ID], "1"),
+                             (["--amend", RUN_ID, "revised.md"], "1"), (RUN_ARGS, None)):
             with self.subTest(mode=argv[0]):
                 self.assertEqual(self.main(argv), 0)
                 (command, cwd, env), = self.calls
@@ -264,10 +274,16 @@ class ResumeStopTests(StarterCase):
                        ""):
             with self.subTest(run_id=run_id):
                 self.refused(["--resume", run_id], "not a run id")
+                self.refused(["--approve", run_id], "not a run id")
+                self.refused(["--amend", run_id, "revised.md"], "not a run id")
         self.refused(["--stop"], "needs a run id")
+        self.refused(["--approve"], "needs a run id")
+        self.refused(["--amend"], "needs a run id")
 
     def test_rejection_a_missing_frozen_folder_or_trusted_copy(self):
         self.refused(["--resume", RUN_ID], "no frozen folder")
+        self.refused(["--approve", RUN_ID], "no frozen folder")
+        self.refused(["--amend", RUN_ID, "revised.md"], "no frozen folder")
         trusted = self.make_frozen()
         trusted.unlink()
         self.refused(["--stop", RUN_ID], "no frozen folder")
