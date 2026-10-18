@@ -14,15 +14,20 @@ builder's reach. It holds:
   the frozen files  ``codex_rules.FROZEN_MODULES`` and ``FROZEN_LISTS``, copied from
                     ``trusted/``, so they are the commit's too: the Codex hook and the
                     check helper run from here.
-  hook.json         the run id, edit paths, project root, builder provider, public
-                    head and the image tag from the run's image step (plan 7.1 item 5).
+  hook.json         the run id, project root, builder provider and public head. Since
+                    A3 it holds neither the edit paths nor the image tag (plan 10.3
+                    step 6): a resume during planning reads only ``project_root``.
+  approval.json     the approved edit paths and the image tag, written by
+                    ``write_approval`` at approval, never at setup.
   start-ignored.txt the ignore floor (plan 5.3), recorded once, at the start.
   tripwire/         ``sitecustomize.py``, a copy of ``tripwire.py`` (plan 7.8).
 
 ``setup`` refuses a folder that already exists and removes what it made if any part
 fails, so a start that is refused here leaves nothing behind. Nothing writes in the
-folder after ``setup`` except the Codex hook's decisions file and the check helper's
-calls file. The run removes it at a stop reason a resume cannot continue (plan 7.3).
+folder after ``setup`` except three named writes: ``approval.json``, created once and
+exclusively by ``write_approval`` and never rewritten, and the two record files, the
+Codex hook's decisions file and the check helper's calls file. The run removes the
+folder at a stop reason a resume cannot continue (plan 7.3).
 """
 
 import json
@@ -58,10 +63,34 @@ def trusted_run_py(frozen):
     return Path(frozen) / TRUSTED_DIR / ORCHESTRATOR / "scripts" / "run.py"
 
 
-def hook_config(run_id, root, edit_paths, builder, public_head, image_tag):
-    return {"run_id": run_id, "edit_paths": list(edit_paths), "project_root": str(root),
-            "builder_provider": builder, "public_head": public_head,
-            "image_tag": image_tag}
+def hook_config(run_id, root, builder, public_head):
+    """``hook.json``: everything the frozen folder's programs need except the edit paths
+    and the image tag, which ``approval.json`` alone holds (plan 10.3 step 6)."""
+    return {"run_id": run_id, "project_root": str(root), "builder_provider": builder,
+            "public_head": public_head}
+
+
+def write_approval(dest, edit_paths, image_tag):
+    """Write ``<frozen folder>/approval.json`` (plan 10.3 step 6): exactly the approved
+    edit paths and the image tag, created exclusively, so a second write fails rather
+    than replacing the first. Returns its path; raises FrozenError naming the cause,
+    including a file that already exists."""
+    paths = list(edit_paths or ())
+    if not paths or not all(isinstance(item, str) and item.strip() for item in paths):
+        raise FrozenError("approval.json needs at least one edit path")
+    if not isinstance(image_tag, str) or not image_tag.strip():
+        raise FrozenError("approval.json needs the check image's tag")
+    path = Path(dest) / codex_rules.APPROVAL_FILE
+    text = json.dumps({"edit_paths": paths, "image_tag": image_tag}, indent=1) + "\n"
+    try:
+        with open(path, "x", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+    except FileExistsError as exc:
+        raise FrozenError(f"{path.as_posix()} already exists; it is written once and "
+                          "never rewritten") from exc
+    except OSError as exc:
+        raise FrozenError(f"{path.as_posix()} could not be written: {exc}") from exc
+    return path
 
 
 def populate(dest, scripts_dir, config_dir, config):
@@ -80,7 +109,7 @@ def populate(dest, scripts_dir, config_dir, config):
     return dest
 
 
-def setup(root, run_id, *, public_head, edit_paths, builder, image_tag, temp_root=None):
+def setup(root, run_id, *, public_head, builder, temp_root=None):
     """Make the run's frozen folder. Returns its path; raises FrozenError, having
     removed whatever it made, if any part cannot be done."""
     if not codex_rules.RUN_ID.match(run_id or ""):
@@ -106,7 +135,7 @@ def setup(root, run_id, *, public_head, edit_paths, builder, image_tag, temp_roo
                                                   workflows=TRUSTED_CODE)
         code = trusted / ORCHESTRATOR
         populate(dest, code / "scripts", code / "config",
-                 hook_config(run_id, root, edit_paths, builder, public_head, image_tag))
+                 hook_config(run_id, root, builder, public_head))
         container.write_start_ignored(container.start_ignored(root),
                                       dest / codex_rules.START_IGNORED)
     except (checks_mod.TrustedCopyError, container.ContainerError, OSError,

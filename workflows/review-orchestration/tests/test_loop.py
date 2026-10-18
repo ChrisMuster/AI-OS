@@ -228,6 +228,9 @@ class Harness:
         # A Codex builder's thread totals, one per turn, as the real one reports a
         # running total (the chunk (d) short plan, 11.3); 700 each when not given.
         self.codex_totals = []
+        # A3 chunk 1: a fake Codex builder's whole usage per turn, where a test needs its
+        # input, cached and output counts; {"total": {"totalTokens": <total>}} if not.
+        self.codex_usages = []
         # What a fake Codex builder reports as its launch record (11.2), per launch.
         self.launch_records = []
         # Decision 39: what a fake Claude builder reports as each turn's callback
@@ -325,21 +328,23 @@ class Harness:
                              ("copies", run_id)),
                          sleep=self.slept.append, now=lambda: self.clock)
 
-    def setup_frozen(self, root, run_id, *, public_head, edit_paths, builder, image_tag):
+    def setup_frozen(self, root, run_id, *, public_head, builder):
         """Stands in for frozen.setup (its own tests are in test_frozen.py): records
         what the loop asked for and gives the swapped builder's folder, or a fresh one
-        beside the project."""
+        beside the project. Since A3 the edit paths and the image tag are not setup's:
+        the start writes them to approval.json straight after. A reused folder is
+        given back as a fresh one would be, without an earlier run's approval.json."""
         self.frozen_calls.append({"root": root, "run_id": run_id, "public_head": public_head,
-                                  "edit_paths": list(edit_paths), "builder": builder,
-                                  "image_tag": image_tag})
+                                  "builder": builder})
         if self.frozen_error is not None:
             raise self.frozen_error
         if self.frozen is not None:
+            (Path(self.frozen) / codex_rules.APPROVAL_FILE).unlink(missing_ok=True)
             return self.frozen
         folder = (self.frozen_parent or Path(root).parent / "frozen") / run_id
         folder.mkdir(parents=True)
         if self.on_frozen is not None:
-            self.on_frozen(folder, root, run_id, edit_paths, builder, public_head, image_tag)
+            self.on_frozen(folder, root, run_id, builder, public_head)
         return folder
 
     def inventory(self, root, git_dir, category_a):
@@ -409,9 +414,11 @@ class FakeBuilder:
         self.session_id = "s-1"
         if self.harness.swapped:
             total = self.harness.codex_totals.pop(0) if self.harness.codex_totals else 700
+            usage = (self.harness.codex_usages.pop(0) if self.harness.codex_usages
+                     else {"total": {"totalTokens": total}})
             return providers.TurnRecord(
                 name=name, final_text=text, session_id="s-1", model="gpt-6-sol",
-                num_turns=None, is_error=False, usage={"total": {"totalTokens": total}},
+                num_turns=None, is_error=False, usage=usage,
                 cost_usd_equivalent=None, wall_seconds=0.1, messages=[{"n": 1}],
                 tokens=total, refusals=list(self.harness.builder_refusals))
         usage = {"input_tokens": 100, "output_tokens": 10}
@@ -1263,11 +1270,12 @@ class FrozenFolderStartTests(LoopCase):
                                       capture_output=True, encoding="utf-8").stdout.strip()
                 call, = self.h.frozen_calls
                 self.assertEqual(call, {"root": self.root, "run_id": run.state["run_id"],
-                                        "public_head": head, "edit_paths": ["work/"],
-                                        "builder": builder,
-                                        "image_tag": self.h.image_tag})
+                                        "public_head": head, "builder": builder})
                 self.assertTrue(run.state["frozen_dir"])
                 self.assertTrue(Path(run.state["frozen_dir"]).is_dir())
+                # A3 chunk 1: the edit paths and the image tag are in approval.json.
+                self.assertEqual(codex_rules.read_approval(run.state["frozen_dir"]),
+                                 {"edit_paths": ["work/"], "image_tag": self.h.image_tag})
 
     def test_rejection_a_frozen_folder_that_cannot_be_made_refuses_the_start(self):
         self.h.frozen_error = frozen.FrozenError("the commit holds no workflows/audit run.py")
@@ -1587,7 +1595,8 @@ class ConstraintsFileTests(LoopCase):
         self.assertEqual((run.run_dir / "image" / "constraints.txt").read_bytes(),
                          b"pkg==1.0\n")
         self.assertFalse(call["work_dir"].exists(), "the temporary folder is removed")
-        self.assertEqual(self.h.frozen_calls[0]["image_tag"], self.h.image_tag)
+        self.assertEqual(codex_rules.read_approval(run.state["frozen_dir"])["image_tag"],
+                         self.h.image_tag)
         self.assertEqual(run.state["image"], {"tag": self.h.image_tag, "built": False})
 
     def test_rejection_a_start_refused_after_the_image_leaves_no_folder_and_no_record(self):
@@ -2031,8 +2040,7 @@ class ResumeDockerTests(LoopCase):
         self.assertEqual((run.run_dir / "state.json").read_bytes(), state)
 
 
-def make_trusted(folder, root, run_id, edit_paths, builder, public_head,
-                 image_tag="bookdragon-checks:0123456789ab"):
+def make_trusted(folder, root, run_id, builder, public_head):
     """A frozen folder as frozen.setup makes it, with trusted/ copied from this working
     tree rather than git-archived (frozen.setup's own archive is tested in
     test_frozen.py): the orchestrator's scripts, config and prompts, and the sync
@@ -2046,8 +2054,7 @@ def make_trusted(folder, root, run_id, edit_paths, builder, public_head,
                     Path(folder) / "trusted" / "workflows" / "sync-architecture" / "scripts",
                     ignore=skip)
     frozen.populate(folder, workflow / "scripts", workflow / "config",
-                    frozen.hook_config(run_id, root, edit_paths, builder, public_head,
-                                       image_tag))
+                    frozen.hook_config(run_id, root, builder, public_head))
 
 
 class TrustedCopyTests(LoopCase):
@@ -2588,7 +2595,9 @@ class PriceAlarmTests(LoopCase):
         self.h.reviews = [[]]
         first = self.start(item="one")
         steps = first.state["steps"]
-        steps[0]["tokens"] = 10  # an earlier builder step far cheaper than 110
+        # An earlier builder step far cheaper than 110 (A3 chunk 1: the alarm compares
+        # uncached_tokens, plan 10.10 item 6).
+        steps[0].update(tokens=10, uncached_tokens=10)
         runrecord.write_state(first.run_dir, first.state)
         self.reset_work()
         self.h.builder_script = [edit(self.root, "y\n")]
@@ -2601,7 +2610,7 @@ class PriceAlarmTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         other = self.start(item="one")
-        other.state["steps"][0]["tokens"] = 10
+        other.state["steps"][0].update(tokens=10, uncached_tokens=10)
         other.state["started_ns"] = 2 ** 62  # started after, whatever its ID
         runrecord.write_state(other.run_dir, other.state)
         self.reset_work()
@@ -2621,8 +2630,8 @@ class PriceAlarmTests(LoopCase):
         for early, late in ((a, b), (b, a)):
             early.state["created"] = late.state["created"] = "2026-09-30T10:00:00+01:00"
             early.state["started_ns"], late.state["started_ns"] = 1_000, 2_000
-            early.state["steps"][0]["tokens"] = 10
-            late.state["steps"][0]["tokens"] = 110
+            early.state["steps"][0].update(tokens=10, uncached_tokens=10)
+            late.state["steps"][0].update(tokens=110, uncached_tokens=110)
             for run in (early, late):
                 runrecord.write_state(run.run_dir, run.state)
             self.assertEqual([f["step"] for f in loop.price_alarm(late)], ["build"])
@@ -2631,7 +2640,8 @@ class PriceAlarmTests(LoopCase):
         # counts the other, rather than one being guessed earlier.
         for run in (a, b):
             run.state.pop("started_ns")
-            run.state["steps"][0]["tokens"] = 10 if run is a else 110
+            value = 10 if run is a else 110
+            run.state["steps"][0].update(tokens=value, uncached_tokens=value)
             runrecord.write_state(run.run_dir, run.state)
         self.assertEqual(loop.price_alarm(b), [])
         self.assertEqual(loop.price_alarm(a), [])
@@ -2655,7 +2665,7 @@ class PriceAlarmTests(LoopCase):
     def test_negative_the_other_providers_steps_in_the_same_role_are_not_compared(self):
         # The chunk (d) short plan, 11.3: like with like, provider and role together.
         first, second = self.two_runs()
-        first.state["steps"][0].update(tokens=10, provider="codex",
+        first.state["steps"][0].update(tokens=10, uncached_tokens=10, provider="codex",
                                        thread_total_tokens=10)
         runrecord.write_state(first.run_dir, first.state)
         self.assertEqual(loop.price_alarm(second), [])  # second's builder is Claude
@@ -2663,28 +2673,89 @@ class PriceAlarmTests(LoopCase):
         runrecord.write_state(first.run_dir, first.state)
         self.assertEqual([f["step"] for f in loop.price_alarm(second)], ["build"])
 
-    def test_negative_a_codex_builder_step_with_no_thread_total_is_not_compared(self):
-        # R9-1: the first proof run's Codex builder steps hold the thread's running
-        # total and no thread_total_tokens, so they cannot stand as a step's share.
+    def test_negative_a_codex_builder_step_with_no_uncached_figure_is_never_compared(self):
+        # Plan 10.10 item 6: an earlier Codex builder step with no uncached_tokens is
+        # always left out, since its usage is the thread's running total, not the
+        # step's share; a thread_total_tokens (R9-1's fix for tokens) does not change
+        # that.
         first, second = self.two_runs()
         shaped = {"tokens": 10, "provider": "codex"}  # as 20261003-035437-0ec4 records
         first.state["steps"][0].update(shaped)
         first.state["steps"][0].pop("thread_total_tokens", None)
+        first.state["steps"][0].pop("uncached_tokens", None)
         runrecord.write_state(first.run_dir, first.state)
         second.state["steps"][0].update(provider="codex", tokens=110,
-                                        thread_total_tokens=110)
+                                        thread_total_tokens=110, uncached_tokens=110)
         self.assertEqual(loop.price_alarm(second), [])
         first.state["steps"][0]["thread_total_tokens"] = 10  # recorded under fix 3
+        runrecord.write_state(first.run_dir, first.state)
+        self.assertEqual(loop.price_alarm(second), [])
+        first.state["steps"][0]["uncached_tokens"] = 10  # recorded since A3 chunk 1
         runrecord.write_state(first.run_dir, first.state)
         flags = loop.price_alarm(second)
         self.assertEqual([(f["step"], f["provider"]) for f in flags], [("build", "codex")])
 
     def test_negative_a_step_that_names_no_provider_is_not_compared(self):
         first, second = self.two_runs()
-        first.state["steps"][0]["tokens"] = 10
+        first.state["steps"][0].update(tokens=10, uncached_tokens=10)
         first.state["steps"][0].pop("provider")
         runrecord.write_state(first.run_dir, first.state)
         self.assertEqual(loop.price_alarm(second), [])
+
+    def test_negative_cache_reads_are_never_compared(self):
+        # Plan 10.10 item 6: a step whose total is mostly cache reads is not flagged,
+        # however large its total; the total stays in the step and the flag.
+        first, second = self.two_runs()
+        first.state["steps"][0].update(tokens=100, uncached_tokens=100)
+        runrecord.write_state(first.run_dir, first.state)
+        second.state["steps"][0].update(
+            tokens=100_000, uncached_tokens=110,
+            usage={"input_tokens": 100, "output_tokens": 10,
+                   "cache_read_input_tokens": 99_890})
+        self.assertEqual(loop.price_alarm(second), [])
+        # The other way round: a small total, but uncached tokens over twice the median.
+        second.state["steps"][0].update(tokens=50, uncached_tokens=250)
+        flag, = loop.price_alarm(second)
+        self.assertEqual((flag["uncached_tokens"], flag["tokens"], flag["median"]),
+                         (250, 50, 100))
+
+    def test_positive_an_earlier_step_with_no_uncached_figure_is_computed_from_usage(self):
+        first, second = self.two_runs()
+        step = first.state["steps"][0]
+        step.pop("uncached_tokens", None)
+        # 5 + 3 + 2 = 10: input, cache creation and output, cache reads left out.
+        step.update(tokens=5000, usage={"input_tokens": 5, "output_tokens": 2,
+                                        "cache_creation_input_tokens": 3,
+                                        "cache_read_input_tokens": 4990})
+        runrecord.write_state(first.run_dir, first.state)
+        self.assertEqual([f["step"] for f in loop.price_alarm(second)], ["build"])
+        # Without an output count the step has no figure and is left out.
+        step["usage"] = {"input_tokens": 5, "cache_creation_input_tokens": 3}
+        runrecord.write_state(first.run_dir, first.state)
+        self.assertEqual(loop.price_alarm(second), [])
+
+    def test_positive_an_earlier_codex_reviewer_step_is_computed_from_its_usage(self):
+        first, second = self.two_runs()
+        review = first.state["steps"][1]
+        self.assertEqual((review["role"], review["provider"]), ("reviewer", "codex"))
+        self.assertIsNone(review["uncached_tokens"])  # the fake's usage has no counts
+        review.pop("uncached_tokens")
+        # 50 input less 40 cached, plus 5 output: 15.
+        review["usage"] = {"total": {"inputTokens": 50, "cachedInputTokens": 40,
+                                     "outputTokens": 5, "totalTokens": 95}}
+        runrecord.write_state(first.run_dir, first.state)
+        self.assertEqual(loop.price_alarm(second), [])  # second's review has no figure
+        second.state["steps"][1]["uncached_tokens"] = 100
+        self.assertEqual([f["step"] for f in loop.price_alarm(second)], ["review-R1"])
+
+    def test_positive_each_step_records_its_uncached_tokens(self):
+        _first, second = self.two_runs()
+        build, review = second.state["steps"]
+        self.assertEqual((build["tokens"], build["uncached_tokens"]), (110, 110))
+        self.assertIsNone(review["uncached_tokens"])
+        self.assertEqual(review["tokens"], 1000)  # tokens stays in the record
+        report = (second.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("- build (builder, claude, " + MODEL + "): 110 tokens", report)
 
 
 class RunRecordEscapingTests(LoopCase):
@@ -3158,6 +3229,37 @@ class ReversePairingTests(SwappedCase):
         self.assertEqual([s["tokens"] for s in steps], [1000, 600, 900])
         self.assertEqual([s["thread_total_tokens"] for s in steps], [1000, 1600, 2500])
         self.assertEqual({s["thread"] for s in steps}, {"s-1"})
+
+    def test_positive_each_codex_builder_step_records_its_uncached_share(self):
+        # Plan 10.10 item 6: a Codex builder step's figure without cache reads is the
+        # increase in the thread's figure during the step, as for tokens; the thread's
+        # figure is input less cached input, plus output, in the SDK's spelling.
+        def usage(given, cached, made):
+            return {"total": {"inputTokens": given, "cachedInputTokens": cached,
+                              "outputTokens": made, "totalTokens": given + made}}
+        self.h.codex_usages = [usage(1000, 800, 50), usage(3000, 2500, 100)]
+        self.h.codex_totals = [1050, 3100]
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        run = self.start()
+        steps = self.builder_steps(run)
+        self.assertEqual([s["thread_uncached_tokens"] for s in steps], [250, 600])
+        self.assertEqual([s["uncached_tokens"] for s in steps], [250, 350])
+        self.assertEqual([s["tokens"] for s in steps], [1050, 2050])
+
+    def test_negative_a_codex_share_with_no_earlier_uncached_figure_is_none(self):
+        # An earlier step on the thread with no running figure without cache reads (one
+        # recorded before A3 chunk 1) gives the next step none, never a guessed share.
+        self.h.codex_usages = [{"total": {"totalTokens": 1000}},
+                               {"total": {"inputTokens": 1500, "outputTokens": 100,
+                                          "totalTokens": 1600}}]
+        self.h.codex_totals = [1000, 1600]
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        run = self.start()
+        steps = self.builder_steps(run)
+        self.assertEqual([s["thread_uncached_tokens"] for s in steps], [None, 1600])
+        self.assertEqual([s["uncached_tokens"] for s in steps], [None, None])
 
     def test_positive_the_forced_stop_and_resume_of_live_check_3(self):
         # R8-1's repair: --inject-limit fix-R1 stops the run before the fix turn, after

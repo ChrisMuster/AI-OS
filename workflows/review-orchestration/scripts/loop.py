@@ -40,6 +40,15 @@ is absent; the checks before every review run builder-written code only in that 
 offline, over a clean copy, and the host checks from the frozen folder's trusted copies;
 and a run that cannot be resumed removes its frozen folder and clean copies.
 
+Approval and amendment (plan 10.3 steps 6 and 8, A3 chunk 1): ``approve`` continues a
+run paused for plan approval into the build after four read-only checks that the
+project has not moved, moving Docker, the image, the run's first project writes and
+the scope rebuild to approval, and writing the frozen folder's write-once
+``approval.json``, from then on the one source of the edit paths and the image tag;
+``amend`` replaces a paused run's brief and supersedes its open plan-review findings.
+Until A3's later chunks add the planning half, a start does approval's sequence itself
+straight after its host start check, with no pause and no checks.
+
 Nothing here stages, commits, pushes or changes branch (plan section 3). Every entry
 point to an SDK or a subprocess that talks to one is a replaceable dependency
 (``Deps``), which is how the tests drive a whole run with no model call.
@@ -117,8 +126,14 @@ def recommendation(reason, run_id):
     return None if text is None else text.replace("<run-id>", run_id)
 
 
-def pause_commands(run_id):
-    """How to continue or end a paused run, as the pause message prints them."""
+def pause_commands(run_id, pause=None):
+    """How to continue or end a paused run, as the pause message prints them. A run
+    paused for plan approval is approved or amended rather than resumed (plan 10.3
+    step 6)."""
+    if pause == sr.AWAITING_PLAN_APPROVAL:
+        return (f"Approve it with: {STARTER} --approve {run_id}; amend its brief with: "
+                f"{STARTER} --amend {run_id} <revised-brief>; or end it with: "
+                f"{STARTER} --stop {run_id}")
     return (f"Resume it with: {STARTER} --resume {run_id}; or end it with: "
             f"{STARTER} --stop {run_id}")
 
@@ -228,6 +243,9 @@ class Deps:
     run_checks: Callable = None
     baseline_checks: Callable = None
     category_a: Callable = None
+    # The Category A files the personal repository does not yet track (approval's
+    # fourth check, plan 10.3 step 6).
+    uncaptured_category_a: Callable = None
     capture_problems: Callable = None
     inventory: Callable = None
     setup_frozen: Callable = None
@@ -262,6 +280,8 @@ class Deps:
             self.baseline_checks = checks_mod.close_out_start
         if self.category_a is None:
             self.category_a = worktree.category_a
+        if self.uncaptured_category_a is None:
+            self.uncaptured_category_a = worktree.uncaptured_category_a
         if self.capture_problems is None:
             self.capture_problems = capture_problems
         if self.setup_frozen is None:
@@ -342,6 +362,60 @@ def tool_rules(provider, verify_patterns, frozen_dir=None):
                                           codex_rules.load_verify_commands(verify_path)),
                   read_commands=_listed(codex_rules.read_command_lines(read_path))
                   ).rstrip("\n")
+
+
+class ClosedApprover(approver_mod.Approver):
+    """The Claude builder's approver when the run's ``approval.json`` is missing or
+    unusable: every call is refused, naming why (plan 10.3 step 6), as the Codex hook
+    and the check helper refuse. Each refusal is recorded like any other."""
+
+    def __init__(self, reason, verify_patterns, *, root=PROJECT_ROOT):
+        super().__init__([], verify_patterns, root=root)
+        self.reason = reason
+
+    def _decide(self, tool_name, tool_input):
+        return approver_mod.Decision(False, f"Refused by the orchestrator: {self.reason}.")
+
+
+class ApprovedApprover(approver_mod.Approver):
+    """The Claude builder's approver once ``approval.json`` has been read. It reads the
+    file again before every decision (code review R2-1): a file that has since gone,
+    cannot be read, or names other edit paths than the ones the approver was made with
+    refuses the call, so no call is allowed on a reading taken earlier."""
+
+    def __init__(self, frozen_dir, edit_paths, verify_patterns, *, root=PROJECT_ROOT):
+        super().__init__(edit_paths, verify_patterns, root=root)
+        self.frozen_dir = frozen_dir
+
+    def _decide(self, tool_name, tool_input):
+        try:
+            approval = codex_rules.read_approval(self.frozen_dir)
+        except codex_rules.ApprovalError as exc:
+            return approver_mod.Decision(False, "Refused by the orchestrator: the run's "
+                                                f"approval record cannot be used ({exc}), "
+                                                "so no call is allowed.")
+        if approval["edit_paths"] != self.edit_paths:
+            return approver_mod.Decision(False, "Refused by the orchestrator: the run's "
+                                                "approval record changed after it was "
+                                                "read, so no call is allowed.")
+        return super()._decide(tool_name, tool_input)
+
+
+def approver_for(frozen_dir, root, verify_patterns=None):
+    """The Claude builder's approver for a run: the edit paths from the frozen folder's
+    ``approval.json``, never from ``state.json``, read again before every decision
+    (``ApprovedApprover``). A missing or unusable file, or edit paths the approver
+    cannot take, give a ``ClosedApprover``."""
+    patterns = (approver_mod.load_verify_commands() if verify_patterns is None
+                else list(verify_patterns))
+    try:
+        if not frozen_dir:
+            raise codex_rules.ApprovalError("the run has no frozen folder")
+        approval = codex_rules.read_approval(frozen_dir)
+        return ApprovedApprover(frozen_dir, approval["edit_paths"], patterns, root=root)
+    except (codex_rules.ApprovalError, approver_mod.ApproverError) as exc:
+        return ClosedApprover(f"the run's approval record cannot be used ({exc}), so no "
+                              "call is allowed", patterns, root=root)
 
 
 def reviewer_tools(provider):
@@ -446,9 +520,10 @@ class Run:
         self.wait = wait
         self.python = python or sys.executable
         self.ledger = sr.Ledger(state.get("ledger", []))
-        self.approver = approver_mod.Approver(state["edit_paths"],
-                                              approver_mod.load_verify_commands(),
-                                              root=self.root)
+        # The Claude builder's approver, made on first use from the run's approval.json
+        # (plan 10.3 step 6), never from state.json; approval clears it once it has
+        # written that file.
+        self._approver = None
         self.usage = limits.RunUsage()
         # One Claude usage object for the run, given to whichever Claude session is
         # open, builder or reviewer, so a reading from one round's reviewer is still
@@ -461,6 +536,23 @@ class Run:
                 limits.CODEX, limits.UNAVAILABLE, reason=source.get("codex_reason"),
                 raw=source.get("codex_raw"))
         self.builder = None
+
+    @property
+    def approver(self):
+        """The approver every Claude builder call is put past: the approved edit paths
+        from ``approval.json``, or, when that file is missing or unusable, one that
+        refuses every call (``approver_for``)."""
+        if self._approver is None:
+            self._approver = approver_for(self.state.get("frozen_dir"), self.root)
+        return self._approver
+
+    def approved(self):
+        """The run's approval record (``codex_rules.read_approval``). Raises
+        ``codex_rules.ApprovalError`` when it is missing or unusable."""
+        folder = self.state.get("frozen_dir")
+        if not folder:
+            raise codex_rules.ApprovalError("the run has no frozen folder")
+        return codex_rules.read_approval(folder)
 
     # ----------------------------------------------------------------- state
 
@@ -479,7 +571,9 @@ class Run:
 
     def next_step(self):
         step = self.state["step"]
-        if step == "preflight":
+        # ``approved`` is the build's entry step after an approval (code review R4-1),
+        # whatever planning step the run paused on; ``preflight`` is a start's.
+        if step in ("preflight", APPROVED_STEP):
             return "build"
         if step == "build":
             return "review-R1"
@@ -768,13 +862,28 @@ class Run:
                    and s.get("thread") == turn.session_id
                    and isinstance(s.get("thread_total_tokens"), int)]
         before = earlier[-1]["thread_total_tokens"] if earlier else 0
-        return {"tokens": turn.tokens - before, "thread": turn.session_id,
-                "thread_total_tokens": turn.tokens}
+        # The same for the figure without cache reads (plan 10.10 item 6). An earlier
+        # step on the thread that recorded no such running figure leaves this step with
+        # none, rather than a share measured from a guess.
+        thread_uncached = providers.codex_uncached_tokens(turn.usage)
+        if thread_uncached is None:
+            uncached = None
+        elif not earlier:
+            uncached = thread_uncached
+        elif isinstance(earlier[-1].get("thread_uncached_tokens"), int):
+            uncached = thread_uncached - earlier[-1]["thread_uncached_tokens"]
+        else:
+            uncached = None
+        return {"tokens": turn.tokens - before, "uncached_tokens": uncached,
+                "thread": turn.session_id, "thread_total_tokens": turn.tokens,
+                "thread_uncached_tokens": thread_uncached}
 
     def _after_builder(self, step, turn):
         self.state["builder_session"] = turn.session_id
         self._record_model(self.builder.provider, turn.model)
-        tokens = {"tokens": turn.tokens}
+        tokens = {"tokens": turn.tokens,
+                  "uncached_tokens": providers.uncached_tokens(self.builder.provider,
+                                                               turn.usage)}
         if self.builder.provider == limits.CODEX and isinstance(turn.tokens, int):
             tokens = self._codex_builder_share(turn)
         self.state.setdefault("steps", []).append(
@@ -888,7 +997,9 @@ class Run:
             python=self.python, run_id=self.state["run_id"],
             frozen_dir=self.state["frozen_dir"],
             public_head=self.state["start"]["public_head"],
-            image=self.state["image"]["tag"],
+            # approval.json is the one source of the image tag from approval on (plan
+            # 10.3 step 6); a missing one raises, and the run ends error.
+            image=self.approved()["image_tag"],
             round_dir=self.run_dir / "rounds" / f"R{round_no}")
         category_a = self.deps.category_a(self.root)
         after_checks = worktree.contents(self.root, edit_paths, category_a)
@@ -943,6 +1054,7 @@ class Run:
         self.state.setdefault("steps", []).append(
             {"step": step, "role": "reviewer", "provider": reviewer.provider,
              "model": reviewer.model, "tokens": record.tokens,
+             "uncached_tokens": providers.uncached_tokens(reviewer.provider, record.usage),
              "usage": record.usage, "wall_seconds": record.wall_seconds,
              "thread_id": record.thread_id, "summary": record.reply.get("summary"),
              "mechanical": mechanical_text})
@@ -1112,21 +1224,29 @@ def _started(state):
         return None
 
 
-def _comparable(step):
-    """Whether an earlier step's ``tokens`` can stand as one step's usage: it names its
-    provider, and a Codex builder step records ``thread_total_tokens``. A Codex builder
-    step recorded before that field existed holds the thread's running total, not the
-    step's share, so it is left out rather than corrected (finding R9-1)."""
-    if not isinstance(step.get("tokens"), int) or step.get("provider") is None:
-        return False
+def _uncached(step):
+    """A step's tokens without cache reads, the one figure the price alarm compares
+    (plan 10.10 item 6), or None where the step cannot stand in the comparison.
+
+    A recorded ``uncached_tokens`` is used as it is. A step with none has it computed
+    from its recorded usage by its provider's rule (``providers.uncached_tokens``) and
+    is left out where that usage lacks the counts. A Codex builder step with none is
+    always left out: its usage is the thread's running total, not the step's share
+    (finding R9-1 for ``tokens``). A step that names no provider is left out."""
+    if step.get("provider") is None:
+        return None
+    value = step.get("uncached_tokens")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
     if step.get("provider") == limits.CODEX and step.get("role") == "builder":
-        return isinstance(step.get("thread_total_tokens"), int)
-    return True
+        return None
+    return providers.uncached_tokens(step.get("provider"), step.get("usage"))
 
 
 def _earlier_steps(run):
-    """Token counts by provider and role from every other run that started strictly
-    before this one (the chunk (d) short plan, 11.3: like is compared with like).
+    """Uncached token counts (``_uncached``) by provider and role from every other run
+    that started strictly before this one (the chunk (d) short plan, 11.3: like is
+    compared with like).
 
     Compared by the recorded start time in nanoseconds, not the run ID or the start
     second: two runs started in the same second differ only in the ID's random suffix,
@@ -1147,25 +1267,30 @@ def _earlier_steps(run):
         if ours is None or theirs is None or theirs >= ours:
             continue
         for step in data.get("steps", []):
-            if _comparable(step):
+            value = _uncached(step)
+            if value is not None:
                 by_role.setdefault((step["provider"], step.get("role")),
-                                   []).append(step["tokens"])
+                                   []).append(value)
     return by_role
 
 
 def price_alarm(run):
     """Plan 10.10 item 6: every step using more than twice the median for the same
-    provider in the same role across earlier runs."""
+    provider in the same role across earlier runs, compared on tokens without cache
+    reads (``_uncached``) and nothing else. ``tokens`` is carried into each flag for the
+    report, never compared."""
     earlier = _earlier_steps(run)
     flags = []
     for step in run.state.get("steps", []):
         history = earlier.get((step.get("provider"), step.get("role")))
-        if history and isinstance(step.get("tokens"), int):
+        value = _uncached(step)
+        if history and value is not None:
             median = statistics.median(history)
-            if median and step["tokens"] > 2 * median:
+            if median and value > 2 * median:
                 flags.append({"step": step["step"], "role": step["role"],
                               "provider": step.get("provider"),
-                              "tokens": step["tokens"], "median": median})
+                              "tokens": step.get("tokens"), "uncached_tokens": value,
+                              "median": median})
     return flags
 
 
@@ -1232,13 +1357,17 @@ def write_report(run):
                   + ("nothing found" if not c["changes"] else "; ".join(c["changes"]))
                   for c in report["turn_checks"]]
     lines += ["", "## Price alarm", ""]
-    lines += [f"- {a['step']} ({a['role']}): {a['tokens']} tokens, more than twice the "
-              f"median {a['median']} of earlier runs" for a in report["price_alarm"]] \
+    lines += [f"- {a['step']} ({a['role']}): {a['uncached_tokens']} tokens without cache "
+              f"reads ({a['tokens']} in all), more than twice the median "
+              f"{a['median']} of earlier runs" for a in report["price_alarm"]] \
         or ["None."]
     lines += ["", "## Docker and the check image", ""]
     if report["image"]:
+        # Prepared by the start until A3's planning half is joined, by --approve after
+        # it (plan 10.3 step 6); an approved run records ``approval``.
+        when = "at approval" if state.get("approval") else "at the start"
         lines.append(f"- image {report['image']['tag']}: "
-                     f"{'built' if report['image'].get('built') else 'reused'} at the start")
+                     f"{'built' if report['image'].get('built') else 'reused'} {when}")
     lines += [f"- {e['when']} ({e['at']}): {e['what']}"
               for e in (report["docker"] or {}).get("events", [])]
     lines += [f"- removed {c['what']}" if c.get("removed") else
@@ -1523,11 +1652,24 @@ def _create(ready, image, brief_arg, item, git_dir, *, root, deps, log_path, run
     try:
         public_head = worktree.git(root, "rev-parse", "HEAD").strip()
         frozen_dir = deps.setup_frozen(root, run_id, public_head=public_head,
-                                       edit_paths=brief["edit_paths"],
-                                       builder=settings["roles"]["builder"],
-                                       image_tag=image["tag"])
+                                       builder=settings["roles"]["builder"])
     except (frozen_mod.FrozenError, worktree.GitError) as exc:
         raise RunRefused([str(exc)]) from exc
+    # A3 chunk 1's interim (plan 10.3, the chunk list): with no planning half yet, the
+    # start does approval's sequence itself straight after its host start check.
+    # Docker and the image are done above; approval.json is written here from the
+    # brief, with no pause and no checks, since nothing can have moved. Chunk 3
+    # replaces this with the approval pause.
+    try:
+        frozen_mod.write_approval(frozen_dir, brief["edit_paths"], image["tag"])
+    except frozen_mod.FrozenError as exc:
+        problems = [str(exc)]
+        try:
+            frozen_mod.remove(frozen_dir)
+        except OSError as gone:
+            problems.append(f"the frozen folder {Path(frozen_dir).as_posix()} could not "
+                            f"be removed ({gone}); delete it by hand")
+        raise RunRefused(problems) from exc
     # create_run makes the folder, then writes its first state.json; a failure in
     # between leaves a folder this attempt made, removed here with the frozen folder.
     # A folder that was already there is never touched (code review R29-1).
@@ -1712,3 +1854,388 @@ def stop(run, dry_run=False):
               "append LOG.md. Nothing was changed.", file=sys.stderr)
         return
     run.end(sr.STOPPED_BY_USER, {"pause": run.state.get("pause")})
+
+
+# ---------------------------------------------------------- approval and amendment
+
+SUPERSEDED_NOTE = "superseded by amendment"
+# The step an approved run is set to, from which ``Run.next_step`` starts the build; the
+# planning step it paused on is kept in ``state.json``'s ``approval`` record.
+APPROVED_STEP = "approved"
+
+
+def _now_text():
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _plan_approval_pause(run, mode):
+    """The run's frozen folder, once it is shown the run is paused for plan approval and
+    can still be approved; otherwise RunRefused, naming why, with nothing changed. An
+    ``approval.json`` that already exists refuses (plan 10.3 step 6), and so does a run
+    whose earlier approval failed after its first write in the project."""
+    state, run_id = run.state, run.state["run_id"]
+    failure = state.get("approval_failure")
+    if failure:
+        raise RunRefused([f"run {run_id} cannot be {mode}: an earlier approval failed "
+                          f"after its first write in the project ({failure.get('reason')}), "
+                          "so a retry's checks would find its own writes. End it with "
+                          f"{STARTER} --stop {run_id} and start a new run"])
+    if state.get("status") != sr.PAUSED or state.get("pause") != sr.AWAITING_PLAN_APPROVAL:
+        where = str(state.get("status")) + (f" ({state['pause']})" if state.get("pause")
+                                            else "")
+        raise RunRefused([f"only a run paused {sr.AWAITING_PLAN_APPROVAL} can be {mode} "
+                          f"(this one is {where})"])
+    folder = state.get("frozen_dir")
+    if not folder or not Path(folder).is_dir():
+        raise RunRefused([f"the run's frozen folder {folder} is missing"])
+    existing = Path(folder) / codex_rules.APPROVAL_FILE
+    if existing.exists():
+        raise RunRefused([f"{existing.as_posix()} already exists: the run has been approved "
+                          "once, and that file is written once and never rewritten. End it "
+                          f"with {STARTER} --stop {run_id} and start a new run"])
+    return Path(folder)
+
+
+def _run_brief_arg(run):
+    """The run's own ``brief.md`` as a project-relative path, the form the brief checker
+    reads."""
+    try:
+        return ((run.run_dir / "brief.md").resolve().relative_to(run.root.resolve())
+                .as_posix())
+    except ValueError as exc:
+        raise RunRefused(["the run's brief is outside the project, so it cannot be "
+                          "checked"]) from exc
+
+
+def approval_problems(run, edit_paths):
+    """The four read-only checks ``--approve`` makes before anything else (plan 10.3
+    step 6, "``--approve`` refuses if the project moved during the pause"), each over the
+    approved brief's edit paths where it takes paths. Returns every failed check, named;
+    an empty list when all four pass. A check that cannot be made is a failed check."""
+    root, git_dir, start = run.root, run.state["git_dir"], run.state["start"]
+    problems = []
+    # 1. Both HEADs are the ones recorded at the run's start.
+    try:
+        heads = {"public": worktree.git(root, "rev-parse", "HEAD").strip(),
+                 "personal": worktree.git(root, "rev-parse", "HEAD",
+                                          git_dir=git_dir).strip()}
+    except worktree.GitError as exc:
+        problems.append(f"check 1 (the HEADs): could not be made: {exc}")
+    else:
+        for name in ("public", "personal"):
+            recorded = start.get(f"{name}_head")
+            if heads[name] != recorded:
+                problems.append(f"check 1 (the HEADs): the {name} HEAD is {heads[name]}, "
+                                f"not {recorded} as recorded at the run's start")
+    # 2. No uncommitted change in the public repository under the paths.
+    try:
+        dirty = worktree.uncommitted(root, edit_paths)
+    except worktree.GitError as exc:
+        problems.append(f"check 2 (the public repository): could not be made: {exc}")
+    else:
+        if dirty:
+            problems.append("check 2 (the public repository): uncommitted changes under "
+                            "the edit paths: " + ", ".join(dirty[:10])
+                            + (" ..." if len(dirty) > 10 else ""))
+    # 3. No change to a file the personal repository tracks under the paths.
+    try:
+        changed = worktree.personal_changes(root, git_dir, edit_paths)
+    except worktree.GitError as exc:
+        problems.append(f"check 3 (the personal repository): could not be made: {exc}")
+    else:
+        if changed:
+            problems.append("check 3 (the personal repository): captured files changed "
+                            "since the capture under the edit paths: "
+                            + ", ".join(changed[:10]) + (" ..." if len(changed) > 10 else ""))
+    # 4. No uncaptured Category A file under the paths, this run's own record left out by
+    #    name, as the check after every turn judges run records before edit paths.
+    own = None
+    try:
+        own = Path(run.run_dir).resolve().relative_to(Path(root).resolve()).as_posix()
+    except ValueError:  # a record outside the project is in no selection
+        pass
+    try:
+        loose = run.deps.uncaptured_category_a(root, git_dir)
+    except Exception as exc:  # noqa: BLE001 - unanswered is never read as empty
+        problems.append(f"check 4 (Category A): could not be made: {exc}")
+    else:
+        loose = sorted(path for path in loose
+                       if worktree.under_edit_paths(path, edit_paths)
+                       and not (own and worktree.under_edit_paths(path, [own])))
+        if loose:
+            problems.append("check 4 (Category A): files under the edit paths that the "
+                            "personal repository has not captured: "
+                            + ", ".join(loose[:10]) + (" ..." if len(loose) > 10 else ""))
+    return problems
+
+
+def _approval_reading(run):
+    """The Codex reading and credit snapshot approval takes before Docker, as a resume
+    does, so the build's before-step check compares against a snapshot taken at
+    approval rather than at a start that may be days old. Read-only."""
+    try:
+        reading = run.deps.read_codex(run.root, run.state.get("frozen_dir"))
+    except Exception as exc:
+        raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
+                          f"{exc}; nothing was changed"]) from exc
+    sandboxed = sandbox_refusal(reading)
+    if sandboxed is not None:
+        raise RunRefused([f"{sandboxed}; nothing was changed"])
+    credits = credit_snapshot(reading)
+    reason = untrackable(credits)
+    if reason is not None:
+        raise RunRefused([f"Codex credits cannot be tracked: {reason} "
+                          f"({reading.summary()}); nothing was changed"])
+    return reading, credits
+
+
+def approve(run, dry_run=False):
+    """``start.py --approve <run-id>`` (plan 10.3 step 6): continue a run paused for plan
+    approval into the build, in the order the plan numbers.
+
+      1. The four read-only checks (``approval_problems``).
+      2. Docker and the check image. Nothing is written in the project.
+      3. The run's writes in the project, each recorded as the orchestrator's.
+      4. The scope rebuild (``start/`` and ``state.json``).
+      5. ``approval.json``, then the run set from paused to running.
+
+    A failure in steps 1 or 2 refuses, stops a Docker this approval started, writes
+    nothing and leaves the run approvable again. A failure from step 3 on refuses for
+    good: the run records ``approval_failure`` and only ``--stop`` and a new run go on.
+    The caller starts the build (``Run.advance``). A dry run makes the checks and the
+    usage reading, says what approval would do, and changes nothing; it runs no Docker
+    command at all."""
+    folder = _plan_approval_pause(run, "approved")
+    run_id = run.state["run_id"]
+    try:
+        brief = brief_mod.read_brief(_run_brief_arg(run), run.root)
+    except ValueError as exc:
+        raise RunRefused([f"the approved brief cannot be read: {exc}; nothing was "
+                          "changed"]) from exc
+    edit_paths = brief["edit_paths"]
+    problems = approval_problems(run, edit_paths)
+    if problems:
+        raise RunRefused(problems + [f"nothing was changed and the run stays paused; the "
+                                     f"way on is {STARTER} --stop {run_id}, a capture, "
+                                     "and a new run"])
+    reading, credits = _approval_reading(run)
+    if dry_run:
+        print(f"[DRY RUN] the four approval checks passed over the approved edit paths "
+              f"{', '.join(edit_paths)} ({reading.summary()}; Codex credits {credits}). "
+              "A real approval would start Docker if it is not running and prepare the "
+              "check image, append the started entry to the workflow LOG.md and write "
+              f"the review packet memory/{run.state['item']}_review_packet.md, each "
+              "recorded as the orchestrator's, rebuild the run's scope with "
+              f"{len(brief['acceptance'])} acceptance check(s), write "
+              f"{(folder / codex_rules.APPROVAL_FILE).as_posix()}, set the run running "
+              "and start the build. Nothing was changed, and no Docker command was run.",
+              file=sys.stderr)
+        return None
+    started, note = _docker_at_start(run.deps, False)
+    try:
+        work = Path(tempfile.mkdtemp(prefix="book-dragon-image-"))
+    except OSError as exc:
+        refusal = RunRefused([f"the check image: its temporary folder could not be made: "
+                              f"{exc}; nothing was written, so --approve can be run again"])
+        if started:
+            _stop_docker_after_refusal(run.deps, refusal)
+        raise refusal from exc
+    try:
+        try:
+            image = run.deps.prepare_image(run.root, run.python, work, dry_run=False)
+        except (container.ContainerError, OSError) as exc:
+            why = (str(exc) if isinstance(exc, container.ContainerError)
+                   else f"{type(exc).__name__}: {exc}")
+            raise RunRefused([f"the check image: {why}; nothing was written and the run "
+                              "stays paused, so --approve can be run again"]) from exc
+        _approval_writes(run, folder, brief, image, started, note, reading, credits)
+    except BaseException as exc:
+        if started:
+            _stop_docker_after_refusal(run.deps, exc)
+        raise
+    finally:
+        left = _remove_work(work)
+        if left:
+            print(f"WARNING: {left}", file=sys.stderr)
+    return run
+
+
+def _approval_targets(run):
+    """``{path: bytes}`` for the two files approval writes in the project, the workflow
+    LOG.md and the item's packet, each named project-relative (or as given when outside
+    the project) and left out while it does not exist."""
+    found = {}
+    for path in (Path(run.log_path), packet_mod.packet_path(run.root, run.state["item"])):
+        try:
+            name = path.resolve().relative_to(run.root.resolve()).as_posix()
+        except ValueError:
+            name = path.as_posix()
+        if path.is_file():
+            found[name] = path.read_bytes()
+    return found
+
+
+def _approval_writes(run, folder, brief, image, started, note, reading, credits):
+    """Approval's steps 3 to 5 (plan 10.3 step 6). Any failure restores ``state.json`` to
+    what it was before step 3, records ``approval_failure`` there and refuses for good,
+    naming the step."""
+    state, run_id, root = run.state, run.state["run_id"], run.root
+    edit_paths = list(brief["edit_paths"])
+    original = json.loads(json.dumps(state))
+    step, logged = 3, False
+    try:
+        # 3. The run's writes in the project, taken as an exact diff of the two files
+        # it writes, the workflow LOG.md and the item's packet, whether or not the
+        # approved edit paths cover them, so every one is recorded as the orchestrator's
+        # (the record the run's own checks keep, check_writes) and a round diff showing
+        # one tells the reviewer those lines are not the builder's.
+        before = _approval_targets(run)
+        problem = _log("started", f"Run {run_id} approved; its build starts.",
+                       run.log_path)
+        if problem is not None:
+            raise OSError(f"the workflow LOG.md could not be appended ({problem})")
+        logged = True
+        run.write_packet()
+        after = _approval_targets(run)
+        category_a = run.deps.category_a(root)
+        written = worktree.delta(before, after, "the approval")
+        if written:
+            patch = run.run_dir / "approval" / "check-writes.patch"
+            patch.parent.mkdir(parents=True, exist_ok=True)
+            patch.write_text(written, encoding="utf-8", newline="\n")
+            name = patch.relative_to(run.run_dir).as_posix()
+            names = state.setdefault("check_writes", [])
+            if name not in names:
+                names.append(name)
+        # 4. The scope rebuild, keeping the recorded HEADs: the checks proved nothing but
+        # the run has changed the approved paths since the starting commits, so the
+        # snapshot is those commits' content plus step 3's writes.
+        step = 4
+        heads = {"public_head": state["start"]["public_head"],
+                 "personal_head": state["start"]["personal_head"]}
+        worktree.record_start(run.run_dir, root, edit_paths, state["git_dir"], heads=heads)
+        state["edit_paths"] = edit_paths
+        state["acceptance"] = list(brief["acceptance"])
+        state["start"] = {**heads, "snapshot": worktree.snapshot(root, edit_paths,
+                                                                 category_a)}
+        # 5. approval.json, then the run set from paused to running.
+        step = 5
+        frozen_mod.write_approval(folder, edit_paths, image["tag"])
+        (run.run_dir / "image").mkdir(exist_ok=True)
+        shutil.copyfile(image["constraints"], run.run_dir / "image" / container.CONSTRAINTS_NAME)
+        docker = state.setdefault("docker", {"started_by_run": False, "events": []})
+        docker["started_by_run"] = bool(docker.get("started_by_run")) or started
+        docker.setdefault("events", []).append(
+            _docker_event("approval", note.replace("this run", "this approval")))
+        state["image"] = {"tag": image["tag"], "built": image.get("built")}
+        state["approval"] = {"at": _now_text(), "edit_paths": edit_paths,
+                             "image_tag": image["tag"],
+                             "planning_step": state.get("step")}
+        # The build is the next step whatever planning step the run paused on (code
+        # review R4-1); a build cut off later resumes from here too.
+        state["step"] = APPROVED_STEP
+        state["credits"] = credits
+        run.note_codex(reading)
+        sr.continue_run(state)
+        run._approver = None  # the next builder reads the file just written
+        run.save()
+    except Exception as exc:
+        reason = f"step {step}: {type(exc).__name__}: {exc}"
+        state.clear()
+        state.update(original)
+        state["approval_failure"] = {"step": step, "reason": reason, "at": _now_text()}
+        notes = []
+        try:
+            run.save()
+        except Exception as gone:  # noqa: BLE001 - the refusal says so
+            notes.append(f"the failure could not be recorded in state.json either "
+                         f"({type(gone).__name__}: {gone})")
+        if logged:
+            _log("failed", f"Run {run_id} approval failed at step {step}; the run cannot "
+                           "be approved again.", run.log_path)
+        raise RunRefused([f"the approval failed at {reason}. Its own writes may be in the "
+                          "project, so this run cannot be approved again: end it with "
+                          f"{STARTER} --stop {run_id} and start a new run", *notes]) from exc
+
+
+def amend(run, brief_arg, dry_run=False):
+    """``start.py --amend <run-id> <revised-brief>`` (plan 10.3 step 6): once the brief
+    checker passes the revised brief, with logging off, replace the run's ``brief.md``
+    with it and move every plan-review finding still open in the run's ledger to
+    Addressed with the note ``superseded by amendment``. ``state.json``'s
+    ``edit_paths``, ``acceptance`` and ``start`` are left as they are. Restarting
+    planning is A3's later chunks' work, so in chunk 1 the run stays paused for plan
+    approval. Writes nothing outside the run's own record; a dry run changes nothing."""
+    _plan_approval_pause(run, "amended")
+    state, run_id = run.state, run.state["run_id"]
+    lines, code = brief_mod.check_brief(brief_arg, run.root)
+    if code != 0:
+        raise RunRefused(["the revised brief does not pass the check: " + "; ".join(lines),
+                          "nothing was changed"])
+    # Before approval the build has not started, so every finding in the ledger is a
+    # plan-review finding.
+    open_labels = run.ledger.open_labels()
+    target = run.run_dir / "brief.md"
+    if dry_run:
+        print(f"[DRY RUN] the revised brief {brief_arg} passes the check. A real "
+              f"amendment would replace run {run_id}'s brief.md with it and move "
+              f"{len(open_labels)} open plan-review finding(s) to Addressed with the note "
+              f"'{SUPERSEDED_NOTE}': {', '.join(open_labels) or 'none'}. The run's edit "
+              "paths, acceptance checks and start record would not change. Nothing was "
+              "changed.", file=sys.stderr)
+        return None
+    staged = target.with_name("brief.md.amend")
+    # The amendment is one operation (code review R2-2): if any part fails, the ledger
+    # and state.json are put back as they were, so findings are never left superseded
+    # under the old brief.
+    original_state = json.loads(json.dumps(state))
+    original_ledger = json.loads(json.dumps(list(run.ledger.findings.values())))
+    saved = False
+    try:
+        shutil.copyfile(Path(run.root) / brief_arg.replace("\\", "/"), staged)
+        for label in open_labels:
+            run.ledger.findings[label].update(action=sr.FIXED, note=SUPERSEDED_NOTE,
+                                              superseded_by_amendment=True)
+        state.setdefault("amendments", []).append(
+            {"at": _now_text(), "brief": brief_arg, "superseded": open_labels})
+        run.save()
+        saved = True
+        os.replace(staged, target)
+    except Exception as exc:
+        problems = [f"the amendment could not be completed: {type(exc).__name__}: {exc}"]
+        try:
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass
+        state.clear()
+        state.update(original_state)
+        run.ledger = sr.Ledger(original_ledger)
+        if saved:
+            try:
+                run.save()
+                problems.append("the run's ledger and state were put back as they were, "
+                                "so its brief and findings are unchanged")
+            except Exception as gone:  # noqa: BLE001 - the refusal says so
+                # The saved state says the findings were superseded while brief.md is
+                # still the old one: this run must not be approved.
+                state["approval_failure"] = {
+                    "step": "amendment", "at": _now_text(),
+                    "reason": f"an amendment saved its ledger but could not replace "
+                              f"brief.md, nor put the ledger back ({type(gone).__name__}: "
+                              f"{gone})"}
+                problems.append("the ledger could not be put back, so state.json may "
+                                f"record the findings as superseded under the old brief: "
+                                f"end the run with {STARTER} --stop {run_id} and start a "
+                                "new run")
+                try:
+                    runrecord.write_state(run.run_dir, state)
+                except Exception:  # noqa: BLE001 - nothing more can be written
+                    pass
+        else:
+            problems.append("nothing was changed")
+        raise RunRefused(problems) from exc
+    rendered = run.run_dir / "plan-review" / "packet.md"
+    if rendered.is_file():
+        rendered.write_text(packet_mod.render(state["item"], run_id, run.ledger),
+                            encoding="utf-8", newline="\n")
+    return open_labels

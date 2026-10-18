@@ -16,9 +16,10 @@ A stdio MCP server (the ``mcp`` 1.x ``FastMCP`` API) with two tools:
 
 It always runs from a run's frozen folder (``<temp>/book-dragon-orchestration/
 <run-id>/``) and reads nothing of the project's own: the run's settings come from the
-folder's ``hook.json`` (project root, run id, builder provider, public head, image
-tag), the ignore floor from its ``start-ignored.txt``, and the verification list from
-the copy beside it. Every ``run_check`` call adds one line to the folder's
+folder's ``hook.json`` (project root, run id, builder provider, public head), the image
+tag from its ``approval.json`` (plan 10.3 step 6, written once at approval), the ignore
+floor from its ``start-ignored.txt``, and the verification list from the copy beside
+it. Without a usable ``approval.json`` every call to either tool is refused. Every ``run_check`` call adds one line to the folder's
 ``check-calls.jsonl`` (command, allowed, exit code, seconds; never the output); the
 helper writes nothing else there. ``get_timestamp`` writes nothing.
 
@@ -49,7 +50,7 @@ SERVER_NAME = "checks"
 OUTPUT_TAIL = 6000
 # The verification list each builder's commands are judged by.
 LISTS = {"claude": "verify-commands.txt", "codex": "codex-verify-commands.txt"}
-CONFIG_KEYS = ("project_root", "run_id", "builder_provider", "public_head", "image_tag")
+CONFIG_KEYS = ("project_root", "run_id", "builder_provider", "public_head")
 
 
 class HelperError(Exception):
@@ -62,8 +63,9 @@ def timestamp():
 
 
 def load_config(folder):
-    """The run's settings from ``hook.json``. Every key must be a non-empty string,
-    the run id must be the folder's own name, and the builder a known provider."""
+    """The run's settings from ``hook.json``, with ``image_tag`` from ``approval.json``.
+    Every ``hook.json`` key must be a non-empty string, the run id must be the folder's
+    own name, the builder a known provider, and ``approval.json`` usable."""
     folder = Path(folder)
     try:
         config = json.loads((folder / codex_rules.HOOK_CONFIG).read_text(encoding="utf-8"))
@@ -80,7 +82,11 @@ def load_config(folder):
     if config["builder_provider"] not in LISTS:
         raise HelperError(f"the run's builder `{config['builder_provider']}` is not a "
                           "provider the helper knows")
-    return config
+    try:
+        approval = codex_rules.read_approval(folder)
+    except codex_rules.ApprovalError as exc:
+        raise HelperError(f"the run's approval record cannot be used ({exc})") from exc
+    return {**config, "image_tag": approval["image_tag"]}
 
 
 def refusal(command, folder, config):
@@ -167,9 +173,20 @@ def build_server(folder=FOLDER):
     def get_timestamp_tool() -> str:
         """The current local time with its offset, for a LOG.md entry. Fetch it
         immediately before writing the entry."""
-        return timestamp()
+        return get_timestamp(folder)
 
     return server
+
+
+def get_timestamp(folder=FOLDER):
+    """The ``get_timestamp`` tool's reply: the time, or the refusal when the run's
+    settings or its approval record cannot be used, since every call is refused then
+    (plan 10.3 step 6). It writes nothing."""
+    try:
+        load_config(folder)
+    except HelperError as exc:
+        return f"Refused by the orchestrator: {exc}."
+    return timestamp()
 
 
 def main():

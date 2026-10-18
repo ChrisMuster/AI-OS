@@ -329,8 +329,9 @@ def claude_tokens(usage):
     return sum(numbers) if numbers else None
 
 
-def codex_tokens(usage):
-    """A Codex thread's total tokens, from either spelling of its usage."""
+def _codex_block(usage):
+    """The block of a Codex usage that ``codex_tokens`` reads its total from: ``total``
+    first, then ``last``, the first that holds a total in either spelling."""
     if not isinstance(usage, dict):
         return None
     for part in ("total", "last"):
@@ -338,7 +339,63 @@ def codex_tokens(usage):
         if isinstance(block, dict):
             for key in ("total_tokens", "totalTokens"):
                 if isinstance(block.get(key), int):
-                    return block[key]
+                    return block
+    return None
+
+
+def codex_tokens(usage):
+    """A Codex thread's total tokens, from either spelling of its usage."""
+    block = _codex_block(usage)
+    if block is None:
+        return None
+    for key in ("total_tokens", "totalTokens"):
+        if isinstance(block.get(key), int):
+            return block[key]
+    return None
+
+
+def _count(block, *keys):
+    """The first of ``keys`` that ``block`` holds as a whole number (never a bool)."""
+    for key in keys:
+        value = block.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def claude_uncached_tokens(usage):
+    """A Claude usage's tokens without cache reads (plan 10.10 item 6): input, cache
+    creation and output added, ``cache_read_input_tokens`` left out. A cache field the
+    usage leaves out counts as zero; with no input or output count there is none."""
+    if not isinstance(usage, dict):
+        return None
+    given, made = _count(usage, "input_tokens"), _count(usage, "output_tokens")
+    if given is None or made is None:
+        return None
+    return given + (_count(usage, "cache_creation_input_tokens") or 0) + made
+
+
+def codex_uncached_tokens(usage):
+    """A Codex usage's tokens without cache reads (plan 10.10 item 6), from the block
+    ``codex_tokens`` reads: the input tokens less the cached input tokens, plus the
+    output tokens, in either spelling. A cached count the block leaves out counts as
+    zero; with no input or output count there is none."""
+    block = _codex_block(usage)
+    if block is None:
+        return None
+    given = _count(block, "input_tokens", "inputTokens")
+    made = _count(block, "output_tokens", "outputTokens")
+    if given is None or made is None:
+        return None
+    return given - (_count(block, "cached_input_tokens", "cachedInputTokens") or 0) + made
+
+
+def uncached_tokens(provider, usage):
+    """A step's usage without cache reads, by the provider that reported it."""
+    if provider == limits.CLAUDE:
+        return claude_uncached_tokens(usage)
+    if provider == limits.CODEX:
+        return codex_uncached_tokens(usage)
     return None
 
 

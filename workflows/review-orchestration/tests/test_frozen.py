@@ -42,7 +42,8 @@ checks = _load("checks")
 frozen = _load("frozen")
 
 RUN_ID = "20261008-140000-ab12"
-IMAGE_TAG = "bookdragon-checks:0123456789ab"  # hook.json carries it (plan 7.1 item 5)
+# approval.json carries it since A3 (plan 10.3 step 6), never hook.json.
+IMAGE_TAG = "bookdragon-checks:0123456789ab"
 
 # What trusted/ must hold, written out here rather than read from frozen.TRUSTED_CODE,
 # so a folder dropped from that tuple is still expected (code review R22-2): the four
@@ -109,8 +110,7 @@ class FixtureCase(unittest.TestCase):
         (self.root / ".env").write_bytes(b"SECRET=1\n")
 
     def setup_run(self, **changes):
-        options = {"public_head": self.head, "edit_paths": ["notes/"], "builder": "codex",
-                   "image_tag": IMAGE_TAG, "temp_root": self.temp}
+        options = {"public_head": self.head, "builder": "codex", "temp_root": self.temp}
         options.update(changes)
         return frozen.setup(self.root, RUN_ID, **options)
 
@@ -148,10 +148,12 @@ class SetupTests(FixtureCase):
         self.assertEqual((folder / "tripwire" / "sitecustomize.py").read_bytes(),
                          (trusted / "workflows/review-orchestration/scripts/tripwire.py")
                          .read_bytes())
+        # Plan 10.3 step 6: hook.json keeps everything but the edit paths and the image
+        # tag, and setup writes no approval.json.
         self.assertEqual(json.loads((folder / "hook.json").read_text(encoding="utf-8")),
-                         {"run_id": RUN_ID, "edit_paths": ["notes/"],
-                          "project_root": str(self.root), "builder_provider": "codex",
-                          "public_head": self.head, "image_tag": IMAGE_TAG})
+                         {"run_id": RUN_ID, "project_root": str(self.root),
+                          "builder_provider": "codex", "public_head": self.head})
+        self.assertFalse((folder / codex_rules.APPROVAL_FILE).exists())
         # S6b: checks.run_all reads trusted/ and the floor by the names checks.py
         # holds, so they must be the frozen folder's own.
         self.assertEqual(checks.TRUSTED_DIR, frozen.TRUSTED_DIR)
@@ -233,8 +235,7 @@ class SetupTests(FixtureCase):
             with self.subTest(run_id=run_id):
                 with self.assertRaisesRegex(frozen.FrozenError, "not a run id"):
                     frozen.setup(self.root, run_id, public_head=self.head,
-                                 edit_paths=["notes/"], builder="codex",
-                                 image_tag=IMAGE_TAG, temp_root=self.temp)
+                                 builder="codex", temp_root=self.temp)
         self.assertFalse((self.temp / "book-dragon-orchestration").exists())
 
     def test_positive_remove_clears_read_only_files(self):
@@ -248,6 +249,65 @@ class SetupTests(FixtureCase):
         self.assertTrue(frozen.trusted_run_py(folder).is_file())
         self.assertEqual(frozen.trusted_run_py(folder),
                          folder / "trusted/workflows/review-orchestration/scripts/run.py")
+
+
+class ApprovalFileTests(unittest.TestCase):
+    """Plan 10.3 step 6: ``approval.json`` holds exactly the approved edit paths and the
+    image tag, is created exclusively and never rewritten, and is read back whole or
+    refused."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.folder = Path(temp.name).resolve() / RUN_ID
+        self.folder.mkdir()
+
+    def test_positive_written_once_holding_exactly_the_two_fields(self):
+        path = frozen.write_approval(self.folder, ["notes/", "a.md"], IMAGE_TAG)
+        self.assertEqual(path, self.folder / "approval.json")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")),
+                         {"edit_paths": ["notes/", "a.md"], "image_tag": IMAGE_TAG})
+        self.assertEqual(codex_rules.read_approval(self.folder),
+                         {"edit_paths": ["notes/", "a.md"], "image_tag": IMAGE_TAG})
+        self.assertNotIn(b"\r\n", path.read_bytes())
+
+    def test_rejection_a_second_write_is_refused_and_the_first_kept(self):
+        frozen.write_approval(self.folder, ["notes/"], IMAGE_TAG)
+        first = (self.folder / "approval.json").read_bytes()
+        with self.assertRaisesRegex(frozen.FrozenError, "already exists"):
+            frozen.write_approval(self.folder, ["other/"], "bookdragon-checks:ffffffffffff")
+        self.assertEqual((self.folder / "approval.json").read_bytes(), first)
+
+    def test_rejection_nothing_is_written_without_paths_or_a_tag(self):
+        for paths, tag in (([], IMAGE_TAG), ([""], IMAGE_TAG), (["notes/"], ""),
+                           (["notes/"], None)):
+            with self.subTest(paths=paths, tag=tag):
+                with self.assertRaises(frozen.FrozenError):
+                    frozen.write_approval(self.folder, paths, tag)
+                self.assertFalse((self.folder / "approval.json").exists())
+
+    def test_rejection_a_missing_or_unusable_file_is_refused_by_the_reader(self):
+        with self.assertRaisesRegex(codex_rules.ApprovalError, "missing"):
+            codex_rules.read_approval(self.folder)
+        path = self.folder / "approval.json"
+        for label, text in (
+                ("not JSON", "{"), ("not an object", "[]"),
+                ("an extra key", json.dumps({"edit_paths": ["a/"], "image_tag": "t",
+                                             "x": 1})),
+                ("a missing key", json.dumps({"edit_paths": ["a/"]})),
+                ("no paths", json.dumps({"edit_paths": [], "image_tag": "t"})),
+                ("a path that is not text", json.dumps({"edit_paths": [1],
+                                                        "image_tag": "t"})),
+                ("an empty tag", json.dumps({"edit_paths": ["a/"], "image_tag": ""}))):
+            with self.subTest(label):
+                path.write_text(text, encoding="utf-8", newline="\n")
+                with self.assertRaises(codex_rules.ApprovalError):
+                    codex_rules.read_approval(self.folder)
+
+    def test_positive_hook_json_holds_neither_field(self):
+        config = frozen.hook_config(RUN_ID, "C:/p", "claude", "a" * 40)
+        self.assertEqual(set(config), {"run_id", "project_root", "builder_provider",
+                                       "public_head"})
 
 
 class TripwireTests(unittest.TestCase):

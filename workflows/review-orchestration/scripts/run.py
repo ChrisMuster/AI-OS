@@ -23,21 +23,31 @@ Modes:
                          step. --rounds N allows N more review rounds. The run keeps
                          the roles it started with, so --builder is refused here.
   --stop <run-id>        End a paused run.
+  --approve <run-id>     Continue a run paused for plan approval into the build (plan
+                         10.3 step 6): four read-only checks that the project has not
+                         moved, then Docker and the image, the run's own writes, the
+                         scope rebuild and the write-once approval.json, then the build.
+  --amend <run-id> <revised-brief>
+                         Replace a run's brief, paused for plan approval, once the
+                         revised brief passes the check, and move its open plan-review
+                         findings to Addressed. The run stays paused.
 
 --dry-run: with --check-brief, prints the LOG.md entries to stderr instead of writing
 them; with --run, makes every read-only preflight check and says what it would do,
-creating nothing and calling no model; with --resume and --stop, makes every check
-that mode makes and says what it would do, changing nothing.
+creating nothing and calling no model; with --resume, --stop, --approve and --amend,
+makes every check that mode makes and says what it would do, changing nothing (an
+approval's dry run runs no Docker command).
 
 Where the code runs from (orchestrator isolation plan 7.0, stage S6a). A brief check,
-a start, a resume and a stop are entered through the starter, ``start.py``, which
-checks the code about to run is committed; run directly from the project for any of
-the four, this script prints the starter command instead, before it imports anything
-from the project. A start makes its preflight and run record
+a start, a resume, a stop, an approval and an amendment are entered through the
+starter, ``start.py``, which checks the code about to run is committed; run directly
+from the project for any of the six, this script prints the starter command instead,
+before it imports anything from the project. A start makes its preflight and run record
 here, in the live tree, which the starter has just proved is the committed code; once
 the run's frozen folder exists it arms the tripwire and hands the run to the frozen
 folder's trusted copy of this script (``--advance``, a mode only that copy accepts),
-which takes every step. Resume and stop go straight to the trusted copy. The trusted
+which takes every step. Resume, stop, approve and amend go straight to the trusted
+copy. The trusted
 copy, before importing anything else, arms the tripwire and takes the project root
 from its frozen folder's ``hook.json``, refusing a set ``BOOK_DRAGON_ROOT`` that
 disagrees with it.
@@ -52,6 +62,8 @@ Usage (each through the starter, which runs this script):
   python workflows/review-orchestration/scripts/start.py --run <brief> --builder claude|codex --item <item> --git-dir <dir>
   python workflows/review-orchestration/scripts/start.py --resume <run-id> [--rounds N]
   python workflows/review-orchestration/scripts/start.py --stop <run-id>
+  python workflows/review-orchestration/scripts/start.py --approve <run-id>
+  python workflows/review-orchestration/scripts/start.py --amend <run-id> <revised-brief>
 """
 
 import argparse
@@ -150,13 +162,13 @@ def set_up_trusted(frozen, environ=None):
 STARTER_PATH = "workflows/review-orchestration/scripts/start.py"
 STARTER = "python " + STARTER_PATH
 STARTER_MARKER = "BOOK_DRAGON_REVIEW_ORCHESTRATION_STARTER"
-STARTER_MODES = ("--check-brief", "--run", "--resume", "--stop")
+STARTER_MODES = ("--check-brief", "--run", "--resume", "--stop", "--approve", "--amend")
 
 
 def needs_starter(argv, environ=None, frozen=None):
-    """The message to print when this script is run straight from the project for a
-    brief check, a start, a resume or a stop rather than through the starter (plan 7.0
-    item 2); None otherwise, and always None for a run's trusted copy (``frozen``)."""
+    """The message to print when this script is run straight from the project for any
+    of the starter's modes rather than through the starter (plan 7.0 item 2); None
+    otherwise, and always None for a run's trusted copy (``frozen``)."""
     environ = os.environ if environ is None else environ
     if frozen is not None or environ.get(STARTER_MARKER) == "1":
         return None
@@ -285,7 +297,7 @@ def _outcome(run):
     state = run.state
     if state["status"] != "ended":
         print(f"Run {state['run_id']} is {state['status']} ({state.get('pause')}). "
-              + loop.pause_commands(state["run_id"]))
+              + loop.pause_commands(state["run_id"], state.get("pause")))
         return 1
     reason = state["stop_reasons"][-1]["reason"]
     print(f"Run {state['run_id']} ended {reason}. Report: "
@@ -314,6 +326,10 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
     modes.add_argument("--run", metavar="BRIEF", help="start a run from a brief")
     modes.add_argument("--resume", metavar="RUN_ID", help="continue an ended run")
     modes.add_argument("--stop", metavar="RUN_ID", help="end a paused run")
+    modes.add_argument("--approve", metavar="RUN_ID",
+                       help="approve a run paused for plan approval and start its build")
+    modes.add_argument("--amend", nargs=2, metavar=("RUN_ID", "REVISED_BRIEF"),
+                       help="replace the brief of a run paused for plan approval")
     # The trusted copy's own mode: take a started run's steps (plan 7.0 item 3).
     modes.add_argument("--advance", metavar="RUN_ID", help=argparse.SUPPRESS)
     parser.add_argument("--builder", choices=("claude", "codex"),
@@ -339,7 +355,8 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
         parser.error("--advance is used only by a run's trusted copy")
     if args.run and frozen is not None:
         parser.error("a run is started through the starter, never from a trusted copy")
-    run_id = args.advance or args.resume or args.stop
+    run_id = (args.advance or args.resume or args.stop or args.approve
+              or (args.amend[0] if args.amend else None))
     if frozen is not None and run_id != frozen.name:
         print(f"REFUSED: this trusted copy belongs to run {frozen.name}, not {run_id}")
         return REFUSED
@@ -371,6 +388,21 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
             loop.resume(run, rounds=args.rounds, dry_run=args.dry_run)
             if args.dry_run:
                 return 0
+        elif args.approve:
+            run = loop.load(args.approve, wait=args.wait, **common)
+            loop.approve(run, dry_run=args.dry_run)
+            if args.dry_run:
+                return 0
+        elif args.amend:
+            run = loop.load(args.amend[0], **common)
+            superseded = loop.amend(run, args.amend[1], dry_run=args.dry_run)
+            if args.dry_run:
+                return 0
+            print(f"Run {run.state['run_id']} amended: its brief was replaced and "
+                  f"{len(superseded)} open plan-review finding(s) moved to Addressed. It "
+                  f"stays paused ({run.state.get('pause')}). "
+                  + loop.pause_commands(run.state["run_id"], run.state.get("pause")))
+            return 0
         else:
             run = loop.load(args.stop, **common)
             loop.stop(run, dry_run=args.dry_run)

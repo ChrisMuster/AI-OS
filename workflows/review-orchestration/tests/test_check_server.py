@@ -88,10 +88,19 @@ def write_lists(folder):
 
 
 def config(root, provider="claude", **changes):
-    value = {"run_id": RUN_ID, "edit_paths": ["notes/"], "project_root": str(root),
-             "builder_provider": provider, "public_head": HEAD, "image_tag": IMAGE}
+    """hook.json, which since A3 holds neither the edit paths nor the image tag (plan
+    10.3 step 6)."""
+    value = {"run_id": RUN_ID, "project_root": str(root), "builder_provider": provider,
+             "public_head": HEAD}
     value.update(changes)
     return value
+
+
+def write_approval(folder, image=IMAGE):
+    """approval.json, the one source of the image tag from approval on."""
+    (Path(folder) / "approval.json").write_text(
+        json.dumps({"edit_paths": ["notes/"], "image_tag": image}), encoding="utf-8",
+        newline="\n")
 
 
 class HelperCase(unittest.TestCase):
@@ -110,6 +119,7 @@ class HelperCase(unittest.TestCase):
         self.folder.mkdir(parents=True)
         write_lists(self.folder)
         self.write_config(config(self.root, self.provider))
+        write_approval(self.folder)
         (self.folder / "start-ignored.txt").write_text(
             "".join(f"{p}\n" for p in FLOOR), encoding="utf-8", newline="\n")
         self.copies = self.base / "book-dragon-copies" / RUN_ID
@@ -226,7 +236,7 @@ class ConfigTests(HelperCase):
             "missing": None,
             "not json": "{",
             "not an object": "[]",
-            "a key missing": config(self.root, image_tag=None),
+            "a key missing": config(self.root, public_head=None),
             "a key empty": config(self.root, public_head=""),
             "a key not text": config(self.root, project_root=7),
             "another run": config(self.root, run_id="20261008-101500-ffff"),
@@ -258,6 +268,42 @@ class ConfigTests(HelperCase):
     def test_rejection_a_verification_list_that_cannot_be_read(self):
         (self.folder / "verify-commands.txt").unlink()
         self.refused(BOTH, "cannot read verify-commands.txt")
+
+
+class ApprovalRecordTests(HelperCase):
+    """Plan 10.3 step 6: the image tag comes from approval.json alone, and without a
+    usable one every call is refused, get_timestamp's included."""
+
+    def test_positive_the_image_tag_is_approval_jsons(self):
+        (self.folder / "approval.json").unlink()
+        write_approval(self.folder, "bookdragon-checks:fedcba987654")
+        # A tag left in hook.json, as before A3, is never read.
+        self.write_config(config(self.root, image_tag=IMAGE))
+        self.check(BOTH)
+        self.assertEqual(self.ran[0][2], "bookdragon-checks:fedcba987654")
+
+    def test_rejection_a_missing_or_unusable_approval_json_refuses_every_run_check(self):
+        cases = {"missing": None, "not json": "{",
+                 "no image tag": json.dumps({"edit_paths": ["notes/"]}),
+                 "an empty image tag": json.dumps({"edit_paths": ["notes/"],
+                                                   "image_tag": ""})}
+        for label, text in cases.items():
+            with self.subTest(label):
+                path = self.folder / "approval.json"
+                path.unlink(missing_ok=True)
+                if text is not None:
+                    path.write_text(text, encoding="utf-8", newline="\n")
+                reply = self.refused(BOTH, "approval record cannot be used")
+                self.assertNotIn("exit", reply)
+
+    def test_rejection_get_timestamp_is_refused_without_it_and_writes_nothing(self):
+        self.assertRegex(check_server.get_timestamp(self.folder), TIMESTAMP)
+        (self.folder / "approval.json").unlink()
+        before = folder_bytes(self.folder)
+        reply = check_server.get_timestamp(self.folder)
+        self.assertTrue(reply.startswith("Refused by the orchestrator:"), reply)
+        self.assertIn("approval record cannot be used", reply)
+        self.assertEqual(folder_bytes(self.folder), before)
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +459,7 @@ class ServerTests(unittest.TestCase):
             shutil.copyfile(CONFIG / name, self.folder / name)
         (self.folder / "hook.json").write_text(json.dumps(config(base / "project")),
                                                encoding="utf-8", newline="\n")
+        write_approval(self.folder)
 
     def test_positive_the_frozen_helper_needs_nothing_from_the_project(self):
         # Loaded from the frozen folder alone, it judges by the frozen Claude list

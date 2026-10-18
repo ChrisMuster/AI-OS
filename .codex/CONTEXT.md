@@ -1,6 +1,6 @@
 # Codex
 
-**Last modified:** 2026-10-05
+**Last modified:** 2026-10-18
 
 ## Purpose
 Stores project-scoped Codex configuration for Book Dragon.
@@ -8,7 +8,7 @@ Stores project-scoped Codex configuration for Book Dragon.
 ## Contents
 - config.toml - `.codex/config.toml` [[.codex/CONTEXT]] - Stores Codex lifecycle hook configuration with git-root-anchored script launchers and keeps the older raw Biblio MCP registration disabled.
 - plugins/ - `.codex/plugins/` [[.codex/plugins/CONTEXT]] - Project-local Codex marketplace and Biblio Tools plugin wrapper.
-- rules/ - `.codex/rules/` [[.codex/rules/CONTEXT]] - Project Codex rules files: commands a Codex session may run outside its sandbox with no approval prompt (today, starting, resuming and stopping a review-orchestration run).
+- rules/ - `.codex/rules/` [[.codex/rules/CONTEXT]] - Project Codex rules files: commands a Codex session may run outside its sandbox with no approval prompt (today, starting, resuming, stopping, approving and amending a review-orchestration run).
 
 ## Inputs
 - Codex reads this directory when the project is trusted.
@@ -44,3 +44,4 @@ N/A. This is a configuration directory, not a workflow.
 - 2026-07-31 - Anchored Codex lifecycle hook launch commands to the git project root so PreToolUse, SessionStart, and Stop hooks keep working after a session cwd drift.
 - 2026-10-04 - Added `rules/` with `review-orchestration.rules`, so a Codex session can start, resume and stop a review-orchestration run outside its sandbox. `config.toml` is unchanged, so the project hooks' trust is unaffected.
 - 2026-10-05 - The SessionStart and Stop hook commands in `config.toml` pass Codex modes (`--reinject --ai codex`, `--codex-stop-hook`) so their output is the JSON Codex accepts; Codex had reported both as failed in every session. The change resets the two hooks' trust, so the user re-approves them once.
+- 2026-10-18 - `rules/review-orchestration.rules` gained entries for approving and amending a review-orchestration run, added by the user by hand; Contents updated. `config.toml` is unchanged, so the project hooks' trust is unaffected.

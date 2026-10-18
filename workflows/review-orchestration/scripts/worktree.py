@@ -106,6 +106,13 @@ def category_a(root, allowlist=None):
     work. ``root`` is kept for the callers' signature; the selection is the working
     folder's.
     """
+    module, specs = _classification(allowlist)
+    return set(module.select(specs)["final"])
+
+
+def _classification(allowlist=None):
+    """The sync classification's module and its pathspecs. Raises GitError when
+    either cannot be read."""
     path = Path(allowlist) if allowlist is not None else ALLOWLIST
     spec = importlib.util.spec_from_file_location("_sync_allowlist", path)
     if spec is None or not path.is_file():
@@ -116,7 +123,38 @@ def category_a(root, allowlist=None):
     if specs is None:
         raise GitError("the sync classification cannot be read: its plan or its "
                        "allowlist block is missing")
-    return set(module.select(specs)["final"])
+    return module, specs
+
+
+def uncaptured_category_a(root, git_dir, allowlist=None):
+    """The Category A files the personal repository does not yet track, as a set of
+    project-relative paths: the shared selection with the personal repository's own
+    ``git_dir`` (``allowlist.select(read_specs(), git_dir=...)["final"]``), the form
+    approval's fourth check uses (plan 10.3 step 6). Loaded from beside this module, as
+    ``category_a`` is. Raises GitError when the classification cannot be read or git
+    cannot answer, so an unanswered question is never read as an empty selection.
+    ``root`` is kept for the callers' signature; the selection is the working
+    folder's."""
+    module, specs = _classification(allowlist)
+    final = module.select(specs, git_dir=str(git_dir))["final"]
+    if final is None:
+        raise GitError("the uncaptured Category A selection could not be computed: git "
+                       "did not answer")
+    return set(final)
+
+
+def personal_changes(root, git_dir, edit_paths):
+    """Files the personal repository tracks under the edit paths that differ from its
+    ``HEAD``: ``git --git-dir=<git_dir> --work-tree=<root> status --porcelain
+    --untracked-files=no -- <paths>`` (plan 10.3 step 6, the third approval check).
+    Untracked files are left out on purpose: every publicly tracked file is untracked
+    there."""
+    specs = _pathspecs(edit_paths)
+    if not specs:
+        return []
+    out = git(root, "status", "--porcelain", "--untracked-files=no", "--", *specs,
+              git_dir=git_dir)
+    return [line[3:].strip().strip('"') for line in out.splitlines() if line.strip()]
 
 
 def _ignored(root, edit_paths):
@@ -328,6 +366,14 @@ def _inside(relative, prefixes):
     return any(folded == prefix or folded.startswith(prefix + "/") for prefix in prefixes)
 
 
+def under_edit_paths(relative, edit_paths):
+    """Whether a project-relative path lies inside one of the edit paths, judged as the
+    check after every turn judges it (``compare_inventory``): without case, a folder
+    edit path covering everything below it. Approval's Category A check uses this one
+    implementation (plan 10.3 step 6)."""
+    return _inside(relative, [edit.rstrip("/").lower() for edit in edit_paths])
+
+
 # The run-record files the orchestrator itself writes during a Codex builder turn: the
 # session copies its hook's decisions file (``codex_rules.DECISIONS_FILE``) into the
 # record after each turn. Only these are exempt from the check after the turn; any other
@@ -347,7 +393,6 @@ def compare_inventory(before, after, edit_paths, run_dir, root=None):
     finding R5-1, re-raising R3-1). Any change at all in either repository's git state is
     reported: section 3 bans git side effects, so none is ever in scope.
     """
-    allowed = [edit.rstrip("/").lower() for edit in edit_paths]
     exact, records = set(), None
     if root is not None:
         try:
@@ -368,7 +413,7 @@ def compare_inventory(before, after, edit_paths, run_dir, root=None):
             if relative.lower() not in exact:
                 problems.append(f"{relative} was {what} in a run record")
             continue
-        if _inside(relative, allowed):
+        if under_edit_paths(relative, edit_paths):
             continue
         problems.append(f"{relative} was {what} outside the edit paths")
     for repository in ("public", "personal"):
@@ -381,13 +426,21 @@ def compare_inventory(before, after, edit_paths, run_dir, root=None):
     return problems
 
 
-def record_start(run_dir, root, edit_paths, git_dir):
+def record_start(run_dir, root, edit_paths, git_dir, heads=None):
     """Write ``start/``: both commits, and ``git diff HEAD`` of the edit paths with
-    any untracked file under them in full. Returns the heads."""
+    any untracked file under them in full. Returns the heads.
+
+    ``heads`` given, as approval's scope rebuild gives the run's recorded ones (plan
+    10.3 step 6, "keeping the recorded HEADs"), are written as they are rather than read
+    again."""
     start = Path(run_dir) / "start"
     start.mkdir(parents=True, exist_ok=True)
-    heads = {"public_head": git(root, "rev-parse", "HEAD").strip(),
-             "personal_head": git(root, "rev-parse", "HEAD", git_dir=git_dir).strip()}
+    if heads is None:
+        heads = {"public_head": git(root, "rev-parse", "HEAD").strip(),
+                 "personal_head": git(root, "rev-parse", "HEAD", git_dir=git_dir).strip()}
+    else:
+        heads = {"public_head": heads["public_head"],
+                 "personal_head": heads["personal_head"]}
     specs = _pathspecs(edit_paths)
     diff = git(root, "diff", "HEAD", "--", *specs, *EXCLUDE_SPECS) if specs else ""
     for relative in _lines(git(root, "ls-files", "--others", "--exclude-standard", "--",

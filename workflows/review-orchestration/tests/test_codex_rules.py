@@ -809,8 +809,11 @@ class HookCase(unittest.TestCase):
             cwd=self.root, run_dir=base / "runs" / RUN_ID, temp_root=self.temp)
         self.builder.frozen_dir.mkdir(parents=True)
         frozen.populate(self.builder.frozen_dir, SCRIPTS, CONFIG,
-                        frozen.hook_config(RUN_ID, self.root, EDIT_PATHS, "codex",
-                                           "0" * 40, "bookdragon-checks:0123456789ab"))
+                        frozen.hook_config(RUN_ID, self.root, "codex", "0" * 40))
+        # Since A3 the edit paths and the image tag are approval.json's, written at
+        # approval, before any builder session exists (plan 10.3 step 6).
+        frozen.write_approval(self.builder.frozen_dir, EDIT_PATHS,
+                              "bookdragon-checks:0123456789ab")
         self.builder._freeze()  # the launch's own check finds it whole
         self.frozen = self.builder.frozen_dir
         self.decisions = self.frozen / "hook-decisions.jsonl"
@@ -871,13 +874,14 @@ class HookTests(HookCase):
         self.assertEqual(names, {"codex_hook.py", "codex_rules.py", "approver.py",
                                  "brief.py", "check_server.py", "container.py",
                                  "codex-verify-commands.txt", "codex-read-commands.txt",
-                                 "verify-commands.txt", "hook.json", "tripwire",
-                                 "trusted"})
+                                 "verify-commands.txt", "hook.json", "approval.json",
+                                 "tripwire", "trusted"})
         config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
-        self.assertEqual(config, {"run_id": RUN_ID, "edit_paths": EDIT_PATHS,
-                                  "project_root": str(self.root),
-                                  "builder_provider": "codex", "public_head": "0" * 40,
-                                  "image_tag": "bookdragon-checks:0123456789ab"})
+        self.assertEqual(config, {"run_id": RUN_ID, "project_root": str(self.root),
+                                  "builder_provider": "codex", "public_head": "0" * 40})
+        self.assertEqual(codex_rules.read_approval(self.frozen),
+                         {"edit_paths": EDIT_PATHS,
+                          "image_tag": "bookdragon-checks:0123456789ab"})
         for name in codex_rules.FROZEN_MODULES:
             self.assertEqual((self.frozen / name).read_bytes(), (SCRIPTS / name).read_bytes())
 
@@ -913,8 +917,9 @@ class HookTests(HookCase):
                           "git status --short"))
 
     def test_positive_a_patch_and_a_verification_command_are_judged_by_the_run(self):
-        # The project root and the edit paths come from hook.json, never from where the
-        # frozen copies sit. A verification command arrives as a run_check call (S7).
+        # The project root comes from hook.json and the edit paths from approval.json,
+        # never from where the frozen copies sit. A verification command arrives as a
+        # run_check call (S7).
         inside = patch("*** Add File: workflows/doc-sync-guard/a.py", "+x")
         self.assertEqual(self.run_hook(self.event("apply_patch", {"command": inside})), "")
         self.assertEqual(self.run_hook(self.event(RUN_CHECK, {
@@ -959,6 +964,31 @@ class HookTests(HookCase):
         (self.frozen / "hook.json").write_bytes(b'{"edit_paths": []}')
         self.denied(self.run_hook(self.event(call="exec-3")), "hook settings cannot be read")
         self.assertEqual([line["decision"] for line in self.lines()], ["deny"] * 3)
+
+    def test_rejection_a_missing_or_unusable_approval_json_refuses_every_call(self):
+        # Plan 10.3 step 6: the edit paths come only from approval.json, and the hook
+        # refuses every call without it, read calls included, as it fails closed on
+        # hook.json.
+        (self.frozen / "approval.json").unlink()
+        for number, (tool, tool_input) in enumerate((
+                ("Bash", {"command": "git status --short"}),
+                ("apply_patch", {"command": patch("*** Add File: notes/a.md", "+x")}),
+                (RUN_CHECK, {"command": "python workflows/doc-sync-guard/scripts/run.py "
+                                        "--check"}))):
+            with self.subTest(tool=tool):
+                self.denied(self.run_hook(self.event(tool, tool_input,
+                                                     call=f"exec-{number}")),
+                            "approval record cannot be used")
+        (self.frozen / "approval.json").write_bytes(b'{"edit_paths": ["notes/"]}')
+        self.denied(self.run_hook(self.event(call="exec-9")), "approval record cannot be used")
+        # Edit paths left in hook.json, as before A3, are never read.
+        config = json.loads((self.frozen / "hook.json").read_text(encoding="utf-8"))
+        config["edit_paths"] = EDIT_PATHS
+        (self.frozen / "hook.json").write_text(json.dumps(config), encoding="utf-8",
+                                               newline="\n")
+        self.denied(self.run_hook(self.event(call="exec-10")),
+                    "approval record cannot be used")
+        self.assertEqual({line["decision"] for line in self.lines()}, {"deny"})
 
     def test_rejection_stdin_that_is_not_a_json_object(self):
         for stdin in ("", "not json", "[1, 2]", '"text"'):
@@ -1143,8 +1173,9 @@ class RunRuleHookTests(unittest.TestCase):
 
 
 class ProjectRulesFileTests(unittest.TestCase):
-    """The project's Codex rules entry for starting, resuming and stopping a run (the
-    chunk (d) short plan, 11.1), checked with ``codex execpolicy check`` from the binary
+    """The project's Codex rules entry for starting, resuming, stopping, approving and
+    amending a run (the chunk (d) short plan, 11.1; A3 chunk 1 for the last two, added
+    by hand), checked with ``codex execpolicy check`` from the binary
     the pinned ``openai-codex`` installs. That command matches plain tokens only and
     does not unwrap the ``powershell.exe -Command`` wrapper Codex uses on Windows, so
     these tests cannot show the wrapped form; a live Codex matching it is fact 17 of the
@@ -1165,11 +1196,13 @@ class ProjectRulesFileTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)
 
-    def test_positive_the_three_modes_are_allowed(self):
+    def test_positive_the_five_modes_are_allowed(self):
         for argv in (("--run", "BRIEF.md", "--builder", "codex", "--item", "x",
                       "--git-dir", "C:/BookDragon/personal-work.git"),
                      ("--resume", "20261004-000000-abcd", "--rounds", "1"),
-                     ("--stop", "20261004-000000-abcd")):
+                     ("--stop", "20261004-000000-abcd"),
+                     ("--approve", "20261004-000000-abcd"),
+                     ("--amend", "20261004-000000-abcd", "BRIEF.md")):
             with self.subTest(mode=argv[0]):
                 result = self.check("python", self.STARTER, *argv)
                 self.assertEqual(result.get("decision"), "allow", result)
@@ -1180,6 +1213,9 @@ class ProjectRulesFileTests(unittest.TestCase):
                        ("python", self.RUN_PY, "--run", "BRIEF.md"),
                        ("python", self.RUN_PY, "--resume", "20261004-000000-abcd"),
                        ("python", self.RUN_PY, "--stop", "20261004-000000-abcd"),
+                       ("python", self.RUN_PY, "--approve", "20261004-000000-abcd"),
+                       ("python", self.RUN_PY, "--amend", "20261004-000000-abcd",
+                        "BRIEF.md"),
                        ("python", "workflows/audit/scripts/run.py", "--run"),
                        ("python", "-c", "print(1)"),
                        ("py", self.STARTER, "--run", "BRIEF.md")):
@@ -1188,14 +1224,44 @@ class ProjectRulesFileTests(unittest.TestCase):
                 self.assertEqual(result.get("matchedRules"), [], result)
                 self.assertNotIn("decision", result)
 
+    MODES = ("--run", "--resume", "--stop", "--approve", "--amend")
+
+    def rules_in(self, text):
+        """Every ``prefix_rule`` call in ``text`` as ``(pattern tokens, decision)``,
+        found whatever its spacing (code review R27-1), so a rule written as
+        ``pattern=[...]`` is read like any other. A call whose pattern or decision
+        cannot be read gives None for that part, which matches no expected rule."""
+        rules = []
+        for call in re.split(r"\bprefix_rule\s*\(", text)[1:]:
+            pattern = re.search(r"\bpattern\s*=\s*\[(.*?)\]", call, re.S)
+            decision = re.search(r'\bdecision\s*=\s*"([^"]*)"', call)
+            rules.append((tuple(re.findall(r'"([^"]*)"', pattern.group(1)))
+                          if pattern else None,
+                          decision.group(1) if decision else None))
+        return rules
+
     def test_positive_the_file_holds_only_allow_rules_for_this_script(self):
         text = self.RULES.read_text(encoding="utf-8")
-        patterns = re.findall(r"pattern = \[(.*?)\]", text)
-        self.assertEqual(len(patterns), 3)
-        for pattern in patterns:
-            self.assertTrue(pattern.startswith(f'"python", "{self.STARTER}", "--'), pattern)
+        expected = [(("python", self.STARTER, mode), "allow") for mode in self.MODES]
+        self.assertEqual(sorted(self.rules_in(text)), sorted(expected))
         self.assertNotIn(self.RUN_PY, text)
-        self.assertEqual(text.count('decision = "allow"'), 3)
+
+    def test_rejection_a_rule_outside_the_five_is_seen_whatever_its_spacing(self):
+        # The positive control for the check above (code review R27-1): each planted
+        # rule, in the spacing Codex also accepts, makes the file's rules differ from
+        # the five expected.
+        text = self.RULES.read_text(encoding="utf-8")
+        expected = sorted((("python", self.STARTER, mode), "allow") for mode in self.MODES)
+        self.assertEqual(sorted(self.rules_in(text)), expected)
+        for planted in ('prefix_rule(pattern=["python", "-c"], decision="allow")\n',
+                        'prefix_rule(\n  pattern=["git", "push"],\n  decision="allow",\n)\n',
+                        'prefix_rule(pattern=["python", "' + self.STARTER
+                        + '", "--run"], decision="allow")\n'):
+            with self.subTest(planted=planted):
+                self.assertNotEqual(sorted(self.rules_in(text + planted)), expected)
+        swapped = text.replace('"--stop"]', '"--check-brief"]')
+        self.assertNotEqual(swapped, text)
+        self.assertNotEqual(sorted(self.rules_in(swapped)), expected)
 
 
 if __name__ == "__main__":

@@ -61,13 +61,15 @@ CONFIG = WORKFLOW / "config"
 def make_frozen(folder, root, edit_paths=("notes/",), run_id=None):
     """The run's frozen folder, made as the orchestrator makes it (frozen.populate, from
     the workflow's own files), since a builder session only checks it (isolation plan 6
-    item 1). Returns the folder."""
+    item 1). Returns the folder. Since A3 the edit paths and the image tag are written
+    to approval.json, as approval writes them before any builder session exists (plan
+    10.3 step 6)."""
     folder = Path(folder)
     folder.mkdir(parents=True)
-    return frozen.populate(folder, SCRIPTS, CONFIG,
-                           frozen.hook_config(run_id or folder.name, root, edit_paths,
-                                              "codex", "0" * 40,
-                                              "bookdragon-checks:0123456789ab"))
+    frozen.populate(folder, SCRIPTS, CONFIG,
+                    frozen.hook_config(run_id or folder.name, root, "codex", "0" * 40))
+    frozen.write_approval(folder, list(edit_paths), "bookdragon-checks:0123456789ab")
+    return folder
 
 try:
     from claude_agent_sdk import (AssistantMessage, PermissionResultAllow,
@@ -2129,6 +2131,59 @@ class RuleHooksFromTrustedCopyTests(unittest.TestCase):
         self.assertIn("warn", events)
         self.assertFalse((self.root / "workflows" / "rule-hooks").exists(),
                          "no fire log, or anything else, lands in the project")
+
+
+class UncachedTokensTests(unittest.TestCase):
+    """Plan 10.10 item 6 (A3 chunk 1): each step's tokens without cache reads, the one
+    figure the price alarm compares."""
+
+    def test_positive_claude_leaves_out_cache_reads_only(self):
+        usage = {"input_tokens": 10, "cache_creation_input_tokens": 20,
+                 "output_tokens": 5, "cache_read_input_tokens": 9000}
+        self.assertEqual(providers.claude_uncached_tokens(usage), 35)
+        self.assertEqual(providers.claude_tokens(usage), 9035)  # the total is unchanged
+        self.assertEqual(providers.uncached_tokens(limits.CLAUDE, usage), 35)
+
+    def test_positive_a_missing_cache_field_counts_as_zero(self):
+        self.assertEqual(providers.claude_uncached_tokens(
+            {"input_tokens": 10, "output_tokens": 5}), 15)
+        self.assertEqual(providers.codex_uncached_tokens(
+            {"total": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}}), 15)
+
+    def test_rejection_without_input_or_output_there_is_no_figure(self):
+        for usage in ({"output_tokens": 5}, {"input_tokens": 10},
+                      {"input_tokens": True, "output_tokens": 5}, None, "x"):
+            with self.subTest(usage=usage):
+                self.assertIsNone(providers.claude_uncached_tokens(usage))
+        for usage in ({"total": {"outputTokens": 5, "totalTokens": 5}},
+                      {"total": {"inputTokens": 5, "totalTokens": 5}},
+                      {"total": {"inputTokens": 5, "outputTokens": 1}},  # no total
+                      {"total": {"total_tokens": 1000}}, None):
+            with self.subTest(usage=usage):
+                self.assertIsNone(providers.codex_uncached_tokens(usage))
+
+    def test_positive_codex_reads_either_spelling_from_the_block_codex_tokens_reads(self):
+        camel = {"cachedInputTokens": 30, "inputTokens": 100, "outputTokens": 7,
+                 "totalTokens": 107}
+        snake = {"cached_input_tokens": 30, "input_tokens": 100, "output_tokens": 7,
+                 "total_tokens": 107}
+        for block in (camel, snake):
+            with self.subTest(block=sorted(block)):
+                self.assertEqual(providers.codex_uncached_tokens({"total": block}), 77)
+                self.assertEqual(providers.uncached_tokens(limits.CODEX, {"total": block}),
+                                 77)
+        # total first, then last, as codex_tokens reads its total.
+        both = {"total": camel, "last": {"inputTokens": 1, "outputTokens": 1,
+                                         "totalTokens": 2}}
+        self.assertEqual((providers.codex_tokens(both),
+                          providers.codex_uncached_tokens(both)), (107, 77))
+        only_last = {"total": {"x": 1}, "last": camel}
+        self.assertEqual((providers.codex_tokens(only_last),
+                          providers.codex_uncached_tokens(only_last)), (107, 77))
+
+    def test_negative_an_unknown_provider_has_no_figure(self):
+        self.assertIsNone(providers.uncached_tokens(None, {"input_tokens": 1,
+                                                           "output_tokens": 1}))
 
 
 class MarkerTests(unittest.TestCase):

@@ -6,8 +6,9 @@ builder (Stage A2 chunk (d); short plan section 3.5).
 Codex runs this once per tool call, from the run's frozen folder
 (``<temp>/book-dragon-orchestration/<run-id>/``), with the run id as its one argument
 and the call as a JSON object on stdin. It reads nothing outside that folder: the
-brief's edit paths and the project root come from the folder's ``hook.json``, and the
-two command lists sit beside it. It decides the call with ``codex_rules.decide``; a
+project root comes from the folder's ``hook.json``, the approved edit paths from its
+``approval.json`` (plan 10.3 step 6, written once at approval), and the two command
+lists sit beside them. It decides the call with ``codex_rules.decide``; a
 ``Bash`` or ``apply_patch`` call its rules allow then goes through the run's trusted
 rule hooks (``codex_rules.run_rule_hook``, from the folder's ``trusted/`` copy, plan
 7.6 item 3, decision 19), whose block, timeout, crash or unreadable answer is a deny
@@ -16,7 +17,8 @@ then prints a refusal for a ``deny`` or nothing for an ``allow``. The line is wr
 before anything is printed, so an ``allow`` with no line cannot happen. The rule
 hooks' own reply is never passed to Codex as this hook's reply.
 
-It fails closed. A bad run id, a missing or unreadable ``hook.json``, stdin that is
+It fails closed. A bad run id, a missing or unreadable ``hook.json`` or
+``approval.json``, stdin that is
 not a JSON object, a ``session_id`` that differs from the one an earlier line of the
 same file recorded, or any exception at all prints a refusal, and is recorded where
 the file can be written. Standard library and this workflow's own modules only.
@@ -75,11 +77,15 @@ def judge(argv, raw, folder, rule_hook=None):
                               "for this run."), ""
     try:
         config = json.loads((folder / codex_rules.HOOK_CONFIG).read_text(encoding="utf-8"))
-        edit_paths = config["edit_paths"]
         root = config["project_root"]
     except (OSError, ValueError, KeyError, TypeError):
         return event, False, ("Refused by the orchestrator: the run's hook settings "
                               "cannot be read."), ""
+    try:
+        edit_paths = codex_rules.read_approval(folder)["edit_paths"]
+    except codex_rules.ApprovalError as exc:
+        return event, False, ("Refused by the orchestrator: the run's approval record "
+                              f"cannot be used ({exc})."), ""
     earlier = {line.get("session_id")
                for line in codex_rules.read_decisions(folder / codex_rules.DECISIONS_FILE)}
     earlier.discard(None)

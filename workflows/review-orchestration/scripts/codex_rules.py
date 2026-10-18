@@ -60,6 +60,11 @@ FROZEN_MODULES = ("codex_hook.py", "codex_rules.py", "approver.py", "brief.py",
 FROZEN_LISTS = ("codex-verify-commands.txt", "codex-read-commands.txt",
                 "verify-commands.txt")
 HOOK_CONFIG = "hook.json"
+# The run's approved edit paths and check image tag (plan 10.3 step 6): written once,
+# at approval, and from then on the one source of both for the Codex hook, the Claude
+# builder's approver and the check helper. Nothing reads them from hook.json.
+APPROVAL_FILE = "approval.json"
+APPROVAL_KEYS = ("edit_paths", "image_tag")
 DECISIONS_FILE = "hook-decisions.jsonl"
 # The check helper's one line per call, and the ignore floor it reads (plan 5.3, 6).
 CHECK_CALLS_FILE = "check-calls.jsonl"
@@ -118,6 +123,36 @@ _OVERRIDE_DEFAULTS = (None, False, "", "use_default", [], {})
 # other folder is refused: a project-relative read path, or a listed test script, would
 # otherwise resolve somewhere else.
 SHELL_FOLDER_FIELDS = ("workdir", "cwd")
+
+
+class ApprovalError(Exception):
+    """The run's ``approval.json`` is missing or cannot be used. Every reader refuses
+    every call it would otherwise judge or run (plan 10.3 step 6)."""
+
+
+def read_approval(folder):
+    """The run's approval record from its frozen folder: ``{"edit_paths": [...],
+    "image_tag": "..."}``. It must be a JSON object holding exactly those two keys, the
+    edit paths a non-empty list of non-empty strings and the tag a non-empty string.
+    Raises ApprovalError naming what is wrong; never guesses."""
+    path = Path(folder) / APPROVAL_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ApprovalError(f"{APPROVAL_FILE} is missing: the run has not been "
+                            "approved") from exc
+    except (OSError, ValueError) as exc:
+        raise ApprovalError(f"{APPROVAL_FILE} cannot be read ({type(exc).__name__})") from exc
+    if not isinstance(data, dict) or set(data) != set(APPROVAL_KEYS):
+        raise ApprovalError(f"{APPROVAL_FILE} must be an object holding exactly "
+                            + " and ".join(APPROVAL_KEYS))
+    paths, tag = data["edit_paths"], data["image_tag"]
+    if (not isinstance(paths, list) or not paths
+            or not all(isinstance(item, str) and item.strip() for item in paths)):
+        raise ApprovalError(f"{APPROVAL_FILE} holds no usable edit paths")
+    if not isinstance(tag, str) or not tag.strip():
+        raise ApprovalError(f"{APPROVAL_FILE} holds no usable image tag")
+    return {"edit_paths": list(paths), "image_tag": tag}
 
 
 def _folder_problem(root, tool_input):
