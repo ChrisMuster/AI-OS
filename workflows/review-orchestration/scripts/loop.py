@@ -120,8 +120,11 @@ RECOMMEND = {
 }
 
 
-def recommendation(reason, run_id):
+def recommendation(reason, run_id, *, paid=False):
     """The report's recommendation for a stop reason, naming the run's own id."""
+    if reason == sr.USAGE_LIMIT and paid:
+        return (f"Resume after the reset time given ({STARTER} --resume {run_id}), "
+                f"or permit one step now ({STARTER} --resume {run_id} --allow-paid).")
     text = RECOMMEND.get(reason)
     return None if text is None else text.replace("<run-id>", run_id)
 
@@ -258,6 +261,7 @@ class Deps:
     remove_frozen: Callable = None
     remove_copies: Callable = None
     claude_usage: Callable = limits.ClaudeUsage
+    probe_claude: Callable = None
     sleep: Callable = time.sleep
     now: Callable = time.time
 
@@ -298,6 +302,9 @@ class Deps:
             self.remove_frozen = frozen_mod.remove
         if self.remove_copies is None:
             self.remove_copies = container.remove_copies
+        if self.probe_claude is None:
+            self.probe_claude = lambda model, cwd, on_event: asyncio.run(
+                providers.probe_claude(model, cwd=cwd, on_event=on_event))
 
 
 # ------------------------------------------------------------------ small helpers
@@ -339,6 +346,71 @@ def untrackable(snapshot):
     if (snapshot["hasCredits"] or snapshot["unlimited"]) and snapshot["balance"] == "absent":
         return "Codex reports credits or unlimited use but no balance"
     return None
+
+
+def _reading_record(reading, now):
+    """Only fields needed to keep Claude's last event across a resume."""
+    return {"source": reading.source, "reason": reading.reason,
+            "percent": reading.percent, "window": reading.window,
+            "resets_at": reading.resets_at, "read_at": now}
+
+
+def _last_claude(state):
+    saved = state.get("claude_last_reading")
+    return (limits.Reading(limits.CLAUDE, saved["source"],
+                           percent=saved.get("percent"), window=saved.get("window"),
+                           resets_at=saved.get("resets_at"), reason=saved.get("reason"))
+            if saved else limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                                         reason="no saved rate-limit event"))
+
+
+def _paid_overage(reading):
+    return (reading.provider == limits.CLAUDE
+            and reading.source == limits.LIMIT_REPORTED
+            and reading.reason == "using paid overage")
+
+
+def _usage_stop(readings, ceiling, *, allow_paid=False):
+    """Paid permission lifts the margin and overage stops, not hard refusals."""
+    if allow_paid:
+        for reading in readings:
+            if reading.source == limits.LIMIT_REPORTED and not (
+                    _paid_overage(reading) or
+                    (reading.provider == limits.CODEX and reading.reason ==
+                     "ordinaryUsageAllowed is null or absent")):
+                return limits.check_ceiling([reading], ceiling)
+        return None
+    return limits.check_ceiling(readings, ceiling)
+
+
+def _effective_last(state, now, *, user_resume=False):
+    reading = _last_claude(state)
+    if reading.resets_at is not None and reading.resets_at <= now:
+        return limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                              reason="the saved usage reset has passed")
+    if _paid_overage(reading):
+        if reading.resets_at is None and user_resume:
+            return limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                                  reason="the user resumed after an unknown reset")
+    return reading
+
+
+def _grant_paid(run, reading):
+    step = run.next_step()
+    run.state.setdefault("paid_usage", []).append({
+        "step": step, "at": _now_text(), "codex": reading.summary(),
+        "claude": _last_claude(run.state).summary()})
+    run.state["paid_usage_pending"] = step
+
+
+def _preflight_usage(reading, last, ceiling, *, allow_paid=False):
+    stop = _usage_stop([reading, last], ceiling, allow_paid=allow_paid)
+    if stop is not None:
+        paid = (_paid_overage(stop.reading) or
+                stop.reading.reason == "ordinaryUsageAllowed is null or absent")
+        raise RunRefused([f"usage: {stop.reason} ({stop.reading.summary()})"
+                          + ("; retry with --allow-paid to permit one step"
+                             if paid else "")])
 
 
 def _listed(lines):
@@ -529,6 +601,9 @@ class Run:
         # open, builder or reviewer, so a reading from one round's reviewer is still
         # there before the next step. It starts empty in each process.
         self.claude_usage = self.deps.claude_usage()
+        self.claude_usage.on_event = self.note_claude_event
+        self.claude_usage.paid_allowed = False
+        self._probe_for_step = None
         # A negative Codex reading holds for the whole run, resumes included.
         source = state.get("usage_source") or {}
         if source.get("codex") == limits.UNAVAILABLE:
@@ -609,19 +684,24 @@ class Run:
         print(f"--wait: sleeping {round(delay)} s until the reported reset.",
               file=sys.stderr)
         self.deps.sleep(delay)
-        resume(self)
+        resume(self, user_started=False)
         return True
 
     async def take(self, step):
         provider = (self.settings["roles"]["reviewer"] if step.startswith("review")
                     else self.settings["roles"]["builder"])
+        permitted = self.state.get("paid_usage_pending") == step
+        self.claude_usage.paid_allowed = permitted
         try:
-            stop = self.before_step(step, provider)
+            stop = await asyncio.to_thread(self.before_step, step, provider)
         except Exception as exc:  # the reading itself failed: the step never started
+            self.state.pop("paid_usage_pending", None)
             self.end(sr.ERROR, {"step": step, "error": "the usage reading before the "
                                 f"step failed: {type(exc).__name__}: {exc}"})
             return
         if stop is not None:
+            self.state.pop("paid_usage_pending", None)
+            self.state["claude_unknown_reset_resume"] = False
             self.end(sr.USAGE_LIMIT, stop)
             return
         try:
@@ -633,11 +713,31 @@ class Run:
                 await self.fix(int(step.split("-R")[1]))
         except limits.UsageLimitError as exc:
             self._interrupted(step)
+            self.state.pop("paid_usage_pending", None)
+            self.claude_usage.paid_allowed = False
             self.end(sr.USAGE_LIMIT, {"step": step, "provider": exc.provider,
-                                      "detail": exc.detail, "resets_at": exc.resets_at})
+                                      "detail": exc.detail, "resets_at": exc.resets_at,
+                                      "paid_usage": "paid overage" in exc.detail})
         except Exception as exc:  # a provider, a check or a reply failed
             self._interrupted(step)
+            self.state.pop("paid_usage_pending", None)
+            self.claude_usage.paid_allowed = False
             self.end(sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            self.state.pop("paid_usage_pending", None)
+            self.state["claude_unknown_reset_resume"] = False
+            self.claude_usage.paid_allowed = False
+            if permitted and self.state["status"] == sr.RUNNING:
+                # A permitted step establishes the next Codex credit comparison.
+                try:
+                    fresh = self.note_codex(self.deps.read_codex(
+                        self.root, self.state.get("frozen_dir")))
+                    self.state["credits"] = credit_snapshot(fresh)
+                except Exception as exc:  # a later step will stop on a missing snapshot
+                    self.state["credits"] = None
+                    self.state.setdefault("paid_usage_notes", []).append(
+                        f"credit reading after {step} failed: {type(exc).__name__}: {exc}")
+                self.save()
 
     def _interrupted(self, step):
         """Record what a step left behind when it did not complete.
@@ -685,6 +785,12 @@ class Run:
 
     # --------------------------------------------------------------- usage
 
+    def note_claude_event(self, reading):
+        self.state["claude_last_reading"] = _reading_record(reading, self.deps.now())
+        # Persist before another model request can run, including when the current
+        # session or probe later fails after this event.
+        self.save()
+
     def note_codex(self, reading):
         """Pass a Codex reading through the run's RunUsage and record the run's usage
         source, as plan 10.10 item 1 asks: ``usage_source.codex`` is "unavailable",
@@ -709,31 +815,81 @@ class Run:
 
     def before_step(self, step, provider):
         """None if the step may start, else the evidence for a ``usage-limit`` stop."""
-        codex, claude = self.readings()
-        self.state.setdefault("readings", []).append(
-            {"step": step, "codex": codex.summary(), "claude": claude.summary()})
-        stop = limits.check_ceiling([codex, claude], self.settings["usage_ceiling_percent"])
+        self._probe_for_step = None
+        permitted = self.state.get("paid_usage_pending") == step
+        codex = self.note_codex(self.deps.read_codex(self.root,
+                                                     self.state.get("frozen_dir")))
+        last = _effective_last(self.state, self.deps.now(),
+                               user_resume=bool(self.state.get("claude_unknown_reset_resume")))
+        if not self.state.get("claude_last_reading"):
+            shared = self.claude_usage.reading()
+            if shared.source != limits.UNAVAILABLE:
+                last = shared
+        claude = last
+        probe = None
+        # A known overage is checked before a paid request can be sent.
+        stop = _usage_stop([codex, last], self.settings["usage_ceiling_percent"],
+                           allow_paid=permitted)
+        if stop is None and provider == limits.CLAUDE:
+            seen = []
+            def received(event):
+                seen.append(event)
+                self.claude_usage.observe(event)
+            try:
+                probe = self.deps.probe_claude(self.settings["usage_probe_model"],
+                                               self.state["frozen_dir"], received)
+            except Exception:
+                if seen:
+                    latest = self.claude_usage.reading()
+                    detail = {"tokens": None, "usage": None,
+                              "model": self.settings["usage_probe_model"],
+                              "probe_event": True}
+                    if _paid_overage(latest) and not _paid_overage(last) and not permitted:
+                        detail["probe_on_overage"] = True
+                    self.state.setdefault("readings", []).append({
+                        "step": step, "codex": codex.summary(),
+                        "claude": latest.summary(), "usage_probe": detail})
+                raise
+            claude = probe.reading
+            self._probe_for_step = {"tokens": probe.tokens, "usage": probe.usage,
+                                    "model": probe.model, "probe_event": bool(probe.events)}
+            if (_paid_overage(claude) and not _paid_overage(last)
+                    and not permitted):
+                self._probe_for_step["probe_on_overage"] = True
+            self.state["claude_unknown_reset_resume"] = False
+        entry = {"step": step, "codex": codex.summary(), "claude": claude.summary()}
+        if probe is not None:
+            entry["usage_probe"] = dict(self._probe_for_step)
+        self.state.setdefault("readings", []).append(entry)
+        if stop is None:
+            stop = _usage_stop([codex, claude], self.settings["usage_ceiling_percent"],
+                               allow_paid=permitted)
         if stop is not None:
             return {"step": step, "provider": stop.provider, "detail": stop.reason,
-                    "reading": stop.reading.summary(), "resets_at": stop.reading.resets_at}
-        if provider == limits.CODEX:
+                    "reading": stop.reading.summary(), "resets_at": stop.reading.resets_at,
+                    "paid_usage": (_paid_overage(stop.reading) or
+                                   stop.reading.reason ==
+                                   "ordinaryUsageAllowed is null or absent")}
+        if provider == limits.CODEX and not permitted:
             now = credit_snapshot(codex)
             then = self.state.get("credits") or {}
             if now is None:
                 return {"step": step, "provider": limits.CODEX, "resets_at": None,
                         "detail": "the Codex credit snapshot is missing from the reading "
-                                  f"({codex.summary()})"}
+                                  f"({codex.summary()})", "paid_usage": True}
             differs = [key for key in ("hasCredits", "unlimited", "balance")
                        if now.get(key) != then.get(key)]
             if differs:
                 return {"step": step, "provider": limits.CODEX, "resets_at": None,
                         "detail": "the Codex credit snapshot changed since preflight ("
                                   + ", ".join(f"{key} {then.get(key)!r} -> {now[key]!r}"
-                                              for key in differs) + ")"}
+                                              for key in differs) + ")",
+                        "paid_usage": True}
             if _reached_type(codex) and now.get("hasCredits"):
                 return {"step": step, "provider": limits.CODEX, "resets_at":
                         codex.resets_at, "detail": "Codex reports its included allowance "
-                        f"reached ({_reached_type(codex)}) with credits next"}
+                        f"reached ({_reached_type(codex)}) with credits next",
+                        "paid_usage": True}
         return None
 
     # -------------------------------------------------------------- builder
@@ -889,6 +1045,7 @@ class Run:
         self.state.setdefault("steps", []).append(
             {"step": step, "role": "builder", "provider": self.builder.provider,
              "model": turn.model, **tokens,
+             **({"usage_probe": self._probe_for_step} if self._probe_for_step else {}),
              "usage": turn.usage, "cost_usd_equivalent": turn.cost_usd_equivalent,
              "wall_seconds": turn.wall_seconds, "summary": (turn.final_text or "")[-4000:]})
         _write_json(self.run_dir / "transcripts" / f"{step}.json", turn.messages)
@@ -1054,6 +1211,7 @@ class Run:
         self.state.setdefault("steps", []).append(
             {"step": step, "role": "reviewer", "provider": reviewer.provider,
              "model": reviewer.model, "tokens": record.tokens,
+             **({"usage_probe": self._probe_for_step} if self._probe_for_step else {}),
              "uncached_tokens": providers.uncached_tokens(reviewer.provider, record.usage),
              "usage": record.usage, "wall_seconds": record.wall_seconds,
              "thread_id": record.thread_id, "summary": record.reply.get("summary"),
@@ -1302,12 +1460,15 @@ def write_report(run):
     report = {
         "run_id": state["run_id"], "item": state["item"], "stop_reason": last["reason"],
         "evidence": evidence,
-        "recommendation": recommendation(last["reason"], state["run_id"]),
+        "recommendation": recommendation(last["reason"], state["run_id"],
+                                         paid=bool(evidence.get("paid_usage"))),
         "stop_reasons": state["stop_reasons"], "last_step": state["step"],
         "rounds": state.get("rounds", []),
         "open": [f["label"] for f in findings if not packet_mod.is_addressed(f)],
         "addressed": [f["label"] for f in findings if packet_mod.is_addressed(f)],
         "readings": state.get("readings", []), "steps": state.get("steps", []),
+        "paid_usage": state.get("paid_usage", []),
+        "claude_last_reading": state.get("claude_last_reading"),
         "refusals": state.get("refusals", []), "live": state.get("live", {}),
         "turn_checks": state.get("turn_checks", []),
         "inject": state.get("inject"), "price_alarm": price_alarm(run),
@@ -1344,9 +1505,19 @@ def write_report(run):
     for step in report["steps"]:
         lines.append(f"- {step['step']} ({step['role']}, {step['provider']}, "
                      f"{step.get('model')}): {step.get('tokens')} tokens, "
-                     f"{step.get('wall_seconds')} s")
+                     f"{step.get('wall_seconds')} s"
+                     + (f"; usage_probe {step['usage_probe'].get('tokens')} tokens"
+                        if step.get("usage_probe") else ""))
+    lines += ["", "## Paid usage permissions", ""]
+    lines += [f"- {p['step']} at {p['at']}: {p['codex']}; {p['claude']}"
+              for p in report["paid_usage"]] or ["None."]
     lines += ["", "## Usage readings", ""]
     lines += [f"- before {r['step']}: {r['codex']}; {r['claude']}"
+              + (f"; usage_probe {r['usage_probe'].get('tokens')} tokens, "
+                 f"probe_event {r['usage_probe'].get('probe_event')}"
+                 if r.get("usage_probe") else "")
+              + ("; probe_on_overage: one capped probe used credit"
+                 if r.get("usage_probe", {}).get("probe_on_overage") else "")
               for r in report["readings"]] or ["None."]
     lines += ["", "## Refused calls", ""]
     lines += [f"- {r['step']}: {r['tool']} {r.get('detail', '')}: {r['reason']}"
@@ -1423,7 +1594,7 @@ def _docker_at_start(deps, dry_run):
 
 
 def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, settings=None,
-              builder=None, dry_run=False):
+              builder=None, dry_run=False, allow_paid=False):
     """Every read-only check a run makes before it creates anything. Returns what the
     run needs; raises RunRefused with every reason it cannot start.
 
@@ -1502,11 +1673,11 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
         sandboxed = sandbox_refusal(reading)
         if sandboxed is not None:
             raise RunRefused([sandboxed])
-        stop = limits.check_ceiling([reading], settings["usage_ceiling_percent"])
-        if stop is not None:
-            raise RunRefused([f"usage: {stop.reason} ({reading.summary()})"])
+        _preflight_usage(reading, limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                         reason="no saved rate-limit event"),
+                         settings["usage_ceiling_percent"], allow_paid=allow_paid)
         credits = credit_snapshot(reading)
-        reason = untrackable(credits)
+        reason = None if allow_paid else untrackable(credits)
         if reason is not None:
             raise RunRefused([f"Codex credits cannot be tracked: {reason} "
                               f"({reading.summary()})"])
@@ -1521,7 +1692,7 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
 
 def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LOG_PATH,
           runs_dir=runrecord.RUNS_DIR, inject=None, dry_run=False, wait=False,
-          settings=None, python=None, builder=None):
+          settings=None, python=None, builder=None, allow_paid=False):
     """Preflight, then create the run record and take the run as far as it goes.
     Returns the Run (or None on a dry run). The run's roles are written into its
     ``settings.json``, so a resume keeps the pairing the run started with."""
@@ -1529,8 +1700,11 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
     if inject is not None and not STEP.match(inject):
         raise RunRefused([f"--inject-limit {inject!r} is not a step name (build, "
                           "review-R<n>, fix-R<n>)"])
+    if allow_paid and wait:
+        raise RunRefused(["--allow-paid cannot be used with --wait"])
     ready = preflight(brief_arg, item, git_dir, root=root, deps=deps, settings=settings,
-                      builder=builder, dry_run=dry_run)
+                      builder=builder, dry_run=dry_run, allow_paid=allow_paid)
+    ready["allow_paid"] = allow_paid
     try:
         return _start(ready, brief_arg, item, git_dir, root=root, deps=deps,
                       log_path=log_path, runs_dir=runs_dir, inject=inject,
@@ -1634,7 +1808,10 @@ def _with_image(ready, work, brief_arg, item, git_dir, *, root, deps, log_path, 
               f"{settings['roles']['builder']} building and "
               f"{settings['roles']['reviewer']} reviewing, with edit paths "
               f"{', '.join(brief['edit_paths'])}, then build and review up to "
-              f"{settings['round_caps']['build_review']} round(s).", file=sys.stderr)
+              f"{settings['round_caps']['build_review']} round(s). Live Claude usage "
+              "was not read."
+              + (" --allow-paid would permit the first step only; nothing was permitted."
+                 if ready.get("allow_paid") else ""), file=sys.stderr)
         return None
     return _create(ready, image, brief_arg, item, git_dir, root=root, deps=deps,
                    log_path=log_path, runs_dir=runs_dir, inject=inject, wait=wait,
@@ -1738,12 +1915,14 @@ def _fill(ready, image, brief_arg, item, git_dir, run_dir, frozen_dir, started_n
     run = Run(run_dir, state, settings, root=root, deps=deps, log_path=log_path,
               wait=wait, python=python)
     run.note_codex(ready["reading"])
+    if ready.get("allow_paid"):
+        _grant_paid(run, ready["reading"])
     run.save()
     _log("started", f"Run {state['run_id']} started for item {item}.", log_path)
     return run
 
 
-def resume(run, rounds=None, dry_run=False):
+def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True):
     """Continue an ended or paused run from its last completed step. The Codex credit
     snapshot is taken again, so a harmless change (a top-up) costs only the resume.
 
@@ -1758,6 +1937,8 @@ def resume(run, rounds=None, dry_run=False):
     if status == sr.ENDED and last not in sr.RESUMABLE:
         raise RunRefused([f"a run that ended {last} cannot be resumed; only "
                           f"{', '.join(sr.RESUMABLE)} can"])
+    if allow_paid and run.wait:
+        raise RunRefused(["--allow-paid cannot be used with --wait"])
     try:
         reading = run.deps.read_codex(run.root, run.state.get("frozen_dir"))
     except Exception as exc:
@@ -1766,8 +1947,15 @@ def resume(run, rounds=None, dry_run=False):
     sandboxed = sandbox_refusal(reading)
     if sandboxed is not None:
         raise RunRefused([f"{sandboxed}; the run is unchanged"])
+    saved = _effective_last(run.state, run.deps.now(), user_resume=user_started)
+    # --wait resumes only after a step reported its reset. Another window can
+    # remain high; let before_step record that stop and its later reset so the
+    # automatic wait can continue. User-started resumes still check here.
+    if user_started:
+        _preflight_usage(reading, saved, run.settings["usage_ceiling_percent"],
+                         allow_paid=allow_paid)
     credits = credit_snapshot(reading)
-    reason = untrackable(credits)
+    reason = None if allow_paid else untrackable(credits)
     if reason is not None:
         raise RunRefused([f"Codex credits cannot be tracked: {reason} "
                           f"({reading.summary()}); the run is unchanged"])
@@ -1785,7 +1973,10 @@ def resume(run, rounds=None, dry_run=False):
         print(f"[DRY RUN] would resume run {run.state['run_id']} ({where}) from its "
               f"last completed step {run.state['step']}; "
               f"next step {run.next_step()}; round cap {cap}; Codex credits {credits}; "
-              f"{reading.summary()}; {note}. Nothing was changed.", file=sys.stderr)
+              f"{reading.summary()}; {saved.summary()}; live Claude usage was not "
+              f"read; {note}. Nothing was changed."
+              + (" --allow-paid would permit the next step only."
+                 if allow_paid else ""), file=sys.stderr)
         return
     # Anything failing between Docker's start and the resumed state being saved stops
     # the Docker this resume started and refuses; the saved run is untouched, so it is
@@ -1799,11 +1990,19 @@ def resume(run, rounds=None, dry_run=False):
         docker.setdefault("events", []).append(
             _docker_event("resume", note.replace("this run", "this resume")))
         sr.continue_run(run.state)
+        # A permission belongs to one attempt, including a failed attempt. Old run
+        # records may still carry a pending value from before that was enforced.
+        run.state.pop("paid_usage_pending", None)
         if rounds is not None:
             last_round = max([f["round"] for f in run.ledger.findings.values()] or [0])
             run.state["round_cap"] = last_round + rounds
         run.state["credits"] = credits
         run.note_codex(reading)
+        run.state["claude_unknown_reset_resume"] = bool(
+            user_started and _paid_overage(_last_claude(run.state))
+            and _last_claude(run.state).resets_at is None)
+        if allow_paid:
+            _grant_paid(run, reading)
         # The log line first, then the state: a log that cannot be written refuses the
         # resume with nothing saved, rather than leaving a run saved as running that the
         # next resume would refuse (the R30 exception-path audit).
@@ -1969,7 +2168,7 @@ def approval_problems(run, edit_paths):
     return problems
 
 
-def _approval_reading(run):
+def _approval_reading(run, *, allow_paid=False):
     """The Codex reading and credit snapshot approval takes before Docker, as a resume
     does, so the build's before-step check compares against a snapshot taken at
     approval rather than at a start that may be days old. Read-only."""
@@ -1981,15 +2180,18 @@ def _approval_reading(run):
     sandboxed = sandbox_refusal(reading)
     if sandboxed is not None:
         raise RunRefused([f"{sandboxed}; nothing was changed"])
+    saved = _effective_last(run.state, run.deps.now())
+    _preflight_usage(reading, saved, run.settings["usage_ceiling_percent"],
+                     allow_paid=allow_paid)
     credits = credit_snapshot(reading)
-    reason = untrackable(credits)
+    reason = None if allow_paid else untrackable(credits)
     if reason is not None:
         raise RunRefused([f"Codex credits cannot be tracked: {reason} "
                           f"({reading.summary()}); nothing was changed"])
     return reading, credits
 
 
-def approve(run, dry_run=False):
+def approve(run, dry_run=False, allow_paid=False):
     """``start.py --approve <run-id>`` (plan 10.3 step 6): continue a run paused for plan
     approval into the build, in the order the plan numbers.
 
@@ -2005,6 +2207,8 @@ def approve(run, dry_run=False):
     The caller starts the build (``Run.advance``). A dry run makes the checks and the
     usage reading, says what approval would do, and changes nothing; it runs no Docker
     command at all."""
+    if allow_paid and run.wait:
+        raise RunRefused(["--allow-paid cannot be used with --wait"])
     folder = _plan_approval_pause(run, "approved")
     run_id = run.state["run_id"]
     try:
@@ -2018,17 +2222,20 @@ def approve(run, dry_run=False):
         raise RunRefused(problems + [f"nothing was changed and the run stays paused; the "
                                      f"way on is {STARTER} --stop {run_id}, a capture, "
                                      "and a new run"])
-    reading, credits = _approval_reading(run)
+    reading, credits = _approval_reading(run, allow_paid=allow_paid)
     if dry_run:
         print(f"[DRY RUN] the four approval checks passed over the approved edit paths "
-              f"{', '.join(edit_paths)} ({reading.summary()}; Codex credits {credits}). "
+              f"{', '.join(edit_paths)} ({reading.summary()}; Codex credits {credits}; "
+              f"{_effective_last(run.state, run.deps.now()).summary()}; live Claude "
+              "usage was not read). "
               "A real approval would start Docker if it is not running and prepare the "
               "check image, append the started entry to the workflow LOG.md and write "
               f"the review packet memory/{run.state['item']}_review_packet.md, each "
               "recorded as the orchestrator's, rebuild the run's scope with "
               f"{len(brief['acceptance'])} acceptance check(s), write "
               f"{(folder / codex_rules.APPROVAL_FILE).as_posix()}, set the run running "
-              "and start the build. Nothing was changed, and no Docker command was run.",
+              "and start the build. Nothing was changed, and no Docker command was run."
+              + (" --allow-paid would permit the build only." if allow_paid else ""),
               file=sys.stderr)
         return None
     started, note = _docker_at_start(run.deps, False)
@@ -2048,7 +2255,8 @@ def approve(run, dry_run=False):
                    else f"{type(exc).__name__}: {exc}")
             raise RunRefused([f"the check image: {why}; nothing was written and the run "
                               "stays paused, so --approve can be run again"]) from exc
-        _approval_writes(run, folder, brief, image, started, note, reading, credits)
+        _approval_writes(run, folder, brief, image, started, note, reading, credits,
+                         allow_paid=allow_paid)
     except BaseException as exc:
         if started:
             _stop_docker_after_refusal(run.deps, exc)
@@ -2075,7 +2283,8 @@ def _approval_targets(run):
     return found
 
 
-def _approval_writes(run, folder, brief, image, started, note, reading, credits):
+def _approval_writes(run, folder, brief, image, started, note, reading, credits,
+                     *, allow_paid=False):
     """Approval's steps 3 to 5 (plan 10.3 step 6). Any failure restores ``state.json`` to
     what it was before step 3, records ``approval_failure`` there and refuses for good,
     naming the step."""
@@ -2137,6 +2346,9 @@ def _approval_writes(run, folder, brief, image, started, note, reading, credits)
         state["credits"] = credits
         run.note_codex(reading)
         sr.continue_run(state)
+        state.pop("paid_usage_pending", None)
+        if allow_paid:
+            _grant_paid(run, reading)
         run._approver = None  # the next builder reads the file just written
         run.save()
     except Exception as exc:

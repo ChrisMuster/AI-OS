@@ -138,19 +138,22 @@ class CodexReadingTests(unittest.TestCase):
         self.assertEqual(reading.raw["rateLimits"]["primary"]["usedPercent"], 12)
 
     def test_positive_one_window_is_enough(self):
-        payload = {"rateLimits": {"primary": {"usedPercent": 7, "resetsAt": 5}}}
+        payload = {"ordinaryUsageAllowed": True,
+                   "rateLimits": {"primary": {"usedPercent": 7, "resetsAt": 5}}}
         reading = limits.classify_codex(codex_response(payload))
         self.assertEqual((reading.source, reading.percent, reading.resets_at, reading.window),
                          (limits.REPORTED, 7, 5, "primary"))
 
     def test_positive_tie_takes_the_later_reset(self):
-        payload = {"rateLimits": {"primary": {"usedPercent": 50, "resetsAt": 100},
+        payload = {"ordinaryUsageAllowed": True,
+                   "rateLimits": {"primary": {"usedPercent": 50, "resetsAt": 100},
                                   "secondary": {"usedPercent": 50, "resetsAt": 900}}}
         reading = limits.classify_codex(codex_response(payload))
         self.assertEqual((reading.window, reading.resets_at), ("secondary", 900))
 
     def test_positive_tie_prefers_a_known_reset_over_an_unknown_one(self):
-        payload = {"rateLimits": {"primary": {"usedPercent": 50, "resetsAt": 100},
+        payload = {"ordinaryUsageAllowed": True,
+                   "rateLimits": {"primary": {"usedPercent": 50, "resetsAt": 100},
                                   "secondary": {"usedPercent": 50}}}
         reading = limits.classify_codex(codex_response(payload))
         self.assertEqual((reading.window, reading.resets_at), ("primary", 100))
@@ -171,16 +174,20 @@ class CodexReadingTests(unittest.TestCase):
         self.assertIn("usage unavailable", reading.summary())
         self.assertIn("resets at unavailable", reading.summary())
 
-    def test_negative_no_window_and_no_verdict_is_unavailable(self):
-        for allowed in (True, None):
-            payload = {"rateLimits": {}}
-            if allowed is not None:
-                payload["ordinaryUsageAllowed"] = allowed
+    def test_rejection_an_unknown_ordinary_permission_stops_with_or_without_windows(self):
+        for allowed in (None, "absent"):
+            payload = {"rateLimits": {"primary": {"usedPercent": 1}}}
+            if allowed is None:
+                payload["ordinaryUsageAllowed"] = None
             with self.subTest(ordinaryUsageAllowed=allowed):
                 reading = limits.classify_codex(codex_response(payload))
-                self.assertEqual(reading.source, limits.UNAVAILABLE)
-                self.assertEqual(reading.reason, "the response carried neither usage window")
-                self.assertEqual(reading.raw["rateLimits"], {})
+                self.assertEqual(reading.source, limits.LIMIT_REPORTED)
+                self.assertIn("ordinaryUsageAllowed", reading.reason)
+
+    def test_negative_true_with_no_window_is_unavailable(self):
+        reading = limits.classify_codex(codex_response(
+            {"ordinaryUsageAllowed": True, "rateLimits": {}}))
+        self.assertEqual(reading.source, limits.UNAVAILABLE)
 
     def test_positive_the_request_is_the_planned_one(self):
         client = FakeClient(LIVE_SHAPE)
@@ -213,7 +220,8 @@ class CodexReadingTests(unittest.TestCase):
     def test_positive_a_new_run_applies_the_ceiling(self):
         run = limits.RunUsage()
         reading = run.codex(limits.classify_codex(codex_response(
-            {"rateLimits": {"primary": {"usedPercent": 95, "resetsAt": 7}}})))
+            {"ordinaryUsageAllowed": True,
+             "rateLimits": {"primary": {"usedPercent": 95, "resetsAt": 7}}})))
         self.assertEqual(reading.source, limits.REPORTED)
         self.assertIsNotNone(limits.check_ceiling([reading], 80))
 
@@ -222,14 +230,16 @@ class CodexReadingTests(unittest.TestCase):
         first = run.codex(limits.read_codex(FakeClient(error=InternalRpcError(-32603, "down"))))
         self.assertEqual(first.source, limits.UNAVAILABLE)
         later = run.codex(limits.classify_codex(codex_response(
-            {"rateLimits": {"primary": {"usedPercent": 95, "resetsAt": 7}}})))
+            {"ordinaryUsageAllowed": True,
+             "rateLimits": {"primary": {"usedPercent": 95, "resetsAt": 7}}})))
         self.assertEqual(later.source, limits.UNAVAILABLE)
         self.assertEqual((later.percent, later.resets_at), (95, 7))
         self.assertIn("down", later.reason)
         self.assertIsNone(limits.check_ceiling([later], 80))
         # The next run starts clean: nothing is carried over.
         fresh = limits.RunUsage().codex(limits.classify_codex(codex_response(
-            {"rateLimits": {"primary": {"usedPercent": 95, "resetsAt": 7}}})))
+            {"ordinaryUsageAllowed": True,
+             "rateLimits": {"primary": {"usedPercent": 95, "resetsAt": 7}}})))
         self.assertEqual(fresh.source, limits.REPORTED)
 
     def test_negative_a_negative_result_never_softens_a_reported_limit(self):
@@ -481,6 +491,31 @@ class SettingsTests(unittest.TestCase):
 
     def test_positive_the_shipped_file_loads_at_80(self):
         self.assertEqual(settings.load_settings()["usage_ceiling_percent"], 80)
+        self.assertEqual(settings.load_settings()["max_turns"],
+                         {"builder": 80, "reviewer": 200})
+        self.assertEqual(settings.load_settings()["usage_probe_model"],
+                         "claude-haiku-5-5")
+
+    def test_positive_turn_limits_and_probe_model_are_settings(self):
+        loaded = settings.load_settings(self.write(
+            '{"max_turns": {"builder": 12, "reviewer": 34}, '
+            '"usage_probe_model": " claude-test "}'))
+        self.assertEqual(loaded["max_turns"], {"builder": 12, "reviewer": 34})
+        self.assertEqual(loaded["usage_probe_model"], "claude-test")
+
+    def test_rejection_bad_turn_limits_and_probe_model(self):
+        for value in (0, -1, True, 1.5, "4", None):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    settings.SettingsError, "max_turns.builder"):
+                settings.load_settings(self.write(json.dumps(
+                    {"max_turns": {"builder": value}})))
+        for data, reason in (({"max_turns": {"other": 1}}, "unknown key"),
+                             ({"max_turns": []}, "JSON object"),
+                             ({"usage_probe_model": "  "}, "non-empty"),
+                             ({"usage_probe_model": True}, "non-empty")):
+            with self.subTest(data=data), self.assertRaisesRegex(
+                    settings.SettingsError, reason):
+                settings.load_settings(self.write(json.dumps(data)))
 
     def test_positive_missing_key_takes_the_default(self):
         loaded = settings.load_settings(self.write("{}"))

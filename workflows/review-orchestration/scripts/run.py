@@ -339,6 +339,8 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
     parser.add_argument("--rounds", type=int, help="more review rounds (with --resume)")
     parser.add_argument("--wait", action="store_true",
                         help="sleep through a usage limit with a reset time, then resume")
+    parser.add_argument("--allow-paid", action="store_true",
+                        help="permit paid usage for the next step only")
     parser.add_argument("--inject-limit", metavar="STEP",
                         help="test only: raise a usage limit at this step, once")
     parser.add_argument("--dry-run", action="store_true",
@@ -348,6 +350,10 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
     if args.builder and not args.run:
         parser.error("--builder is given only with --run: a resumed or stopped run "
                      "keeps the roles it started with")
+    if args.allow_paid and args.wait:
+        parser.error("--allow-paid cannot be used with --wait")
+    if args.allow_paid and not (args.run or args.resume or args.approve):
+        parser.error("--allow-paid is used only with --run, --resume or --approve")
     if args.check_brief:
         return brief.run_check(args.check_brief, root=root, log_path=log_path,
                                dry_run=args.dry_run)
@@ -376,6 +382,7 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
                 parser.error("--run needs --item and --git-dir")
             run = loop.start(args.run, args.item, args.git_dir, inject=args.inject_limit,
                              dry_run=args.dry_run, wait=args.wait, builder=args.builder,
+                             allow_paid=args.allow_paid,
                              **common)
             if run is None:
                 return 0
@@ -385,12 +392,13 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
             if args.rounds is not None and args.rounds < 1:
                 parser.error("--rounds must be at least 1")
             run = loop.load(args.resume, wait=args.wait, **common)
-            loop.resume(run, rounds=args.rounds, dry_run=args.dry_run)
+            loop.resume(run, rounds=args.rounds, dry_run=args.dry_run,
+                        allow_paid=args.allow_paid)
             if args.dry_run:
                 return 0
         elif args.approve:
             run = loop.load(args.approve, wait=args.wait, **common)
-            loop.approve(run, dry_run=args.dry_run)
+            loop.approve(run, dry_run=args.dry_run, allow_paid=args.allow_paid)
             if args.dry_run:
                 return 0
         elif args.amend:

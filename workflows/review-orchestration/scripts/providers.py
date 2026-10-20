@@ -66,12 +66,9 @@ from pathlib import Path
 import codex_rules
 import limits
 from approver import CHECKS_SERVER, read_rules
-from settings import model_for
+from settings import DEFAULT_MAX_TURNS, model_for
 
 MARKER = "Orchestrated session: skip the AGENTS.md session-startup sequence."
-
-EDIT_MAX_TURNS = 80
-REVIEW_MAX_TURNS = 200
 
 # The Codex builder's settings (short plan, facts 1, 4, 12 and 13). The frozen folder's
 # parent is frozen.FROZEN_PARENT's; a test checks the two agree.
@@ -420,6 +417,27 @@ def jsonable(obj):
     return repr(obj)
 
 
+async def watch_claude_event(client, usage, message):
+    """Persist an event and interrupt paid overage even if persistence failed."""
+    failure = None
+    try:
+        usage.observe(message)
+    except Exception as exc:
+        failure = exc
+    reading = usage.reading()
+    if reading.reason == "using paid overage" and not getattr(usage, "paid_allowed", False):
+        try:
+            await client.interrupt()
+        except Exception:  # the usage stop still takes precedence
+            pass
+        detail = "using paid overage"
+        if failure is not None:
+            detail += f"; saving the event failed: {type(failure).__name__}: {failure}"
+        raise limits.UsageLimitError(limits.CLAUDE, detail, reading.resets_at)
+    if failure is not None:
+        raise failure
+
+
 # ----------------------------------------------------------------------- builder
 
 
@@ -433,7 +451,7 @@ class ClaudeBuilder:
     needs_turn_check = False
 
     def __init__(self, model, effort, approver, *, cwd, resume=None, client_factory=None,
-                 usage=None, max_turns=EDIT_MAX_TURNS, run_dir=None, temp_root=None,
+                 usage=None, max_turns=None, run_dir=None, temp_root=None,
                  python=None, rule_hook=None):
         if run_dir is None:
             raise ProviderError("a Claude builder needs the run's folder, whose name is "
@@ -444,7 +462,7 @@ class ClaudeBuilder:
         self.cwd = str(cwd)
         self.resume = resume
         self.usage = usage if usage is not None else limits.ClaudeUsage()
-        self.max_turns = max_turns
+        self.max_turns = DEFAULT_MAX_TURNS["builder"] if max_turns is None else max_turns
         self.run_id = Path(run_dir).name
         self.frozen_dir = frozen_folder(self.run_id, temp_root)
         self._temp_root = temp_root
@@ -596,7 +614,7 @@ class ClaudeBuilder:
                     tool_result_entry(block) for block in blocks
                     if type(block).__name__ == "ToolResultBlock"]
             if kind == "RateLimitEvent":
-                self.usage.observe(message)
+                await watch_claude_event(self._client, self.usage, message)
             elif kind == "SystemMessage" and getattr(message, "subtype", None) == "init":
                 init_model = (getattr(message, "data", None) or {}).get("model")
                 if init_model and init_model != self.model:
@@ -1291,12 +1309,12 @@ class ClaudeReviewer:
     wants = ("usage",)
 
     def __init__(self, model, effort, *, cwd, usage=None, client_factory=None,
-                 max_turns=REVIEW_MAX_TURNS):
+                 max_turns=None):
         self.model = model
         self.effort = effort
         self.cwd = str(cwd)
         self.usage = usage if usage is not None else limits.ClaudeUsage()
-        self.max_turns = max_turns
+        self.max_turns = DEFAULT_MAX_TURNS["reviewer"] if max_turns is None else max_turns
         self._client_factory = client_factory
         self.stderr = []
         self.refusals = []
@@ -1351,7 +1369,7 @@ class ClaudeReviewer:
                 messages.append(jsonable(message))
                 kind = type(message).__name__
                 if kind == "RateLimitEvent":
-                    self.usage.observe(message)
+                    await watch_claude_event(client, self.usage, message)
                 elif kind == "SystemMessage" and getattr(message, "subtype", None) == "init":
                     init_model = (getattr(message, "data", None) or {}).get("model")
                     if init_model and init_model != self.model:
@@ -1380,6 +1398,56 @@ class ClaudeReviewer:
                             wall_seconds=round(time.time() - started, 1), raw=messages,
                             tokens=claude_tokens(result.usage), model=init_model,
                             refusals=list(self.refusals))
+
+
+@dataclasses.dataclass
+class ProbeRecord:
+    """One isolated probe's result. Events are handed to the run after the probe."""
+
+    events: list
+    reading: limits.Reading
+    usage: dict | None
+    tokens: int | None
+    model: str | None
+
+
+async def probe_claude(model, *, cwd, client_factory=None, on_event=None):
+    """One tool-less, one-turn Claude request from the run's frozen folder."""
+    from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+    factory = client_factory or ClaudeSDKClient
+    options = ClaudeAgentOptions(cwd=str(cwd), model=model, max_turns=1,
+                                 tools=[], allowed_tools=[], mcp_servers={},
+                                 strict_mcp_config=True, setting_sources=[],
+                                 settings=CLAUDE_NO_HOOKS)
+    client = factory(options=options)
+    usage = limits.ClaudeUsage()
+    events, result, init_model = [], None, None
+    await client.connect()
+    try:
+        await client.query("ok")
+        async for message in client.receive_response():
+            kind = type(message).__name__
+            if kind == "RateLimitEvent":
+                events.append(message)
+                usage.observe(message)
+                if on_event is not None:
+                    on_event(message)
+            elif kind == "SystemMessage" and getattr(message, "subtype", None) == "init":
+                init_model = (getattr(message, "data", None) or {}).get("model")
+                if init_model != model:
+                    raise ProviderError(f"Claude usage probe started on {init_model!r}, "
+                                        f"not the requested {model!r}")
+            elif kind == "ResultMessage":
+                result = message
+    finally:
+        await client.disconnect()
+    if result is None or result.is_error:
+        raise ProviderError("Claude usage probe ended without a successful result")
+    if init_model is None:
+        raise ProviderError("Claude usage probe gave no init model")
+    return ProbeRecord(events, usage.reading(), result.usage,
+                       claude_tokens(result.usage), init_model)
 
 
 def _model_ids(listing):
@@ -1436,8 +1504,13 @@ def make_builder(settings, approver, *, cwd, resume=None, run_dir=None, usage=No
                             f"{', '.join(BUILDERS)} can build")
     entry = model_for(settings, provider, "builder")
     offered = {"resume": resume, "run_dir": run_dir, "usage": usage}
+    if provider == limits.CLAUDE:
+        offered["max_turns"] = settings.get("max_turns", {}).get(
+            "builder", DEFAULT_MAX_TURNS["builder"])
     return cls(entry["model"], entry["effort"], approver, cwd=cwd,
-               **_wanted(cls, offered), **kwargs)
+               **_wanted(cls, offered),
+               **({"max_turns": offered["max_turns"]} if provider == limits.CLAUDE else {}),
+               **kwargs)
 
 
 def make_reviewer(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
@@ -1451,5 +1524,10 @@ def make_reviewer(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
         raise ProviderError(f"no reviewer session exists for {provider}; only "
                             f"{', '.join(REVIEWERS)} can review")
     entry = model_for(settings, provider, "reviewer")
+    offered = {"usage": usage, "frozen_dir": frozen_dir}
+    if provider == limits.CLAUDE:
+        offered["max_turns"] = settings.get("max_turns", {}).get(
+            "reviewer", DEFAULT_MAX_TURNS["reviewer"])
     return cls(entry["model"], entry["effort"], cwd=cwd,
-               **_wanted(cls, {"usage": usage, "frozen_dir": frozen_dir}), **kwargs)
+               **_wanted(cls, offered), **({"max_turns": offered["max_turns"]}
+                                           if provider == limits.CLAUDE else {}), **kwargs)

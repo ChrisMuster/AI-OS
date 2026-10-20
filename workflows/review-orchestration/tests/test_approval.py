@@ -321,6 +321,15 @@ class UncapturedSelectionTests(unittest.TestCase):
 class ApprovalOrderTests(ApprovalCase):
     """Plan 10.3 step 6, "The order of approval's work", and its two kinds of failure."""
 
+    def test_approval_discards_a_leftover_paid_permission(self):
+        run = self.paused()
+        run.state["paid_usage_pending"] = "build"
+        run.save()
+        loop.approve(run)
+        saved = runrecord.read_state(run.run_dir)
+        self.assertNotIn("paid_usage_pending", saved)
+        self.assertEqual(self.h.probe_calls, [])
+
     def test_positive_the_five_steps_run_in_the_plans_order(self):
         run = self.paused()
         self.h.docker_up = False

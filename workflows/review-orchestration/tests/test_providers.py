@@ -145,6 +145,14 @@ def result(text="final answer", session_id="sess-1", is_error=False, subtype="su
                          errors=errors)
 
 
+def overage_event():
+    info = SimpleNamespace(status="allowed", rate_limit_type="five_hour",
+                           resets_at=2000000,
+                           raw={"isUsingOverage": True, "unifiedWindows": {
+                               "five_hour": {"utilization": 1, "resetsAt": 2000000}}})
+    return type("RateLimitEvent", (), {"rate_limit_info": info})()
+
+
 def hook_call(tool_name, tool_input):
     return {"hook_event_name": "PreToolUse", "session_id": "sess-1",
             "transcript_path": "t", "cwd": "c", "tool_name": tool_name,
@@ -166,6 +174,7 @@ class FakeClaudeClient:
         self.query_errors = []
         self.connected = False
         self.disconnected = False
+        self.interrupts = 0
         FakeClaudeClient.instances.append(self)
 
     async def connect(self):
@@ -187,6 +196,9 @@ class FakeClaudeClient:
 
     async def disconnect(self):
         self.disconnected = True
+
+    async def interrupt(self):
+        self.interrupts += 1
 
 
 def add_rule_hooks(frozen_dir):
@@ -253,6 +265,25 @@ class ClaudeBuilderTests(unittest.TestCase):
         self.assertEqual(options.permission_mode, "default")
         self.assertEqual(options.cwd, str(self.root))
         self.assertIsNone(options.resume)
+
+    def test_rejection_paid_overage_interrupts_the_unpermitted_turn(self):
+        with self.assertRaises(limits.UsageLimitError):
+            self.run_turns([init(), overage_event(), result()])
+        self.assertEqual(self.client.interrupts, 1)
+
+    def test_rejection_an_event_save_failure_still_interrupts_paid_overage(self):
+        def fail(reading):
+            raise OSError("state unavailable")
+        self.builder.usage.on_event = fail
+        with self.assertRaisesRegex(limits.UsageLimitError, "saving the event failed"):
+            self.run_turns([init(), overage_event(), result()])
+        self.assertEqual(self.client.interrupts, 1)
+
+    def test_positive_paid_permission_leaves_the_turn_running(self):
+        self.builder.usage.paid_allowed = True
+        records = self.run_turns([init(), overage_event(), result()])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(self.client.interrupts, 0)
 
     def test_positive_a_pre_tool_use_hook_covers_every_tool(self):
         matchers = self.builder.options().hooks["PreToolUse"]
@@ -1970,6 +2001,18 @@ class ClaudeReviewerTests(unittest.TestCase):
             self.review(init(), said("", error="rate_limit"), review_result(self.REPLY))
         self.assertEqual(caught.exception.provider, "claude")
 
+    def test_rejection_paid_overage_interrupts_the_review(self):
+        with self.assertRaises(limits.UsageLimitError):
+            self.review(init(), overage_event(), review_result(self.REPLY))
+        self.assertEqual(self.client.interrupts, 1)
+        self.assertTrue(self.client.disconnected)
+
+    def test_positive_paid_permission_allows_the_review_to_complete(self):
+        self.usage.paid_allowed = True
+        record = self.review(init(), overage_event(), review_result(self.REPLY))
+        self.assertEqual(record.reply, self.REPLY)
+        self.assertEqual(self.client.interrupts, 0)
+
     def test_negative_an_ordinary_assistant_error_is_not_a_usage_limit(self):
         record = self.review(init(), said("oops", error="server_error"),
                              review_result(self.REPLY))
@@ -1994,6 +2037,16 @@ class RegistryTests(unittest.TestCase):
         path = self.root / "settings.json"
         path.write_bytes(json.dumps(data).encode("utf-8"))
         return settings.assign_roles(settings.load_settings(path), builder)
+
+    def test_positive_claude_turn_limits_come_from_resolved_settings(self):
+        loaded = self.loaded({"max_turns": {"builder": 17, "reviewer": 39}})
+        builder = providers.make_builder(loaded, an_approver(self.root), cwd=self.root,
+                                         run_dir=self.root / RUN_ID)
+        self.assertEqual(builder.options().max_turns, 17)
+        swapped = self.loaded({"max_turns": {"builder": 17, "reviewer": 39}},
+                              builder="codex")
+        reviewer = providers.make_reviewer(swapped, cwd=self.root, usage=limits.ClaudeUsage())
+        self.assertEqual(reviewer.options({"type": "object"}).max_turns, 39)
 
     def test_positive_the_claude_builds_pairing(self):
         loaded = settings.assign_roles(settings.load_settings(), "claude")
@@ -2240,6 +2293,53 @@ class CallbackMatchTests(unittest.TestCase):
         self.assertEqual(providers.callback_match([], []),
                          {"not_judged": [], "rejected_before_hook": [],
                           "not_in_transcript": [], "duplicate_ids": [], "undecided": []})
+
+
+@NEEDS_CLAUDE
+class ClaudeProbeTests(unittest.TestCase):
+
+    def probe(self, messages):
+        def factory(options):
+            client = FakeClaudeClient(options)
+            client.script = [messages]
+            return client
+        with tempfile.TemporaryDirectory() as folder:
+            record = asyncio.run(providers.probe_claude(
+                "claude-haiku-5-5", cwd=folder, client_factory=factory))
+            client = FakeClaudeClient.instances[-1]
+            self.assertEqual(client.prompts, ["ok"])
+            self.assertEqual(client.options.max_turns, 1)
+            self.assertEqual(client.options.cwd, folder)
+            self.assertEqual(client.options.allowed_tools, [])
+            self.assertEqual(client.options.mcp_servers, {})
+            self.assertEqual(client.options.setting_sources, [])
+            self.assertTrue(client.options.strict_mcp_config)
+            self.assertEqual(json.loads(client.options.settings), {"disableAllHooks": True})
+            return record
+
+    def test_positive_event_and_tokens_are_separate(self):
+        record = self.probe([init("claude-haiku-5-5"), overage_event(), result()])
+        self.assertEqual(len(record.events), 1)
+        self.assertEqual(record.reading.reason, "using paid overage")
+        self.assertEqual(record.tokens, 10)
+
+    def test_negative_no_event_is_unavailable(self):
+        record = self.probe([init("claude-haiku-5-5"), result()])
+        self.assertEqual(record.events, [])
+        self.assertEqual(record.reading.source, limits.UNAVAILABLE)
+
+    def test_rejection_a_different_init_model(self):
+        with tempfile.TemporaryDirectory() as folder:
+            seen = []
+            def factory(options):
+                client = FakeClaudeClient(options)
+                client.script = [[overage_event(), init("another-model"), result()]]
+                return client
+            with self.assertRaisesRegex(providers.ProviderError, "not the requested"):
+                asyncio.run(providers.probe_claude(
+                    "claude-haiku-5-5", cwd=folder, client_factory=factory,
+                    on_event=seen.append))
+            self.assertEqual(len(seen), 1)
 
 
 if __name__ == "__main__":

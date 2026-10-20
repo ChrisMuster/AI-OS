@@ -145,8 +145,9 @@ def read_codex(client):
 def classify_codex(response):
     """Turn a validated ``GetAccountRateLimitsResponse`` into a Reading.
 
-    Checked in the plan's order: ``ordinaryUsageAllowed`` false first, whatever the
-    windows say; then the highest window present; otherwise no usable answer.
+    Checked in the plan's order: ``ordinaryUsageAllowed`` false, then null or absent,
+    each stopping whatever the windows say; then the highest window present for true;
+    otherwise no usable answer.
     """
     raw = response.model_dump(by_alias=True, mode="json", exclude_none=True)
     snapshot = response.rate_limits
@@ -163,6 +164,10 @@ def classify_codex(response):
         label, percent, resets = highest if highest else (None, None, None)
         return Reading(CODEX, LIMIT_REPORTED, percent=percent, resets_at=resets,
                        window=label, reason="ordinaryUsageAllowed is false", raw=raw)
+    if response.ordinary_usage_allowed is None:
+        label, percent, resets = highest if highest else (None, None, None)
+        return Reading(CODEX, LIMIT_REPORTED, percent=percent, resets_at=resets,
+                       window=label, reason="ordinaryUsageAllowed is null or absent", raw=raw)
     if highest:
         label, percent, resets = highest
         return Reading(CODEX, REPORTED, percent=percent, resets_at=resets,
@@ -240,12 +245,11 @@ class ClaudeUsage:
     in the raw form are read first and the top-level field is the fallback. The latest
     event's status is the current status.
 
-    **Paid overage stops the run** (the user's rule, 2026-09-25). Overage is there to
-    let work in progress reach a safe state when the included allowance runs out, not
-    to carry on spending. So an event saying the account is using overage (raw
-    ``isUsingOverage`` true, or an event for the ``overage`` window itself) makes the
-    reading ``limit-reported``: the run stops before its next step, and the reset time
-    reported is the included window's, which is when the run can resume.
+    **Paid overage pauses and asks** (the user's rule, 2026-10-16). An event saying
+    the account is using overage makes the reading ``limit-reported``. A run without
+    paid permission interrupts the current session at once; before another step it
+    stops without sending a probe into known overage. The reset time reported is the
+    included window's, when a plain resume can continue.
     """
 
     def __init__(self):
@@ -255,6 +259,7 @@ class ClaudeUsage:
         self._status_resets = None
         self._overage = False
         self._raw = None
+        self.on_event = None
 
     def observe(self, event):
         """Record one ``RateLimitEvent`` (or its ``RateLimitInfo``)."""
@@ -275,6 +280,8 @@ class ClaudeUsage:
         elif self._status_window is not None:
             self._windows[self._status_window] = (getattr(info, "utilization", None),
                                                   self._status_resets)
+        if self.on_event is not None:
+            self.on_event(self.reading())
 
     def reading(self):
         if self._status is None:

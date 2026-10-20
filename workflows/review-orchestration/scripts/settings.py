@@ -7,6 +7,8 @@ It holds:
 
   usage_ceiling_percent  plan section 10.10: before each step, a provider reporting
                          usage at or above it stops the run. Default 80.
+  max_turns              Claude builder and reviewer turn caps, default 80 and 200.
+  usage_probe_model      The model for the one-turn Claude usage probe.
   round_caps             plan section 11 item 5: 3 build-review rounds, 2 plan-review
                          rounds.
   models                 plan section 11 item 3: for each provider, the model and
@@ -35,6 +37,8 @@ _WORKFLOW_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = _WORKFLOW_DIR / "config" / "settings.json"
 
 DEFAULT_USAGE_CEILING = 80
+DEFAULT_MAX_TURNS = {"builder": 80, "reviewer": 200}
+DEFAULT_USAGE_PROBE_MODEL = "claude-haiku-5-5"
 
 PROVIDERS = ("claude", "codex")
 ROLES = ("builder", "planner", "plan_reviewer", "reviewer", "intent_checker")
@@ -108,6 +112,11 @@ def load_settings(path=SETTINGS_PATH):
     settings = dict(data)
     settings["usage_ceiling_percent"] = ceiling
     settings["round_caps"] = _round_caps(data.get("round_caps", {}))
+    settings["max_turns"] = _max_turns(data.get("max_turns", {}))
+    probe_model = data.get("usage_probe_model", DEFAULT_USAGE_PROBE_MODEL)
+    if not isinstance(probe_model, str) or not probe_model.strip():
+        raise SettingsError("usage_probe_model must be a non-empty model name")
+    settings["usage_probe_model"] = probe_model.strip()
     settings["models"] = _models(data.get("models", {}))
     return settings
 
@@ -158,6 +167,16 @@ def _round_caps(value):
         if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
             raise SettingsError(f"round_caps.{name} must be a whole number of at least 1")
     return caps
+
+
+def _max_turns(value):
+    value = _object(value, "max_turns")
+    _unknown(value, tuple(DEFAULT_MAX_TURNS), "max_turns")
+    turns = {**DEFAULT_MAX_TURNS, **value}
+    for role, count in turns.items():
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise SettingsError(f"max_turns.{role} must be a whole number of at least 1")
+    return turns
 
 
 def _models(value):
