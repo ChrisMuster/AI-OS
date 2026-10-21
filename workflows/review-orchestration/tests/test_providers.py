@@ -1781,11 +1781,40 @@ class CodexBuilderTests(unittest.TestCase):
                   command_item("exec-1", status="declined"), said_codex("ok"), turn_done())
 
     def test_rejection_an_item_of_a_kind_the_session_does_not_know(self):
+        # Every kind neither a message, a tool call nor one of the two passed below still
+        # ends the turn: here a kind the pinned SDK defines and one it does not.
+        for kind in ("exitedReviewMode", "someFutureKind"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                builder = self.started()
+                with self.assertRaisesRegex(providers.ProviderError,
+                                            "an item of a kind the session does not "
+                                            f"know: {kind}"):
+                    self.turn(builder, item_done({"type": kind, "id": "k1"}),
+                              said_codex("ok"), turn_done())
+
+    def test_positive_a_context_compaction_item_is_accepted_without_a_decision(self):
+        # Plan 10.3, chunk 2's first follow-on: in openai-codex 0.157.0 the item holds
+        # only `id` and `type`, so there is nothing for a hook to judge.
         builder = self.started()
-        with self.assertRaisesRegex(providers.ProviderError,
-                                    "an item of a kind the session does not know: plan"):
-            self.turn(builder, item_done({"type": "plan", "id": "p1", "text": "a plan"}),
-                      said_codex("ok"), turn_done())
+        record = self.turn(builder, item_done({"type": "contextCompaction", "id": "c1"}),
+                           said_codex("ok"), turn_done())
+        self.assertEqual(record.final_text, "ok")
+
+    def test_positive_a_plan_item_is_accepted_without_a_decision(self):
+        # The same follow-on: a plan item holds only `id`, `text` and `type`.
+        builder = self.started()
+        record = self.turn(builder, item_done({"type": "plan", "id": "p1",
+                                               "text": "a plan"}),
+                           said_codex("ok"), turn_done())
+        self.assertEqual(record.final_text, "ok")
+
+    def test_negative_the_two_passed_kinds_are_not_tool_calls(self):
+        # Passing them is not judging them as tools: they are in neither list the
+        # hook's decisions are reconciled against.
+        self.assertEqual(providers._CODEX_NO_TOOL_ITEMS, {"contextCompaction", "plan"})
+        self.assertFalse(providers._CODEX_NO_TOOL_ITEMS & providers._CODEX_TOOL_ITEMS)
+        self.assertFalse(providers._CODEX_NO_TOOL_ITEMS & providers._CODEX_MESSAGE_ITEMS)
 
     def test_rejection_a_web_search_that_ran(self):
         # Web search needs no approval; with the hook refusing it and the tool switched

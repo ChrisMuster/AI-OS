@@ -670,6 +670,42 @@ def read_brief(arg, root=PROJECT_ROOT):
             "acceptance": acceptance}
 
 
+def read_edit_paths(arg, root=PROJECT_ROOT):
+    """Only a brief's edit paths, read without checking the rest of the brief (plan
+    10.3 step 2: a resume of a run paused for its planners' questions reads the revised
+    brief's edit paths first, makes the approval checks over them, and only then checks
+    the whole brief). Raises ``ValueError`` naming why when the file cannot be read, the
+    ``## Edit paths`` section is missing, repeated or empty, or any path in it is
+    refused by the edit-path rules or not written as a bullet. Logs nothing."""
+    text, problems = _read(arg, root)
+    if text is None:
+        raise ValueError("the brief cannot be read: " + "; ".join(problems))
+    found, current, seen = [], None, 0
+    for line in scan(text):
+        if line.kind == "h2" and not line.setext:
+            current = line.text
+            seen += line.text == _EDIT
+            continue
+        if current == _EDIT and line.kind == "text":
+            content = line.text.strip()
+            if _is_placeholder(content):
+                continue
+            match = _BULLET.match(content)
+            if not match:
+                raise ValueError(f"line {line.no} of `## {_EDIT}` is not a bullet")
+            path = _MEASURE_SPLIT.split((match.group(1) or "").strip(), maxsplit=1)[0]
+            path = path.strip()
+            reasons = check_edit_path(path)
+            if reasons:
+                raise ValueError(f"line {line.no}: " + "; ".join(reasons))
+            found.append(path)
+    if seen != 1:
+        raise ValueError(f"the brief has {seen} `## {_EDIT}` sections, not one")
+    if not found:
+        raise ValueError(f"the brief's `## {_EDIT}` section is empty")
+    return found
+
+
 def check_brief(arg, root=PROJECT_ROOT):
     """Check the brief at a project-relative path. Returns the output lines and a code."""
     text, brief_problems = _read(arg, root)

@@ -9,8 +9,8 @@ both modes' dry runs, the readers that take the edit paths and the image tag fro
 ``approval.json`` alone (the Codex hook, the Claude builder's approver and the check
 helper), the start's interim approval sequence, and the two new modes of ``run.py``.
 
-Every provider, Docker and image step is the build-and-review suite's fake
-(``test_loop.Harness``), in a temporary project that is a real git repository with a
+Every provider, Docker and image step is the loop suites' fake
+(``loop_fixtures.Harness``), in a temporary project that is a real git repository with a
 second repository standing in for the personal one. No test starts Docker, a model
 session or a Codex app server. A run at the approval pause is made the way A3's planning
 half will leave one: a run record and a frozen folder with no ``approval.json``, no
@@ -27,10 +27,10 @@ Same three controls as the other suites:
 """
 
 import asyncio
-import importlib.util
 import io
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -39,10 +39,12 @@ from unittest import mock
 
 TESTS = Path(__file__).resolve().parent
 
-# The build-and-review suite's harness, fixtures and loaded modules, used as they are.
-_spec = importlib.util.spec_from_file_location("_review_loop_suite", TESTS / "test_loop.py")
-suite = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(suite)
+# The loop suites' harness, fixtures and loaded modules, used as they are, imported
+# from the one helper module they all share (plan 10.3, the chunk list: the split of
+# the old single loop file), never by loading a loop file.
+if str(TESTS) not in sys.path:
+    sys.path.insert(0, str(TESTS))
+import loop_fixtures as suite  # noqa: E402
 
 loop, sr, worktree, frozen = suite.loop, suite.sr, suite.worktree, suite.frozen
 codex_rules, container, packet, runrecord = (suite.codex_rules, suite.container,

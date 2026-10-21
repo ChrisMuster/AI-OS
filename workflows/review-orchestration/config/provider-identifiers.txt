@@ -1,0 +1,44 @@
+# The identity check's lists (plan 10.3 step 3), read by scripts/planning.py before the
+# two planners' plans reach the synthesiser. One identifier per line under one of the
+# four section headings below; blank lines and lines starting # are ignored. A line
+# outside a section, or a section named otherwise, refuses the run.
+#
+# [names]        matched without case, as a whole word. Every model name in the
+#                settings file is added to these by the script.
+# [distinctive]  tool names that are not ordinary words, matched with case as a whole
+#                token anywhere, in prose as much as in code.
+# [common]       tool names that are ordinary English words, matched with case only
+#                where written as a tool: as a whole token inside a backtick span on
+#                one line, or immediately followed by `(`.
+# [prefixes]     an identifier beginning with one of these matches, whatever follows.
+#
+# A name is added to [distinctive] unless it is an ordinary word.
+
+[names]
+Claude
+Anthropic
+Codex
+OpenAI
+GPT
+ChatGPT
+
+[distinctive]
+ToolSearch
+NotebookEdit
+WebFetch
+WebSearch
+PowerShell
+apply_patch
+
+[common]
+Bash
+Read
+Edit
+Write
+Glob
+Grep
+Agent
+Skill
+
+[prefixes]
+mcp__

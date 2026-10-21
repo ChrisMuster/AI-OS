@@ -71,9 +71,10 @@ LINK_RUN = PROJECT_ROOT / "workflows" / "link-check" / "scripts" / "run.py"
 SETUP_PY = PROJECT_ROOT / "workflows" / "biblio-tools" / "scripts" / "setup.py"
 
 TEST_ROOTS = ("workflows", "skills")
-# Seconds per test file. Raised from 600 on 2026-10-20: review-orchestration's
-# test_loop.py (269 tests) takes about 586 s on Windows and passed the old limit by
-# too little to be reliable.
+# Seconds per test file. Raised from 600 on 2026-10-20: review-orchestration's single
+# test_loop.py (269 tests) took about 586 s on Windows and passed the old limit by
+# too little to be reliable. That file was then split by subject into the
+# test_loop*.py files, each well under half this limit.
 TEST_TIMEOUT = 1200
 
 # Re-exec guard: set on the child so the venv interpreter never loops back.

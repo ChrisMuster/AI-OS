@@ -86,6 +86,12 @@ WEB_SEARCH_OFF = 'web_search="disabled"'
 # Items of a Codex turn that are the model talking, and items that are tool calls.
 # Every tool call must have a decision line from the run's hook.
 _CODEX_MESSAGE_ITEMS = frozenset({"userMessage", "agentMessage", "reasoning"})
+# Items that are neither, passed without a hook decision because they hold no command,
+# file or tool for a hook to judge (plan 10.3, chunk 2's first follow-on): in
+# openai-codex 0.157.0 a `contextCompaction` item holds only `id` and `type`, and a
+# `plan` item only `id`, `text` and `type`. Run 20261019-160323-3f96 was stopped by a
+# compaction in a long thread. Every other kind not listed here still ends the turn.
+_CODEX_NO_TOOL_ITEMS = frozenset({"contextCompaction", "plan"})
 _CODEX_TOOL_ITEMS = frozenset({"commandExecution", "fileChange", "webSearch",
                                "mcpToolCall", "dynamicToolCall", "collabAgentToolCall",
                                "imageGeneration", "imageView"})
@@ -1023,7 +1029,7 @@ class CodexBuilder:
                 continue
             item = event["payload"].get("item") or {}
             kind, item_id = item.get("type"), item.get("id")
-            if kind in _CODEX_MESSAGE_ITEMS:
+            if kind in _CODEX_MESSAGE_ITEMS or kind in _CODEX_NO_TOOL_ITEMS:
                 continue
             if kind not in _CODEX_TOOL_ITEMS:
                 return f"the turn holds an item of a kind the session does not know: {kind}"
@@ -1511,6 +1517,40 @@ def make_builder(settings, approver, *, cwd, resume=None, run_dir=None, usage=No
                **_wanted(cls, offered),
                **({"max_turns": offered["max_turns"]} if provider == limits.CLAUDE else {}),
                **kwargs)
+
+
+def make_read_only(settings, provider, role, *, cwd, usage=None, frozen_dir=None,
+                   **kwargs):
+    """A read-only session of the planning half on ``provider``, taking its model and
+    effort from that provider's ``role`` entry in the run's resolved settings (plan
+    10.3 step 7): it is the reviewer session of that provider, so it is started with
+    the reviewers' lockdown exactly as the reviewer is (process table rows 16 and 17).
+    A Claude session's turn cap is the run's ``max_turns.reviewer``, the read-only
+    sessions' one limit."""
+    cls = REVIEWERS.get(provider)
+    if cls is None:
+        raise ProviderError(f"no read-only session exists for {provider}; only "
+                            f"{', '.join(REVIEWERS)} can hold one")
+    entry = model_for(settings, provider, role)
+    offered = {"usage": usage, "frozen_dir": frozen_dir}
+    extra = ({"max_turns": settings.get("max_turns", {}).get(
+        "reviewer", DEFAULT_MAX_TURNS["reviewer"])} if provider == limits.CLAUDE else {})
+    return cls(entry["model"], entry["effort"], cwd=cwd, **_wanted(cls, offered),
+               **extra, **kwargs)
+
+
+def make_planner(settings, provider, *, cwd, usage=None, frozen_dir=None, **kwargs):
+    """A planner session (plan 10.3 step 1) on ``provider``, on its ``planner`` entry."""
+    return make_read_only(settings, provider, "planner", cwd=cwd, usage=usage,
+                          frozen_dir=frozen_dir, **kwargs)
+
+
+def make_synthesiser(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
+    """The synthesiser session (plan 10.3 step 3): on the builder's provider and the
+    builder's model, section 11 having given the synthesiser no entry of its own, so it
+    takes the provider's ``builder`` entry, effort included."""
+    return make_read_only(settings, settings["roles"]["builder"], "builder", cwd=cwd,
+                          usage=usage, frozen_dir=frozen_dir, **kwargs)
 
 
 def make_reviewer(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):

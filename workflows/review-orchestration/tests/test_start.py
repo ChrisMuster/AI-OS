@@ -259,7 +259,7 @@ class ResumeStopTests(StarterCase):
 
     def test_negative_resume_and_stop_leave_the_root_to_the_trusted_copy(self):
         # The trusted copy refuses a BOOK_DRAGON_ROOT that disagrees with its
-        # hook.json (tested in test_loop.py), so the starter passes it on.
+        # hook.json (tested in test_loop_trusted.py), so the starter passes it on.
         self.make_frozen()
         other = str(self.root.parent / "elsewhere")
         for argv in (["--resume", RUN_ID], ["--stop", RUN_ID]):

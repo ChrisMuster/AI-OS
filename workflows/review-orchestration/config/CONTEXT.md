@@ -1,6 +1,6 @@
 # Review Orchestration - Config
 
-**Last modified:** 2026-10-19
+**Last modified:** 2026-10-20
 
 ## Purpose
 Holds the review-orchestration settings, the files the user edits to change how runs behave. Settings live here rather than in the scripts so that nothing a run depends on is hard-coded.
@@ -11,11 +11,13 @@ Holds the review-orchestration settings, the files the user edits to change how 
 - codex-verify-commands.txt - `workflows/review-orchestration/config/codex-verify-commands.txt` - The verification commands a Codex builder may run, in the same format, since S7 only through the check helper and in the container, as its header says. Since S7 it holds the targeted audit and the close-out verifier in their read-only forms only (inside the clean copy neither writes anywhere that matters nor reads a personal file), and it still names each workflow check it allows instead of accepting any workflow's `--check`.
 - codex-read-commands.txt - `workflows/review-orchestration/config/codex-read-commands.txt` - The read commands a Codex builder may run, since it reads files through the shell: one regular expression per line with the tokens `PATH` and `QUOTED` replaced before compiling, and one exact command that gives the time for a LOG.md entry. The lines are for PowerShell. `Get-Content` is accepted only with `[Console]::OutputEncoding` set to UTF-8 and `-Encoding UTF8` together, because Windows PowerShell 5.1 returns non-ASCII text wrongly with either alone (measured 2026-10-04).
 
+- provider-identifiers.txt - `workflows/review-orchestration/config/provider-identifiers.txt` - The identity check's lists (plan 10.3 step 3, A3 chunk 2), read by `scripts/planning.py` before the two planners' plans reach the synthesiser: one identifier per line under `[names]` (matched without case as whole words, with every model name in `settings.json` added by the script), `[distinctive]` (tool names that are not ordinary words, matched with case anywhere), `[common]` (tool names that are ordinary words, matched only where written as a tool: in a backtick span on one line, or followed by `(`) and `[prefixes]` (`mcp__`, any identifier beginning with it). Blank lines and lines starting `#` are ignored; a line outside a section, a section named otherwise or given twice, an identifier holding whitespace, or a section missing or empty refuses the run.
+
 ## Inputs
 None. The files are edited by hand.
 
 ## Outputs
-None directly. `workflows/review-orchestration/scripts/settings.py` [[workflows/review-orchestration/scripts/CONTEXT]] reads and checks `settings.json`, `approver.py` in the same folder reads `verify-commands.txt`, and `codex_rules.py` reads the two Codex lists. Every run's frozen folder, made by the orchestrator when the run starts (`scripts/frozen.py`), holds all three lists as the start commit has them (the Claude list for the check helper, `scripts/check_server.py`), and the builder is judged by those copies, so a change here takes effect on the next run after it is committed, not on one in progress.
+None directly. `workflows/review-orchestration/scripts/settings.py` [[workflows/review-orchestration/scripts/CONTEXT]] reads and checks `settings.json`, `approver.py` in the same folder reads `verify-commands.txt`, `codex_rules.py` reads the two Codex lists, and `planning.py` reads `provider-identifiers.txt` from beside its own code, so a run uses its trusted copy's. Every run's frozen folder, made by the orchestrator when the run starts (`scripts/frozen.py`), holds all three lists as the start commit has them (the Claude list for the check helper, `scripts/check_server.py`), and the builder is judged by those copies, so a change here takes effect on the next run after it is committed, not on one in progress.
 
 ## Steps
 N/A - this is a configuration directory, not a workflow.
@@ -24,12 +26,14 @@ N/A - this is a configuration directory, not a workflow.
 - `workflows/review-orchestration/scripts/settings.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads `settings.json`. It refuses a value outside its allowed range rather than replacing it with the default.
 - `workflows/review-orchestration/scripts/approver.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads `verify-commands.txt`, refusing a line that is not a valid regular expression and a file that lists nothing.
 - `workflows/review-orchestration/scripts/codex_rules.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads the two Codex lists, with the same refusals.
+- `workflows/review-orchestration/scripts/planning.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads `provider-identifiers.txt`, refusing a malformed file before any planning session; `tests/test_planning.py` checks the shipped lists against plan 10.3 step 3.
 - `workflows/review-orchestration/tests/test_codex_rules.py` [[workflows/review-orchestration/tests/CONTEXT]] - holds one case per line of each Codex list and fails when a line is added without one.
 
 ## Known Issues
 - `codex-verify-commands.txt` is a measurement, not a proof that a line writes nothing: on 2026-10-02 the commands it accepts changed no tracked or hand-written file, but a test file can write anywhere. Since S7 every line runs in the container over a clean copy that is removed afterwards, so a write lands in the copy, not the project.
 - A workflow check is added to the Codex list by adding its name, after reading what it does: it must not reach the network, read the project's `.env` file, or write a tracked or hand-written file. The Reddit collector's check makes an HTTP request, and the web-research and personal-data guard checks read `.env`, so all three are left off.
 - `codex-read-commands.txt` is written for PowerShell, the shell Codex uses on Windows. On another system its lines need rewriting, and the every-line tests with them. The `Get-Content` line's two encoding settings are for Windows PowerShell 5.1 on a console whose code page is 850; under PowerShell 7, which reads and writes UTF-8 by default, they would be unnecessary but harmless.
+- `provider-identifiers.txt` lists what plan 10.3 step 3 names on 2026-10-14. A tool a provider adds later is not caught until its name is added here, as `[distinctive]` unless it is an ordinary word; `tests/test_planning.py` asserts the shipped lists, so such a change updates the test too.
 - Model names are the defaults on 2026-09-24 and are checked at run time; a model a provider no longer offers stops the run rather than being substituted.
 - A pattern in `verify-commands.txt` that is too broad widens what the builder may run; an argument class that allows `-` lets in flags the line never meant, which is how the audit's `--save` got through (R2-2). The approver and the check helper still refuse a `..` path component, a `.env` file, more than one line and quoting they cannot read whatever a pattern allows, but anything else a pattern matches runs, in the container.
 
@@ -44,3 +48,4 @@ N/A - this is a configuration directory, not a workflow.
 - 2026-10-08 - Outputs corrected for orchestrator isolation stage S6a: the orchestrator now makes every run's frozen folder at the start, with the lists as the start commit has them, rather than a Codex builder copying them at its first launch (code review R18-3). Decision 28 has since moved the Codex list's two new lines to S7.
 - 2026-10-11 - Orchestrator isolation stage S7: `codex-verify-commands.txt` gained the read-only close-out verifier and targeted audit (plan 6), and both verification lists' headers say every line runs in the container, through the check helper only (decision 27). Contents and Known Issues updated.
 - 2026-10-19 - Added `max_turns` and `usage_probe_model` to the resolved run settings, with the plan's defaults. Contents updated.
+- 2026-10-20 - A3 chunk 2: added `provider-identifiers.txt`, the identity check's four lists (plan 10.3 step 3). Contents, Outputs, Dependencies and Known Issues updated.

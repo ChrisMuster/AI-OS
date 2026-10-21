@@ -236,6 +236,28 @@ def capture_problems(root, git_dir, python=None):
     return problems
 
 
+def _random_order(items):
+    """``items`` in an order drawn at random from the operating system's source, for
+    the labels the synthesiser sees (plan 10.3 step 3)."""
+    import random
+    shuffled = list(items)
+    random.SystemRandom().shuffle(shuffled)
+    return shuffled
+
+
+def tree_paths(root, public_head, personal_head, git_dir):
+    """Every file path in the public tree at ``public_head`` and the personal tree at
+    ``personal_head``, read with ``git ls-tree`` (read-only). A tree that cannot be
+    read raises ``worktree.GitError``."""
+    paths = set(worktree.git(root, "ls-tree", "-r", "-z", "--name-only",
+                             public_head).split("\0"))
+    if personal_head:
+        paths |= set(worktree.git(root, "ls-tree", "-r", "-z", "--name-only",
+                                  personal_head, git_dir=git_dir).split("\0"))
+    paths.discard("")
+    return paths
+
+
 @dataclass
 class Deps:
     """Every way the loop reaches a provider, a check or the clock."""
@@ -262,10 +284,30 @@ class Deps:
     remove_copies: Callable = None
     claude_usage: Callable = limits.ClaudeUsage
     probe_claude: Callable = None
+    # The planning half (plan 10.3 steps 1 to 3, A3 chunk 2, ``planning.py``): the two
+    # planners' and the synthesiser's read-only sessions, the random order of the two
+    # plans' labels, and the files of both trees at the run's starting commits, which
+    # the identity check's path mask reads.
+    make_planner: Callable = None
+    make_synthesiser: Callable = None
+    choose_order: Callable = None
+    tree_paths: Callable = None
     sleep: Callable = time.sleep
     now: Callable = time.time
 
     def __post_init__(self):
+        if self.make_planner is None:
+            self.make_planner = lambda settings, provider, cwd, usage, frozen_dir: \
+                providers.make_planner(settings, provider, cwd=cwd, usage=usage,
+                                       frozen_dir=frozen_dir)
+        if self.make_synthesiser is None:
+            self.make_synthesiser = lambda settings, cwd, usage, frozen_dir: \
+                providers.make_synthesiser(settings, cwd=cwd, usage=usage,
+                                           frozen_dir=frozen_dir)
+        if self.choose_order is None:
+            self.choose_order = _random_order
+        if self.tree_paths is None:
+            self.tree_paths = tree_paths
         if self.make_builder is None:
             self.make_builder = lambda settings, approver, cwd, resume, run_dir, usage: \
                 providers.make_builder(settings, approver, cwd=cwd, resume=resume,
@@ -1452,6 +1494,23 @@ def price_alarm(run):
     return flags
 
 
+def identity_lines(refusal):
+    """The report's first lines for an identity refusal (plan 10.3 step 3): for each
+    refused plan its label and provider, then each match's rule, matched text, field
+    and line number."""
+    lines = []
+    for plan in refusal.get("plans", []):
+        lines.append(f"**Identity check refused {plan.get('label')} "
+                     f"({plan.get('provider')}):** the plan was not scrubbed, the "
+                     "synthesiser never saw it, and the raw plan is kept in "
+                     f"`{plan.get('transcript')}`.")
+        for match in plan.get("matches", []):
+            text = " ".join(str(match.get("text")).split()).replace("`", "'")
+            lines.append(f"- rule {match.get('rule')}: `{text}` in "
+                         f"{match.get('field')}, line {match.get('line')}")
+    return lines
+
+
 def write_report(run):
     state = run.state
     last = state["stop_reasons"][-1]
@@ -1482,8 +1541,14 @@ def write_report(run):
         "image": state.get("image"), "docker": state.get("docker"),
         "cleanup": state.get("cleanup", []),
     }
+    if state.get("identity_refusal"):
+        # Plan 10.3 step 3: a planner's plan refused for naming its provider.
+        report["identity_refusal"] = state["identity_refusal"]
     _write_json(run.run_dir / "report.json", report)
     lines = [f"# Run {state['run_id']}", ""]
+    if report.get("identity_refusal"):
+        # The same facts as report.json's, on the report's first lines.
+        lines += identity_lines(report["identity_refusal"]) + [""]
     if report["usage_source"]["codex"] == limits.UNAVAILABLE:
         # Plan 10.10 item 1: a negative result goes on the report's first lines.
         lines += ["Codex usage not reported: "

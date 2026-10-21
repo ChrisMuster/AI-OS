@@ -22,6 +22,10 @@ Modes:
                          (max-rounds, usage-limit, error) from its last completed
                          step. --rounds N allows N more review rounds. The run keeps
                          the roles it started with, so --builder is refused here.
+                         A run in its planning half (planning.py, A3 chunk 2) resumes
+                         there instead: paused awaiting-user for its planners'
+                         questions, or ended error or usage-limit before approval;
+                         --rounds, --allow-paid and --wait are refused for it.
   --stop <run-id>        End a paused run.
   --approve <run-id>     Continue a run paused for plan approval into the build (plan
                          10.3 step 6): four read-only checks that the project has not
@@ -392,6 +396,20 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
             if args.rounds is not None and args.rounds < 1:
                 parser.error("--rounds must be at least 1")
             run = loop.load(args.resume, wait=args.wait, **common)
+            import planning
+            if planning.in_planning(run):
+                # A run in its planning half resumes there (plan 10.3 step 2 and
+                # "Resuming the planning half"), never into the build.
+                if args.rounds is not None or args.allow_paid or args.wait:
+                    print("REFUSED: --rounds, --allow-paid and --wait do not apply to a "
+                          "run in its planning half; resume it with "
+                          f"{STARTER} --resume {args.resume}")
+                    return REFUSED
+                planning.resume(run, dry_run=args.dry_run)
+                if args.dry_run:
+                    return 0
+                asyncio.run(planning.advance(run))
+                return _outcome(run)
             loop.resume(run, rounds=args.rounds, dry_run=args.dry_run,
                         allow_paid=args.allow_paid)
             if args.dry_run:
