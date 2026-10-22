@@ -7,14 +7,16 @@ image, the run's own writes in the project, the scope rebuild and the write-once
 ``approval.json``, in that order, with the plan's two kinds of failure), ``loop.amend``,
 both modes' dry runs, the readers that take the edit paths and the image tag from
 ``approval.json`` alone (the Codex hook, the Claude builder's approver and the check
-helper), the start's interim approval sequence, and the two new modes of ``run.py``.
+helper), that a start since A3 chunk 3 writes no ``approval.json`` (chunk 1's interim
+replaced by the planning half), and the two new modes of ``run.py``.
 
 Every provider, Docker and image step is the loop suites' fake
 (``loop_fixtures.Harness``), in a temporary project that is a real git repository with a
 second repository standing in for the personal one. No test starts Docker, a model
-session or a Codex app server. A run at the approval pause is made the way A3's planning
-half will leave one: a run record and a frozen folder with no ``approval.json``, no
-``started`` entry in the workflow log, and the state paused ``awaiting-plan-approval``.
+session or a Codex app server. A run at the approval pause is made from a real start,
+which since A3 chunk 3 leaves a run record and a frozen folder with no
+``approval.json`` and no ``started`` entry in the workflow log, its planning record set
+done (``loop_fixtures.pause_planned``) and the state paused ``awaiting-plan-approval``.
 
 Same three controls as the other suites:
 
@@ -102,14 +104,17 @@ class ApprovalCase(suite.LoopCase):
         return loop.load(run_id, root=self.root, deps=self.deps(), log_path=self.log,
                          runs_dir=self.runs)
 
-    def paused(self):
-        """A run at the approval pause, as the planning half will leave one."""
+    def paused(self, builder="claude"):
+        """A run at the approval pause, as the planning half leaves one. Since A3 chunk
+        3 the start itself writes no approval.json and no LOG.md entry, and its planning
+        record is set done here, with a clean plan review that used no label."""
         run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
                          deps=self.deps(), log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings, builder="claude")
-        (Path(run.state["frozen_dir"]) / codex_rules.APPROVAL_FILE).unlink()
-        self.log.unlink()
-        run.state.update(status=sr.PAUSED, pause=sr.AWAITING_PLAN_APPROVAL)
+                         settings=self.settings, builder=builder)
+        self.assertFalse((Path(run.state["frozen_dir"]) / codex_rules.APPROVAL_FILE)
+                         .exists())
+        self.assertFalse(self.log.exists())
+        suite.pause_planned(run)
         run.state["docker"] = {"started_by_run": False, "events": []}
         run.save()
         self.h.docker_calls.clear()
@@ -477,6 +482,10 @@ class ApprovalOrderTests(ApprovalCase):
         (self.root / "revised.md").write_bytes(REVISED.encode("utf-8"))
         loop.amend(run, "revised.md")
         recorded = dict(run.state["start"])
+        # The amendment restarts planning (A3 chunk 3), which plans and reviews again
+        # with the harness's fake sessions and pauses for approval once more.
+        asyncio.run(suite.planning.advance(run))
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
         loop.approve(run)
         self.assertEqual(run.state["edit_paths"], ["work/a.txt"])
         self.assertEqual(run.state["acceptance"], ['python -c "print(2)"',
@@ -581,13 +590,23 @@ class ApprovalOrderTests(ApprovalCase):
         self.assertEqual(run.state["credits"], topped_up)
 
     def test_rejection_untrackable_credits_refuse_before_docker(self):
-        run = self.paused()
+        # Since A3 chunk 3 (plan 10.10 items 3 and 8) untrackable credits refuse only an
+        # approval whose next step, the build, uses Codex: a Codex builder's.
+        run = self.paused(builder="codex")
         before = self.snapshot(run)
         self.h.readings = [suite.reading(credits=None)]
         text = self.refused(lambda: loop.approve(run))
         self.assertIn("Codex credits cannot be tracked", text)
         self.assertEqual(self.h.docker_calls, [])
         self.unchanged(run, *before)
+        # A Claude builder's approval records them as read and goes on; the first later
+        # Codex step stops on them (test_plan_wiring.py).
+        self.setUp()
+        run = self.paused()
+        self.h.readings = [suite.reading(credits=None)]
+        loop.approve(run)
+        self.assertIsNone(run.state["credits"])
+        self.assertEqual(run.state["status"], sr.RUNNING)
 
     def test_rejection_only_a_run_paused_for_plan_approval_is_approved(self):
         run = self.paused()
@@ -682,18 +701,18 @@ class ApprovalReaderTests(ApprovalCase):
 
     def test_rejection_a_run_with_no_approval_json_ends_error_at_its_review(self):
         # The round's checks take the image tag from approval.json alone.
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=self.deps(), log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings, builder="claude")
+        run = suite.start_built("brief.md", "demo", str(self.personal), root=self.root,
+                                deps=self.deps(), log_path=self.log, runs_dir=self.runs,
+                                settings=self.settings, builder="claude")
         self.h.builder_script = [suite.edit(self.root, "done\n")]
         self.h.reviews = [[]]
         run.state["image"]["tag"] = "stale-tag-from-state"
         asyncio.run(run.advance())
         self.assertEqual(self.h.check_calls[0]["image"], self.h.image_tag)
         self.reset_work()
-        run = loop.start("brief.md", "other", str(self.personal), root=self.root,
-                         deps=self.deps(), log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings, builder="claude")
+        run = suite.start_built("brief.md", "other", str(self.personal), root=self.root,
+                                deps=self.deps(), log_path=self.log, runs_dir=self.runs,
+                                settings=self.settings, builder="claude")
         self.approval_file(run).unlink()
         run._approver = None
         self.h.builder_script = [suite.edit(self.root, "done\n")]
@@ -745,8 +764,11 @@ class AmendTests(ApprovalCase):
         self.assertEqual(ledger["R1-3"]["note"], "done in the plan")
         for key, value in recorded.items():
             self.assertEqual(saved[key], value, key)
-        self.assertEqual((saved["status"], saved["pause"]),
-                         (sr.PAUSED, sr.AWAITING_PLAN_APPROVAL))
+        # Since A3 chunk 3 the amendment restarts planning at step 1 (plan 10.3 step
+        # 6): the run is set running with nothing of its planning done, for the caller
+        # to advance.
+        self.assertEqual((saved["status"], saved["pause"]), (sr.RUNNING, None))
+        self.assertEqual(saved["planning"]["completed"], [])
         self.assertFalse(self.log.exists(), "the planning half writes no LOG.md entry")
         self.assertFalse(packet.packet_path(self.root, "demo").exists())
         self.assertFalse(self.approval_file(run).exists())
@@ -894,12 +916,21 @@ class CommandLineTests(ApprovalCase):
         self.unchanged(run, *before)
 
     def test_positive_amend_says_the_run_stays_paused(self):
+        # Since A3 chunk 3 --amend restarts planning against the revised brief, which
+        # plans and reviews again and pauses for approval once more (exit 1, as any
+        # pause), naming the commands that act on it.
         run = self.paused()
         (self.root / "revised.md").write_bytes(REVISED.encode("utf-8"))
         code, out = self.call("--amend", run.state["run_id"], "revised.md")
-        self.assertEqual(code, 0, out)
+        self.assertEqual(code, 1, out)
         self.assertIn("amended", out)
+        self.assertIn("planning restarts from its first step", out)
+        self.assertIn(f"is paused ({sr.AWAITING_PLAN_APPROVAL})", out)
         self.assertIn(f"--approve {run.state['run_id']}", out)
+        planner_prompts = [c["prompt"] for c in self.h.planning_calls
+                           if c["role"] == "planner"]
+        self.assertTrue(planner_prompts)
+        self.assertIn("work/a.txt says done twice.", planner_prompts[0])
 
     def test_rejection_a_refused_approval_exits_3(self):
         run = self.paused()
@@ -937,10 +968,10 @@ class CommandLineTests(ApprovalCase):
 
 
 class InterimStartTests(ApprovalCase):
-    """The chunk 1 paragraph at the end of plan 10.3: until chunk 3 joins the planning
-    half, a start does approval's sequence itself straight after its host start check,
-    Docker and the image, then approval.json from the brief, with no pause and no
-    checks."""
+    """The chunk 1 interim (a start doing approval's sequence itself) is replaced by the
+    planning half since A3 chunk 3 (plan 10.3, the chunk 3 bullet): a start makes its
+    frozen folder and run record and plans, writing no approval.json, preparing no image
+    and making no approval check; approval.json waits for --approve."""
 
     def test_positive_a_start_writes_approval_json_and_runs_on(self):
         self.h.on_frozen = suite.make_trusted
@@ -948,31 +979,36 @@ class InterimStartTests(ApprovalCase):
                          deps=self.deps(), log_path=self.log, runs_dir=self.runs,
                          settings=self.settings, builder="claude")
         folder = Path(run.state["frozen_dir"])
-        self.assertEqual(codex_rules.read_approval(folder),
-                         {"edit_paths": ["work/"], "image_tag": self.h.image_tag})
+        with self.assertRaises(codex_rules.ApprovalError):
+            codex_rules.read_approval(folder)
         hook = json.loads((folder / "hook.json").read_text(encoding="utf-8"))
         self.assertNotIn("edit_paths", hook)
         self.assertNotIn("image_tag", hook)
         self.assertEqual((run.state["status"], run.state["pause"]), (sr.RUNNING, None))
+        self.assertTrue(loop.before_approval(run.state), "the run is in its planning half")
         self.assertEqual(self.uncaptured_calls, [], "no approval checks at the start")
-        self.assertEqual(run.approver.edit_paths, ["work/"])
-        # Docker and the image came first, as today.
-        self.assertEqual(len(self.h.image_calls), 1)
+        self.assertFalse(run.approver.decide("Read", {"file_path": "work/a.txt"}).allowed)
+        # No image step and no Docker command but the status query.
+        self.assertEqual(self.h.image_calls, [])
+        self.assertEqual(self.h.docker_calls, ["status"])
+        self.assertIsNone(run.state["image"])
 
     def test_rejection_an_approval_json_that_cannot_be_written_refuses_the_start(self):
+        # A start never writes approval.json, so a writer that would fail is not
+        # reached and the start goes on to plan; it is approval's to write.
+        calls = []
+
         def refuse(*args, **kwargs):
+            calls.append(args)
             raise frozen.FrozenError("approval.json could not be written: denied")
-        with mock.patch.object(frozen, "write_approval", refuse), \
-                self.assertRaises(loop.RunRefused) as caught:
-            loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                       deps=self.deps(), log_path=self.log, runs_dir=self.runs,
-                       settings=self.settings, builder="claude")
-        self.assertIn("could not be written: denied", " ".join(caught.exception.args[0]))
-        self.assertFalse(self.runs.exists(), "no run record")
-        self.assertFalse(self.log.exists(), "no started entry")
-        frozen_parent = self.root.parent / "frozen"
-        self.assertEqual(list(frozen_parent.iterdir()) if frozen_parent.exists() else [],
-                         [], "the frozen folder is removed")
+        with mock.patch.object(frozen, "write_approval", refuse):
+            run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                             deps=self.deps(), log_path=self.log, runs_dir=self.runs,
+                             settings=self.settings, builder="claude")
+        self.assertEqual(calls, [])
+        self.assertTrue((run.run_dir / "state.json").is_file())
+        self.assertFalse(self.log.exists(), "no started entry before approval")
+        self.assertTrue(Path(run.state["frozen_dir"]).is_dir(), "the frozen folder stays")
 
 
 if __name__ == "__main__":

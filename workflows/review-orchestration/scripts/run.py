@@ -6,8 +6,12 @@ Modes:
   --check-brief <brief>  Check a run brief. Calls the checker in brief.py and
                          returns its result unchanged: the same PASS or FAIL lines
                          on stdout, the same exit code, the same LOG.md entries.
-  --run <brief>          Start a build-and-review run from a brief that passes the
-                         check (loop.py). Needs --builder claude|codex, the provider
+  --run <brief>          Start a run from a brief that passes the check. Since A3 chunk
+                         3 it begins with the planning half (planning.py): both
+                         planners, the identity check, the synthesis and the plan
+                         review, then it pauses awaiting-plan-approval with
+                         plan-report.md written, and builds (loop.py) only after
+                         --approve. Needs --builder claude|codex, the provider
                          the user named to build (the other reviews; there is no
                          default, and an AI asked to start a run with no builder named
                          asks the user), --item, the name of the review packet
@@ -22,10 +26,13 @@ Modes:
                          (max-rounds, usage-limit, error) from its last completed
                          step. --rounds N allows N more review rounds. The run keeps
                          the roles it started with, so --builder is refused here.
-                         A run in its planning half (planning.py, A3 chunk 2) resumes
-                         there instead: paused awaiting-user for its planners'
-                         questions, or ended error or usage-limit before approval;
-                         --rounds, --allow-paid and --wait are refused for it.
+                         A run in its planning half resumes there instead: paused
+                         awaiting-user for its planners' questions, or ended error,
+                         usage-limit or max-rounds before approval; --rounds N there
+                         allows N more plan-review rounds, and --allow-paid and --wait
+                         apply as they do to the build. With --wait a resume's
+                         preflight refused on the ceiling or on paid usage with a
+                         known reset sleeps until it and checks again, in both halves.
   --stop <run-id>        End a paused run.
   --approve <run-id>     Continue a run paused for plan approval into the build (plan
                          10.3 step 6): four read-only checks that the project has not
@@ -33,8 +40,9 @@ Modes:
                          scope rebuild and the write-once approval.json, then the build.
   --amend <run-id> <revised-brief>
                          Replace a run's brief, paused for plan approval, once the
-                         revised brief passes the check, and move its open plan-review
-                         findings to Addressed. The run stays paused.
+                         revised brief passes the check, move its open plan-review
+                         findings to Addressed, and restart planning from its first
+                         step against the revised brief.
 
 --dry-run: with --check-brief, prints the LOG.md entries to stderr instead of writing
 them; with --run, makes every read-only preflight check and says what it would do,
@@ -289,7 +297,13 @@ def hand_over(run, *, root=brief.PROJECT_ROOT, wait=False, environ=None,
     if again.state.get("status") != loop.sr.RUNNING:
         return code
     reason = problem or f"the run's trusted copy exited {code} without ending the run"
-    again.end(loop.sr.ERROR, {"hand_over": reason})
+    if loop.before_approval(again.state):
+        # A start hands over a run in its planning half, whose resumable end writes
+        # nothing in the project (plan 10.3 step 6).
+        import planning
+        planning.end(again, loop.sr.ERROR, {"hand_over": reason})
+    else:
+        again.end(loop.sr.ERROR, {"hand_over": reason})
     print(f"Run {run.state['run_id']} ended error: {reason}. Fix the cause, then resume: "
           f"{STARTER} --resume {run.state['run_id']}")
     return code if code not in (None, 0) else 1
@@ -395,23 +409,22 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
         elif args.resume:
             if args.rounds is not None and args.rounds < 1:
                 parser.error("--rounds must be at least 1")
-            run = loop.load(args.resume, wait=args.wait, **common)
             import planning
-            if planning.in_planning(run):
+
+            def act(run):
                 # A run in its planning half resumes there (plan 10.3 step 2 and
-                # "Resuming the planning half"), never into the build.
-                if args.rounds is not None or args.allow_paid or args.wait:
-                    print("REFUSED: --rounds, --allow-paid and --wait do not apply to a "
-                          "run in its planning half; resume it with "
-                          f"{STARTER} --resume {args.resume}")
-                    return REFUSED
-                planning.resume(run, dry_run=args.dry_run)
-                if args.dry_run:
-                    return 0
-                asyncio.run(planning.advance(run))
-                return _outcome(run)
-            loop.resume(run, rounds=args.rounds, dry_run=args.dry_run,
-                        allow_paid=args.allow_paid)
+                # "Resuming the planning half"), never into the build, with the build's
+                # options (A3 chunk 3, the chunk 3 bullet's first follow-on).
+                if planning.in_planning(run):
+                    return planning.resume(run, dry_run=args.dry_run,
+                                           allow_paid=args.allow_paid, rounds=args.rounds)
+                return loop.resume(run, rounds=args.rounds, dry_run=args.dry_run,
+                                   allow_paid=args.allow_paid)
+            # A user-started --resume --wait waits at its preflight too (plan 10.10
+            # item 5), in both halves; a plain --resume is refused as before.
+            run, _ = loop.resume_waiting(
+                lambda: loop.load(args.resume, wait=args.wait, **common), act,
+                wait=args.wait)
             if args.dry_run:
                 return 0
         elif args.approve:
@@ -424,21 +437,31 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
             superseded = loop.amend(run, args.amend[1], dry_run=args.dry_run)
             if args.dry_run:
                 return 0
-            print(f"Run {run.state['run_id']} amended: its brief was replaced and "
-                  f"{len(superseded)} open plan-review finding(s) moved to Addressed. It "
-                  f"stays paused ({run.state.get('pause')}). "
-                  + loop.pause_commands(run.state["run_id"], run.state.get("pause")))
-            return 0
+            # The amendment restarts planning at step 1 against the revised brief (plan
+            # 10.3 step 6), so the planning half runs again from here.
+            print(f"Run {run.state['run_id']} amended: its brief was replaced, "
+                  f"{len(superseded)} open plan-review finding(s) moved to Addressed, and "
+                  "planning restarts from its first step.")
         else:
             run = loop.load(args.stop, **common)
             loop.stop(run, dry_run=args.dry_run)
             if args.dry_run:
                 return 0
             return _outcome(run)
-        asyncio.run(run.advance())
+        asyncio.run(take_steps(run))
     except loop.RunRefused as exc:
         return _refused(exc)
     return _outcome(run)
+
+
+def take_steps(run):
+    """The steps a run takes from here: the planning half's (``planning.advance``) for a
+    run not yet approved, else the build's (``loop.Run.advance``)."""
+    import loop
+    import planning
+    if loop.before_approval(run.state):
+        return planning.advance(run)
+    return run.advance()
 
 
 if __name__ == "__main__":

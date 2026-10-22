@@ -25,9 +25,10 @@ class UsageGuardTests(LoopCase):
     """The probe and one-step permission, with no provider request or Docker launch."""
 
     def prepared(self):
-        return loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                          deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
-                          settings=self.settings, builder="claude")
+        """A run approved and ready to build (since A3 chunk 3 a start plans first)."""
+        return start_built("brief.md", "demo", str(self.personal), root=self.root,
+                           deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                           settings=self.settings, builder="claude")
 
     def test_positive_two_claude_steps_each_get_a_probe_and_no_preflight_gets_one(self):
         run = self.prepared()
@@ -87,10 +88,13 @@ class UsageGuardTests(LoopCase):
             "source": "limit-reported", "reason": "using paid overage",
             "percent": 100, "window": "five_hour", "resets_at": 2000000,
             "read_at": 1}
+        # Saved, since a resume's claim re-reads state.json (plan 10.10 item 5).
+        run.save()
         with self.assertRaisesRegex(loop.RunRefused, "paid overage"):
             loop.resume(run)
         self.assertEqual(self.h.probe_calls, [])
         run.state["claude_last_reading"]["resets_at"] = None
+        run.save()
         loop.resume(run)
         self.assertTrue(run.state["claude_unknown_reset_resume"])
         self.assertIsNone(run.before_step("build", "claude"))
@@ -104,6 +108,7 @@ class UsageGuardTests(LoopCase):
             "source": "limit-reported", "reason": "using paid overage",
             "percent": 100, "window": "five_hour", "resets_at": 2000000,
             "read_at": 1}
+        run.save()
         loop.resume(run, allow_paid=True)
         self.assertEqual(run.state["paid_usage_pending"], "build")
         self.assertEqual(self.h.probe_calls, [])
@@ -212,18 +217,26 @@ class UsageGuardTests(LoopCase):
         asyncio.run(run.take("build"))
         self.assertEqual(self.reason(run), sr.ERROR)
         self.assertEqual(self.h.builders, [])
-        self.assertEqual(run.state["step"], "preflight")
+        self.assertEqual(run.state["step"], loop.APPROVED_STEP)
 
     def test_paid_permission_lifts_the_ceiling_and_credit_check_for_one_step(self):
         run = self.prepared()
         run.state["paid_usage_pending"] = "build"
-        self.h.readings = [reading(95, credits=dict(CREDITS, balance="4.50")),
-                           reading(95, credits=dict(CREDITS, balance="4.50"))]
+        changed = dict(CREDITS, balance="4.50")
+        self.h.readings = [reading(95, credits=changed) for _ in range(4)]
         self.h.probe_readings = [limits.Reading("claude", limits.REPORTED,
-                                                 percent=95, window="five_hour")]
+                                                 percent=95, window="five_hour")
+                                 for _ in range(2)]
+        # A Claude step: the permitted one passes Claude's ceiling, the next stops.
         self.assertIsNone(run.before_step("build", "claude"))
         run.state.pop("paid_usage_pending")
         self.assertIsNotNone(run.before_step("fix-R1", "claude"))
+        # A Codex step: the permitted one passes Codex's ceiling and the changed
+        # credits; the next stops.
+        run.state["paid_usage_pending"] = "review-R1"
+        self.assertIsNone(run.before_step("review-R1", "codex"))
+        run.state.pop("paid_usage_pending")
+        self.assertIsNotNone(run.before_step("review-R2", "codex"))
 
     def test_after_a_permitted_step_the_new_credit_snapshot_is_the_baseline(self):
         self.h.builder_script = [edit(self.root, "done\n")]
@@ -232,9 +245,9 @@ class UsageGuardTests(LoopCase):
                            reading(20, credits=dict(CREDITS, balance="4.50")),
                            reading(20, credits=dict(CREDITS, balance="4.25")),
                            reading(20, credits=dict(CREDITS, balance="4.25"))]
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings, builder="claude", allow_paid=True)
+        run = start_built("brief.md", "demo", str(self.personal), root=self.root,
+                          deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                          settings=self.settings, builder="claude", allow_paid=True)
         asyncio.run(run.advance())
         self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
         self.assertEqual(run.state["credits"]["balance"], "4.25")
@@ -242,10 +255,12 @@ class UsageGuardTests(LoopCase):
 
     def test_rejection_hard_stops_remain_with_paid_permission(self):
         run = self.prepared()
-        run.state["paid_usage_pending"] = "build"
+        # A Codex step, since Codex's reading stops only a Codex step (A3 chunk 3).
+        run.state["paid_usage_pending"] = "review-R1"
         self.h.readings = [limits.Reading("codex", limits.LIMIT_REPORTED,
                                           reason="ordinaryUsageAllowed is false")]
-        self.assertIn("ordinaryUsageAllowed", run.before_step("build", "claude")["detail"])
+        self.assertIn("ordinaryUsageAllowed",
+                      run.before_step("review-R1", "codex")["detail"])
         self.assertEqual(self.h.probe_calls, [])
 
     def test_unknown_codex_permission_stops_unless_paid_is_allowed(self):
@@ -258,8 +273,10 @@ class UsageGuardTests(LoopCase):
         run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
                          deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
                          settings=self.settings, builder="claude", allow_paid=True)
-        self.assertEqual(run.state["paid_usage_pending"], "build")
-        self.assertEqual(run.state["paid_usage"][0]["step"], "build")
+        # Since A3 chunk 3 a start's first step is the two planners, one step for a
+        # permission.
+        self.assertEqual(run.state["paid_usage_pending"], "planners")
+        self.assertEqual(run.state["paid_usage"][0]["step"], "planners")
 
     def test_paid_permission_does_not_override_rejected_claude(self):
         run = self.prepared()

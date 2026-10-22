@@ -17,10 +17,13 @@ After every step the stop-reason rules of ``stopreasons.py`` decide whether the 
 goes on. A review round with no findings at all ends the run ``reviewed-clean``: the
 intent check that would let it end ``clean`` is a later sub-stage (plan 10.6).
 
-Before every step both providers' usage is read. A provider at or above the ceiling,
-reporting its limit, or using paid overage stops the run ``usage-limit`` before the
-step starts, and before a step that calls Codex the Codex credit snapshot must be
-exactly what it was at preflight. A limit hit mid-step is caught as its own class.
+Before every step Codex's usage is read, and before a Claude step Claude's. Since A3
+chunk 3 (plan 10.10 items 1, 3 and 8) a step is stopped only by the readings of the
+provider it uses: that provider at or above the ceiling, reporting its limit, or using
+paid overage stops the run ``usage-limit`` before the step starts, while the other
+provider's reading is recorded with the step and never stops it. Before a step that
+calls Codex the Codex credit snapshot must be exactly what it was at preflight, and
+trackable. A limit hit mid-step is caught as its own class.
 ``state.json`` is written after every completed step, so a stop loses at most the step
 in progress, and ``--resume`` continues from the last completed step; a builder cut
 off mid-step is resumed in the same session.
@@ -45,9 +48,17 @@ run paused for plan approval into the build after four read-only checks that the
 project has not moved, moving Docker, the image, the run's first project writes and
 the scope rebuild to approval, and writing the frozen folder's write-once
 ``approval.json``, from then on the one source of the edit paths and the image tag;
-``amend`` replaces a paused run's brief and supersedes its open plan-review findings.
-Until A3's later chunks add the planning half, a start does approval's sequence itself
-straight after its host start check, with no pause and no checks.
+``amend`` replaces a paused run's brief, supersedes its open plan-review findings and
+restarts planning. Since A3 chunk 3 a start makes its host start check, its frozen
+folder and its record and then plans (``planning.py``), with no Docker command but the
+status query; Docker, the image and ``approval.json`` wait for ``approve``. Labels run
+on across both halves: the build's review rounds carry on from the last plan-review
+label (``label_offset``), while the round cap counts the build's own rounds.
+
+Every resume and approval claims the run with an exclusive ``runs/<run-id>/resume.lock``
+before its first change, and ``resume_waiting`` is a user-started ``--resume --wait``
+that sleeps through a preflight refused on the ceiling or on paid usage with a known
+reset (plan 10.10 item 5).
 
 Nothing here stages, commits, pushes or changes branch (plan section 3). Every entry
 point to an SDK or a subprocess that talks to one is a replaceable dependency
@@ -292,10 +303,17 @@ class Deps:
     make_synthesiser: Callable = None
     choose_order: Callable = None
     tree_paths: Callable = None
+    # The plan reviewer (plan 10.3 step 4, A3 chunk 3): the reviewer provider's
+    # read-only session on its ``plan_reviewer`` entry.
+    make_plan_reviewer: Callable = None
     sleep: Callable = time.sleep
     now: Callable = time.time
 
     def __post_init__(self):
+        if self.make_plan_reviewer is None:
+            self.make_plan_reviewer = lambda settings, cwd, usage, frozen_dir: \
+                providers.make_plan_reviewer(settings, cwd=cwd, usage=usage,
+                                             frozen_dir=frozen_dir)
         if self.make_planner is None:
             self.make_planner = lambda settings, provider, cwd, usage, frozen_dir: \
                 providers.make_planner(settings, provider, cwd=cwd, usage=usage,
@@ -426,6 +444,10 @@ def _usage_stop(readings, ceiling, *, allow_paid=False):
 
 
 def _effective_last(state, now, *, user_resume=False):
+    """Claude's saved reading as a check sees it. A known reset that has passed clears
+    it. A paid-overage reading with an unknown reset is cleared only for a plain resume
+    the user started (``user_resume``), never for ``--resume --wait`` (plan 10.10 items
+    5 and 7, R44-1): the caller passes ``user_resume`` false for a waiting resume."""
     reading = _last_claude(state)
     if reading.resets_at is not None and reading.resets_at <= now:
         return limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
@@ -437,22 +459,196 @@ def _effective_last(state, now, *, user_resume=False):
     return reading
 
 
+# The provider-by-step rules (A3 chunk 3, plan 10.10 items 1, 3 and 8).
+
+
+def step_provider(settings, step):
+    """The provider a build step uses: the reviewer's for a review, else the builder's."""
+    return (settings["roles"]["reviewer"] if step.startswith("review")
+            else settings["roles"]["builder"])
+
+
+def before_approval(state):
+    """Whether a run is in its planning half: a ``planning`` record and no approval."""
+    return isinstance(state.get("planning"), dict) and not state.get("approval")
+
+
+def next_step_name(run):
+    """The name of the step the run takes next, as ``state.json`` records it, for a
+    paid-usage permission: the build loop's, or in the planning half the planning
+    step's (``planning.next_step_name``; the two planners are one step,
+    ``planners``)."""
+    if before_approval(run.state):
+        import planning  # planning imports this module, so it is imported late
+        return planning.next_step_name(run)
+    return run.next_step()
+
+
+def next_providers(run):
+    """The provider or providers of the step the run starts next: both for the two
+    planners, none when the planning half has only its approval pause left, and
+    otherwise the one the step uses. A preflight checks only these (item 8)."""
+    if before_approval(run.state):
+        import planning
+        return planning.next_providers(run)
+    return (step_provider(run.settings, run.next_step()),)
+
+
+def _permits(pending, step):
+    """Whether a pending paid-usage permission covers ``step``. The two planners count
+    as one step, ``planners``, so one permission covers both (A3 chunk 3)."""
+    if not pending:
+        return False
+    return pending == step or (pending == "planners" and step.startswith("planner-"))
+
+
 def _grant_paid(run, reading):
-    step = run.next_step()
+    step = next_step_name(run)
     run.state.setdefault("paid_usage", []).append({
         "step": step, "at": _now_text(), "codex": reading.summary(),
         "claude": _last_claude(run.state).summary()})
     run.state["paid_usage_pending"] = step
 
 
-def _preflight_usage(reading, last, ceiling, *, allow_paid=False):
-    stop = _usage_stop([reading, last], ceiling, allow_paid=allow_paid)
+class UsageRefused(RunRefused):
+    """A preflight refused on usage (plan 10.10 item 8). ``waitable`` when it was the
+    ceiling or paid usage, which a user-started ``--resume --wait`` may sleep through
+    when ``resets_at`` is known (item 5); any other usage refusal is not."""
+
+    def __init__(self, problems, *, resets_at=None, waitable=False):
+        super().__init__(problems)
+        self.resets_at = resets_at
+        self.waitable = waitable
+
+
+def _preflight_usage(readings, ceiling, *, allow_paid=False):
+    """Refuse when one of ``readings``, those of the next step's provider or providers
+    alone, would stop that step (``UsageRefused``)."""
+    stop = _usage_stop(list(readings), ceiling, allow_paid=allow_paid)
     if stop is not None:
         paid = (_paid_overage(stop.reading) or
                 stop.reading.reason == "ordinaryUsageAllowed is null or absent")
-        raise RunRefused([f"usage: {stop.reason} ({stop.reading.summary()})"
-                          + ("; retry with --allow-paid to permit one step"
-                             if paid else "")])
+        waitable = (stop.reading.source == limits.REPORTED
+                    or _paid_overage(stop.reading))
+        raise UsageRefused([f"usage: {stop.reason} ({stop.reading.summary()})"
+                            + ("; retry with --allow-paid to permit one step"
+                               if paid else "")],
+                           resets_at=stop.reading.resets_at, waitable=waitable)
+
+
+def _preflight_readings(providers_, codex, claude):
+    """The readings a preflight checks: only those of the next step's providers."""
+    return [reading for provider, reading in ((limits.CODEX, codex),
+                                              (limits.CLAUDE, claude))
+            if provider in providers_]
+
+
+# ---------------------------------------------------------- claiming a run (item 5)
+
+LOCK_FILE = "resume.lock"
+
+
+def stop_mark(state):
+    """What a waiting process keeps of the stop it waits on (plan 10.10 item 5, R43-1):
+    the number of entries in ``stop_reasons`` and the last entry."""
+    reasons = state.get("stop_reasons") or []
+    return len(reasons), json.dumps(reasons[-1] if reasons else None, sort_keys=True)
+
+
+def _claim_mark(state):
+    return (state.get("status"), state.get("pause"), stop_mark(state))
+
+
+def claim(run, seen=None):
+    """Claim a run for one resume or approval (plan 10.10 item 5, R43-1): create
+    ``runs/<run-id>/resume.lock`` exclusively, then re-read ``state.json`` under it and
+    make the status and stop checks again against what the command checked (``seen``,
+    ``_claim_mark`` of the state it read). Returns the lock's path; the caller removes
+    it with ``release`` once the run is saved running, or on any refusal or failure.
+    A lock that exists refuses, naming it and changing nothing; so does a run that
+    changed since it was read, the lock then removed again."""
+    lock = run.run_dir / LOCK_FILE
+    try:
+        with open(lock, "x", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"{os.getpid()} {_now_text()}\n")
+    except FileExistsError as exc:
+        raise RunRefused([f"{lock.as_posix()} exists: another resume or approval is "
+                          "claiming this run. Nothing was changed. If no other command "
+                          "is running (one was interrupted), delete that file and run "
+                          "the command again"]) from exc
+    except OSError as exc:
+        raise RunRefused([f"{lock.as_posix()} could not be created ({exc}); nothing was "
+                          "changed"]) from exc
+    try:
+        fresh = runrecord.read_state(run.run_dir)
+    except Exception as exc:  # noqa: BLE001 - unread is never taken as unchanged
+        release(lock)
+        raise RunRefused([f"state.json could not be read again under the lock ({exc}); "
+                          "nothing was changed"]) from exc
+    if _claim_mark(fresh) != (seen if seen is not None else _claim_mark(run.state)):
+        release(lock)
+        raise RunRefused(["the run changed after this command read it (another resume "
+                          "or approval acted on it); nothing was changed"])
+    return lock
+
+
+def release(lock):
+    """Remove a claim's lock. Never raises: a lock that cannot be removed is said."""
+    if lock is None:
+        return
+    try:
+        Path(lock).unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"WARNING: {Path(lock).as_posix()} could not be removed ({exc}); delete it "
+              "before the next resume", file=sys.stderr)
+
+
+def _refuse_if_claimed(run):
+    """A resume that finds the lock refuses at once, naming it, changing nothing."""
+    lock = run.run_dir / LOCK_FILE
+    if lock.exists():
+        raise RunRefused([f"{lock.as_posix()} exists: another resume or approval is "
+                          "claiming this run. Nothing was changed. If no other command "
+                          "is running (one was interrupted), delete that file and run "
+                          "the command again"])
+
+
+def resume_waiting(load, act, *, wait):
+    """A user-started ``--resume``, in either half (plan 10.10 item 5, A3 chunk 3).
+    ``load`` reads the run from disk; ``act`` makes every check of the resume and, when
+    they pass, the resume itself, raising ``RunRefused`` otherwise.
+
+    Without ``wait`` this is ``act(load())``. With it, a refusal on the ceiling or on
+    paid usage (``UsageRefused.waitable``) whose reset time is known sleeps until that
+    reset, then re-reads the run from disk and makes every check again, sleeping again
+    only for a later known reset; any other refusal refuses as without ``wait``. The
+    sleep changes nothing. A waiting process acts only on the stop it waited for: it
+    keeps ``stop_mark`` when it begins to wait and refuses, changing nothing, if the
+    mark differs or the run is not ended when it wakes."""
+    mark, last_reset = None, None
+    while True:
+        run = load()
+        if mark is not None and (run.state.get("status") != sr.ENDED
+                                 or stop_mark(run.state) != mark):
+            raise RunRefused([f"run {run.state['run_id']} changed while this --wait "
+                              "slept (it was resumed or stopped by hand); this waiting "
+                              "process changed nothing and ends here"])
+        try:
+            return run, act(run)
+        except UsageRefused as exc:
+            if (not wait or not exc.waitable
+                    or not isinstance(exc.resets_at, (int, float))
+                    or (last_reset is not None and exc.resets_at <= last_reset)
+                    or run.state.get("status") != sr.ENDED):
+                raise
+            if mark is None:
+                mark = stop_mark(run.state)
+            last_reset = exc.resets_at
+            delay = max(0, exc.resets_at - run.deps.now()) + WAIT_MARGIN_SECONDS
+            print(f"--wait: the resume's preflight is refused ({' '.join(exc.args[0])}); "
+                  f"sleeping {round(delay)} s until the reported reset, changing nothing.",
+                  file=sys.stderr)
+            run.deps.sleep(delay)
 
 
 def _listed(lines):
@@ -693,9 +889,29 @@ class Run:
         if step in ("preflight", APPROVED_STEP):
             return "build"
         if step == "build":
-            return "review-R1"
+            # Labels run on across both halves (plan 10.3 step 4): the build's first
+            # review round takes the next label after the planning half's last.
+            return f"review-R{self.label_offset() + 1}"
         kind, round_no = step.split("-R")
         return f"fix-R{round_no}" if kind == "review" else f"review-R{int(round_no) + 1}"
+
+    def label_offset(self):
+        """The label rounds the planning half used before approval, recorded then as
+        ``label_offset``; 0 for a run with no planning half. A build review round's label
+        is this plus its own round count, which the round cap counts (section 11 item
+        5)."""
+        value = self.state.get("label_offset")
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    def approved_plan(self):
+        """The approved merged plan for the builder's and the reviewer's prompts (plan
+        10.3, "The approved plan in the build"), rendered as the plan report renders it;
+        a run with no planning half has none, and says so."""
+        synthesis = (self.state.get("planning") or {}).get("synthesis")
+        merged = synthesis.get("merged_plan") if isinstance(synthesis, dict) else None
+        if not isinstance(merged, dict):
+            return "None: this run has no approved plan."
+        return render_plan(merged)
 
     # ---------------------------------------------------------------- driving
 
@@ -716,23 +932,48 @@ class Run:
         return self.state
 
     def _wait_and_resume(self):
+        if not self.wait_then_reload():
+            return False
+        resume(self, user_started=False)
+        return True
+
+    def wait_then_reload(self):
+        """``--wait`` after a ``usage-limit`` end with a known reset: sleep until it,
+        then re-read ``state.json`` from disk. A waiting process acts only on the stop it
+        waited for (plan 10.10 item 5, R43-1): it keeps ``stop_mark`` before sleeping and,
+        if the run on disk has another mark or is no longer ended (resumed or stopped by
+        hand meanwhile), says so and returns False, changing nothing. True when the
+        caller may resume."""
         if not (self.wait and self.state["status"] == sr.ENDED):
             return False
         last = self.state["stop_reasons"][-1]
         resets = (last.get("evidence") or {}).get("resets_at")
         if last["reason"] != sr.USAGE_LIMIT or not isinstance(resets, (int, float)):
             return False
+        mark = stop_mark(self.state)
         delay = max(0, resets - self.deps.now()) + WAIT_MARGIN_SECONDS
         print(f"--wait: sleeping {round(delay)} s until the reported reset.",
               file=sys.stderr)
         self.deps.sleep(delay)
-        resume(self, user_started=False)
+        try:
+            fresh = runrecord.read_state(self.run_dir)
+        except Exception as exc:  # noqa: BLE001 - unread is never taken as unchanged
+            print(f"--wait: state.json could not be read again ({exc}); this waiting "
+                  "process changes nothing and ends here.", file=sys.stderr)
+            return False
+        if fresh.get("status") != sr.ENDED or stop_mark(fresh) != mark:
+            print(f"--wait: run {self.state['run_id']} changed while this process slept "
+                  "(it was resumed or stopped by hand); this waiting process changes "
+                  "nothing and ends here.", file=sys.stderr)
+            return False
+        self.state.clear()
+        self.state.update(fresh)
+        self.ledger = sr.Ledger(fresh.get("ledger", []))
         return True
 
     async def take(self, step):
-        provider = (self.settings["roles"]["reviewer"] if step.startswith("review")
-                    else self.settings["roles"]["builder"])
-        permitted = self.state.get("paid_usage_pending") == step
+        provider = step_provider(self.settings, step)
+        permitted = _permits(self.state.get("paid_usage_pending"), step)
         self.claude_usage.paid_allowed = permitted
         try:
             stop = await asyncio.to_thread(self.before_step, step, provider)
@@ -743,7 +984,8 @@ class Run:
             return
         if stop is not None:
             self.state.pop("paid_usage_pending", None)
-            self.state["claude_unknown_reset_resume"] = False
+            if provider == limits.CLAUDE:
+                self.state["claude_unknown_reset_resume"] = False
             self.end(sr.USAGE_LIMIT, stop)
             return
         try:
@@ -767,7 +1009,11 @@ class Run:
             self.end(sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
         finally:
             self.state.pop("paid_usage_pending", None)
-            self.state["claude_unknown_reset_resume"] = False
+            # A plain resume's allowance for an unknown-reset overage reading is the
+            # first Claude step's (plan 10.10 item 7), so a Codex step in between keeps
+            # it (code review R3-2).
+            if provider == limits.CLAUDE:
+                self.state["claude_unknown_reset_resume"] = False
             self.claude_usage.paid_allowed = False
             if permitted and self.state["status"] == sr.RUNNING:
                 # A permitted step establishes the next Codex credit comparison.
@@ -856,9 +1102,16 @@ class Run:
         return codex, self.claude_usage.reading()
 
     def before_step(self, step, provider):
-        """None if the step may start, else the evidence for a ``usage-limit`` stop."""
+        """None if the step may start, else the evidence for a ``usage-limit`` stop.
+
+        A step is stopped only by the readings of ``provider``, the provider it uses,
+        for the ceiling, a reported limit and paid usage alike (plan 10.10 items 1, 3
+        and 8, A3 chunk 3). Codex is still read live before every step and Claude's
+        reading taken, and both are recorded with the step; the probe is sent only
+        before a Claude step. The two planners, a step using both, are checked one
+        provider after the other (``planning.planners``)."""
         self._probe_for_step = None
-        permitted = self.state.get("paid_usage_pending") == step
+        permitted = _permits(self.state.get("paid_usage_pending"), step)
         codex = self.note_codex(self.deps.read_codex(self.root,
                                                      self.state.get("frozen_dir")))
         last = _effective_last(self.state, self.deps.now(),
@@ -869,9 +1122,11 @@ class Run:
                 last = shared
         claude = last
         probe = None
-        # A known overage is checked before a paid request can be sent.
-        stop = _usage_stop([codex, last], self.settings["usage_ceiling_percent"],
-                           allow_paid=permitted)
+        stop = None
+        if provider == limits.CLAUDE:
+            # A known overage is checked before a paid request can be sent.
+            stop = _usage_stop([last], self.settings["usage_ceiling_percent"],
+                               allow_paid=permitted)
         if stop is None and provider == limits.CLAUDE:
             seen = []
             def received(event):
@@ -904,7 +1159,8 @@ class Run:
             entry["usage_probe"] = dict(self._probe_for_step)
         self.state.setdefault("readings", []).append(entry)
         if stop is None:
-            stop = _usage_stop([codex, claude], self.settings["usage_ceiling_percent"],
+            own = claude if provider == limits.CLAUDE else codex
+            stop = _usage_stop([own], self.settings["usage_ceiling_percent"],
                                allow_paid=permitted)
         if stop is not None:
             return {"step": step, "provider": stop.provider, "detail": stop.reason,
@@ -914,11 +1170,20 @@ class Run:
                                    "ordinaryUsageAllowed is null or absent")}
         if provider == limits.CODEX and not permitted:
             now = credit_snapshot(codex)
-            then = self.state.get("credits") or {}
+            recorded = self.state.get("credits")
+            then = recorded or {}
             if now is None:
                 return {"step": step, "provider": limits.CODEX, "resets_at": None,
                         "detail": "the Codex credit snapshot is missing from the reading "
                                   f"({codex.summary()})", "paid_usage": True}
+            # A preflight whose next step did not use Codex records the snapshot as
+            # read, trackable or not (plan 10.10 item 3, R42-2); an untrackable one
+            # stops the first later Codex step.
+            unusable = untrackable(recorded) if "credits" in self.state else None
+            if unusable is not None:
+                return {"step": step, "provider": limits.CODEX, "resets_at": None,
+                        "detail": "the Codex credit snapshot recorded at preflight could "
+                                  f"not be tracked ({unusable})", "paid_usage": True}
             differs = [key for key in ("hasCredits", "unlimited", "balance")
                        if now.get(key) != then.get(key)]
             if differs:
@@ -1100,7 +1365,8 @@ class Run:
     async def build(self):
         builder = await self._builder("build")
         prompt = render("builder", edit_paths=", ".join(self.state["edit_paths"]),
-                        tool_rules=self._tool_rules(builder), brief=self.brief_text())
+                        tool_rules=self._tool_rules(builder), brief=self.brief_text(),
+                        plan=self.approved_plan())
         self._inject("build", builder.provider)
         turn = await self._builder_turn("build", builder, self._prompt("build", prompt))
         self._after_builder("build", turn)
@@ -1129,7 +1395,8 @@ class Run:
                  "The rules for your tools are as before:\n" + self._tool_rules(builder)
                  + "\n")
         prompt = render("fix", round=round_no, findings="\n\n".join(blocks),
-                        tool_rules=rules)
+                        tool_rules=rules, brief=self.brief_text(),
+                        plan=self.approved_plan())
         self._inject(step, builder.provider)
         turn = await self._builder_turn(step, builder, self._prompt(step, prompt))
         self._after_builder(step, turn)
@@ -1225,6 +1492,7 @@ class Run:
         reviewer = self.deps.make_reviewer(self.settings, self.root, self.claude_usage,
                                            self.state["frozen_dir"])
         prompt = render("reviewer", round=round_no, brief=self.brief_text(),
+                        plan=self.approved_plan(),
                         mechanical=mechanical_text or "None.", prior=prior,
                         diff=self._shown_diff(diff, folder),
                         changed_files="\n".join(f"- {path}" for path in changed_files)
@@ -1270,8 +1538,12 @@ class Run:
                                    + ", ".join(still_open))
             stop = (sr.REVIEWED_CLEAN, {"round": round_no})
         if stop is None:
+            # The cap counts the build's own rounds, not the label number, which carries
+            # on from the planning half (plan 10.3 step 4, section 11 item 5).
             cap = self.state["round_cap"]
-            stop = sr.after_review(round_no, cap, new)
+            stop = sr.after_review(round_no - self.label_offset(), cap, new)
+            if stop is not None and self.label_offset():
+                stop[1]["label"] = f"R{round_no}"
         if stop is not None:
             self.end(*stop)
 
@@ -1331,7 +1603,10 @@ class Run:
         # write's own error is raised afterwards (code review R30-2).
         try:
             self.save()
-            if self.ledger.findings:
+            # Before approval the run writes nothing in the project (plan 10.3 step 6):
+            # a run stopped in its planning half keeps its plan-review findings in its
+            # record, and its packet in memory/ is never written.
+            if self.ledger.findings and not before_approval(self.state):
                 self.write_packet()
             write_report(self)
         finally:
@@ -1494,6 +1769,23 @@ def price_alarm(run):
     return flags
 
 
+def render_plan(plan):
+    """A planner's plan, or the merged plan, as markdown: for ``plan-report.md`` and for
+    the approved plan in the build's prompts."""
+    lines = [plan.get("summary", ""), "", f"Confidence: {plan.get('confidence')}.", ""]
+    for number, step in enumerate(plan.get("steps", []), 1):
+        lines.append(f"{number}. {step.get('action')}")
+        lines.append("   - Files: " + (", ".join(f"`{f}`" for f in step.get("files", []))
+                                       or "none named"))
+        lines.append(f"   - Verification: {step.get('verification')}")
+    for title, key in (("Risks", "risks"), ("Assumptions", "assumptions"),
+                       ("Open questions", "open_questions")):
+        if key in plan:
+            lines += ["", f"{title}:", ""]
+            lines += [f"- {item}" for item in plan[key]] or ["- None."]
+    return "\n".join(lines)
+
+
 def identity_lines(refusal):
     """The report's first lines for an identity refusal (plan 10.3 step 3): for each
     refused plan its label and provider, then each match's rule, matched text, field
@@ -1511,8 +1803,37 @@ def identity_lines(refusal):
     return lines
 
 
+def _record_path(run, name):
+    """A file of the run record, project-relative where the record is in the project."""
+    path = run.run_dir / name
+    try:
+        return path.resolve().relative_to(run.root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def render_record_packet(run):
+    """The run's ledger rendered to ``runs/<run-id>/plan-review/packet.md``, the one
+    packet before approval (plan 10.3 step 6, R20-1), in the review packet's layout.
+    Written inside the run record only; with no finding yet both sections say None."""
+    path = run.run_dir / "plan-review" / "packet.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(packet_mod.render(run.state["item"], run.state["run_id"], run.ledger,
+                                      header_note="Plan-review findings, kept in the "
+                                      "run record until approval writes the item's "
+                                      "packet."),
+                    encoding="utf-8", newline="\n")
+    return path
+
+
 def write_report(run):
     state = run.state
+    if before_approval(state):
+        # The report names the run record's packet before approval, so it is written
+        # first: a planning stop before any plan review (a planner's usage limit, an
+        # identity refusal, a synthesis error) still names a file that exists (code
+        # review R3-1).
+        render_record_packet(run)
     last = state["stop_reasons"][-1]
     evidence = last.get("evidence") or {}
     findings = list(run.ledger.findings.values())
@@ -1537,7 +1858,11 @@ def write_report(run):
                              "codex_raw": state["usage_source"].get("codex_raw")}
                             if (state.get("usage_source") or {}).get("codex")
                             == limits.UNAVAILABLE else {})},
-        "packet": packet_mod.packet_path(".", state["item"]).as_posix(),
+        # Before approval the findings are only in the run record (plan 10.3 step 6):
+        # the report points to the rendered plan-review packet there, since the item's
+        # packet in memory/ is first written at approval (code review R2-1).
+        "packet": (_record_path(run, "plan-review/packet.md") if before_approval(state)
+                   else packet_mod.packet_path(".", state["item"]).as_posix()),
         "image": state.get("image"), "docker": state.get("docker"),
         "cleanup": state.get("cleanup", []),
     }
@@ -1599,8 +1924,8 @@ def write_report(run):
         or ["None."]
     lines += ["", "## Docker and the check image", ""]
     if report["image"]:
-        # Prepared by the start until A3's planning half is joined, by --approve after
-        # it (plan 10.3 step 6); an approved run records ``approval``.
+        # Prepared by --approve since A3 chunk 3 (plan 10.3 step 6), which records
+        # ``approval``; a run started under chunk 1's interim prepared it at the start.
         when = "at approval" if state.get("approval") else "at the start"
         lines.append(f"- image {report['image']['tag']}: "
                      f"{'built' if report['image'].get('built') else 'reused'} {when}")
@@ -1640,10 +1965,24 @@ def _docker_event(when, what):
             "what": what}
 
 
+def _docker_status(deps):
+    """The one Docker command a start makes since A3 chunk 3 (plan 10.3 step 6, "Docker
+    and the check image wait for approval"): the status query, for the run's record.
+    Planning needs neither Docker nor the image, so nothing is started or built.
+    Returns the note recorded in ``docker.events``. A Docker that cannot report its
+    status refuses the start, as it does a dry run (code review R27-1)."""
+    try:
+        running = deps.docker_running()
+    except container.ContainerError as exc:
+        raise RunRefused([f"Docker: {exc}"]) from exc
+    return ("Docker is running; it is left alone until approval" if running else
+            "Docker is not running; approval will start it")
+
+
 def _docker_at_start(deps, dry_run):
-    """Docker for a start or a resume (plan 7.1 item 1, decision 31): a real one starts
-    it if it is not running and says whether it did; a dry one only asks, and says
-    whether a real one would start it. Returns (started, note)."""
+    """Docker for a resume or an approval (plan 7.1 item 1, decision 31): a real one
+    starts it if it is not running and says whether it did; a dry one only asks, and
+    says whether a real one would start it. Returns (started, note)."""
     # A Docker that cannot even report its status refuses a dry run as it refuses a
     # real one, so the two reach the same verdict (code review R27-1).
     try:
@@ -1663,9 +2002,11 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
     """Every read-only check a run makes before it creates anything. Returns what the
     run needs; raises RunRefused with every reason it cannot start.
 
-    After the checks that need nothing running, Docker (plan 7.1 item 1): a real start
-    starts it if it is not running, and records whether it did, in ``docker_started``;
-    a dry run only asks. A refusal after this run started Docker stops it again.
+    After the checks that need nothing running, Docker's status query and nothing else
+    (A3 chunk 3, plan 10.3 step 6): a start plans first, and Docker is started and the
+    image prepared by ``approve``. ``docker_started`` is therefore always False. The
+    usage checks are the planners' step's, which uses both providers (plan 10.10 item
+    8): Codex's reading, and Claude's, which no run has yet.
 
     ``builder`` is the provider the user named to build (``--builder``); the other
     reviews (the chunk (d) short plan, 11.1). A caller passing ``settings`` that already
@@ -1727,40 +2068,45 @@ def preflight(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, setting
         problems.append(f"the sync classification cannot be read: {exc}")
     if problems:
         raise RunRefused(problems)
-    docker_started, docker_note = _docker_at_start(deps, dry_run)
+    docker_note = _docker_status(deps)
     try:
-        try:
-            # No frozen folder yet: the reading uses an empty temporary folder.
-            reading = deps.read_codex(root, None)
-        except Exception as exc:
-            raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
-                              f"{exc}"]) from exc
-        sandboxed = sandbox_refusal(reading)
-        if sandboxed is not None:
-            raise RunRefused([sandboxed])
-        _preflight_usage(reading, limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
-                         reason="no saved rate-limit event"),
-                         settings["usage_ceiling_percent"], allow_paid=allow_paid)
-        credits = credit_snapshot(reading)
-        reason = None if allow_paid else untrackable(credits)
-        if reason is not None:
-            raise RunRefused([f"Codex credits cannot be tracked: {reason} "
-                              f"({reading.summary()})"])
-    except BaseException as exc:
-        if docker_started:
-            _stop_docker_after_refusal(deps, exc)
-        raise
+        # No frozen folder yet: the reading uses an empty temporary folder.
+        reading = deps.read_codex(root, None)
+    except Exception as exc:
+        raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
+                          f"{exc}"]) from exc
+    sandboxed = sandbox_refusal(reading)
+    if sandboxed is not None:
+        raise RunRefused([sandboxed])
+    # The first step is the two planners, so both providers are checked; Claude has
+    # no saved reading before a run's first Claude step (item 7).
+    _preflight_usage([reading, limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                                              reason="no saved rate-limit event")],
+                     settings["usage_ceiling_percent"], allow_paid=allow_paid)
+    credits = credit_snapshot(reading)
+    reason = None if allow_paid else untrackable(credits)
+    if reason is not None:
+        raise RunRefused([f"Codex credits cannot be tracked: {reason} "
+                          f"({reading.summary()})"])
     return {"settings": settings, "brief": brief, "credits": credits,
             "reading": reading, "category_a": category_a,
-            "docker_started": docker_started, "docker_note": docker_note}
+            "docker_started": False, "docker_note": docker_note}
 
 
 def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LOG_PATH,
           runs_dir=runrecord.RUNS_DIR, inject=None, dry_run=False, wait=False,
           settings=None, python=None, builder=None, allow_paid=False):
-    """Preflight, then create the run record and take the run as far as it goes.
-    Returns the Run (or None on a dry run). The run's roles are written into its
-    ``settings.json``, so a resume keeps the pairing the run started with."""
+    """Preflight, then create the run record in its planning half (A3 chunk 3). Returns
+    the Run (or None on a dry run), which the caller advances with ``planning.advance``:
+    the planners, the identity check, the synthesis and the plan review, then the
+    ``awaiting-plan-approval`` pause. The run's roles are written into its
+    ``settings.json``, so a resume keeps the pairing the run started with.
+
+    The start makes its host start check, its frozen folder and its record, with no
+    Docker command but the status query, no image step, no ``approval.json`` and no
+    ``started`` entry in the workflow's LOG.md: each waits for ``approve`` (plan 10.3
+    step 6). This replaces chunk 1's interim, in which a start did approval's sequence
+    itself."""
     deps = deps or Deps()
     if inject is not None and not STEP.match(inject):
         raise RunRefused([f"--inject-limit {inject!r} is not a step name (build, "
@@ -1770,16 +2116,9 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
     ready = preflight(brief_arg, item, git_dir, root=root, deps=deps, settings=settings,
                       builder=builder, dry_run=dry_run, allow_paid=allow_paid)
     ready["allow_paid"] = allow_paid
-    try:
-        return _start(ready, brief_arg, item, git_dir, root=root, deps=deps,
-                      log_path=log_path, runs_dir=runs_dir, inject=inject,
-                      dry_run=dry_run, wait=wait, python=python)
-    except BaseException as exc:
-        # Refused, or failed, at any point after this run started Docker and before
-        # the run exists: Docker is stopped again (plan 7.1 item 1).
-        if ready["docker_started"]:
-            _stop_docker_after_refusal(deps, exc)
-        raise
+    return _start(ready, brief_arg, item, git_dir, root=root, deps=deps,
+                  log_path=log_path, runs_dir=runs_dir, inject=inject,
+                  dry_run=dry_run, wait=wait, python=python)
 
 
 def _start(ready, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir, inject,
@@ -1789,54 +2128,32 @@ def _start(ready, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir, i
     # A run starts only from a tree where the close-out checks are clean, so nothing
     # failing during it can predate it (the user's re-plan of R2-5, after R5-3). The
     # check runs read-only, so it writes nothing and a dry run makes it too (plan 7.1
-    # items 2 and 3), and a failing one never reaches the image step.
+    # items 2 and 3).
     baseline = deps.baseline_checks(root, python, read_only=True)
     if not baseline.get("clean"):
         raise RunRefused(["the close-out checks are not clean, and a run starts only "
                           "from a tree where they are: "
                           + "; ".join(baseline.get("problems") or ["no detail"])
                           + ". Make them pass, then start the run"])
-    # The image (plan 7.1 item 4). The constraints file is written to a temporary
-    # folder, since the run record does not exist yet (it is made after the frozen
-    # folder, which holds the image tag), and copied into it once it does (decision
-    # 32). The folder is removed however the start ends, and a removal that fails is
-    # said (R31-1).
-    # Any failure of the image step, Docker's or the file system's (a constraints or
-    # build-context write, the temporary folder itself), is the start's refusal, never
-    # a traceback (code review R30-1).
-    try:
-        work = Path(tempfile.mkdtemp(prefix="book-dragon-image-"))
-    except OSError as exc:
-        raise RunRefused([f"the check image: its temporary folder could not be made: "
-                          f"{exc}"]) from exc
-    try:
-        result = _with_image(ready, work, brief_arg, item, git_dir, root=root, deps=deps,
-                             log_path=log_path, runs_dir=runs_dir, inject=inject,
-                             dry_run=dry_run, wait=wait, python=python, baseline=baseline)
-    except RunRefused as refusal:
-        left = _remove_work(work)
-        if left:
-            refusal.args[0].append(left)
-        raise
-    except BaseException:
-        _remove_work(work)
-        raise
-    # The temporary folder holds no personal data and nothing later reuses, so a
-    # removal that fails does not stop a good start; it is said, never hidden (code
-    # review R31-1): printed, and recorded in a started run's cleanup list.
-    left = _remove_work(work)
-    if left:
-        print(f"WARNING: {left}", file=sys.stderr)
-        if result is not None:
-            result.state.setdefault("cleanup", []).append(
-                {"what": "the image step's temporary folder", "removed": False,
-                 "error": left})
-            try:
-                result.save()
-            except Exception as exc:  # noqa: BLE001 - the warning above says it
-                print(f"WARNING: that could not be recorded in the run: {exc}",
-                      file=sys.stderr)
-    return result
+    if dry_run:
+        print(f"[DRY RUN] the read-only preflight checks passed "
+              f"({ready['reading'].summary()}), and the close-out verifier's "
+              f"clean-start check passed. {ready['docker_note']}. A real start would "
+              f"create a run record for item {item}, "
+              f"{settings['roles']['builder']} building and "
+              f"{settings['roles']['reviewer']} reviewing, with edit paths "
+              f"{', '.join(brief['edit_paths'])}, then plan: both planners, the identity "
+              f"check, the synthesis and up to {settings['round_caps']['plan_review']} "
+              "plan-review round(s), pausing for plan approval. Docker and the check "
+              "image wait for --approve, which would then build and review up to "
+              f"{settings['round_caps']['build_review']} round(s). Live Claude usage was "
+              "not read."
+              + (" --allow-paid would permit the planners only; nothing was permitted."
+                 if ready.get("allow_paid") else ""), file=sys.stderr)
+        return None
+    return _create(ready, brief_arg, item, git_dir, root=root, deps=deps,
+                   log_path=log_path, runs_dir=runs_dir, inject=inject, wait=wait,
+                   python=python, baseline=baseline)
 
 
 def _remove_work(work):
@@ -1850,46 +2167,14 @@ def _remove_work(work):
                 f"be removed ({exc}); delete it by hand")
 
 
-def _with_image(ready, work, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir,
-                inject, dry_run, wait, python, baseline):
-    """The image step and, for a real start, the run's creation. Returns the Run, or
-    None for a dry run. The caller removes ``work`` however this ends."""
-    settings, brief = ready["settings"], ready["brief"]
-    try:
-        image = deps.prepare_image(root, python, work, dry_run=dry_run)
-    except (container.ContainerError, OSError) as exc:
-        why = (str(exc) if isinstance(exc, container.ContainerError)
-               else f"{type(exc).__name__}: {exc}")
-        raise RunRefused([f"the check image: {why}"]) from exc
-    if dry_run:
-        would = image["would"]
-        print(f"[DRY RUN] the read-only preflight checks passed "
-              f"({ready['reading'].summary()}), and the close-out verifier's "
-              f"clean-start check passed. {ready['docker_note']}. The check image "
-              f"{image['tag']}: "
-              + ({"reuse": "a real start would reuse it",
-                  "build": "a real start would build it"}.get(would, would))
-              + f". A real start would create a run record for item {item}, "
-              f"{settings['roles']['builder']} building and "
-              f"{settings['roles']['reviewer']} reviewing, with edit paths "
-              f"{', '.join(brief['edit_paths'])}, then build and review up to "
-              f"{settings['round_caps']['build_review']} round(s). Live Claude usage "
-              "was not read."
-              + (" --allow-paid would permit the first step only; nothing was permitted."
-                 if ready.get("allow_paid") else ""), file=sys.stderr)
-        return None
-    return _create(ready, image, brief_arg, item, git_dir, root=root, deps=deps,
-                   log_path=log_path, runs_dir=runs_dir, inject=inject, wait=wait,
-                   python=python, baseline=baseline)
-
-
-def _create(ready, image, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir,
+def _create(ready, brief_arg, item, git_dir, *, root, deps, log_path, runs_dir,
             inject, wait, python, baseline):
-    settings, brief = ready["settings"], ready["brief"]
+    settings = ready["settings"]
     started_ns = time.time_ns()
     # The run's frozen folder, made by the orchestrator for either builder before
     # anything else of the run exists (orchestrator isolation plan 6 item 1 and 7.1
-    # item 5): the run's code re-executes from its trusted/ copy (7.0).
+    # item 5): the run's code re-executes from its trusted/ copy (7.0). Its
+    # approval.json waits for --approve (plan 10.3 step 6).
     run_id = runrecord.new_run_id()
     try:
         public_head = worktree.git(root, "rev-parse", "HEAD").strip()
@@ -1897,21 +2182,6 @@ def _create(ready, image, brief_arg, item, git_dir, *, root, deps, log_path, run
                                        builder=settings["roles"]["builder"])
     except (frozen_mod.FrozenError, worktree.GitError) as exc:
         raise RunRefused([str(exc)]) from exc
-    # A3 chunk 1's interim (plan 10.3, the chunk list): with no planning half yet, the
-    # start does approval's sequence itself straight after its host start check.
-    # Docker and the image are done above; approval.json is written here from the
-    # brief, with no pause and no checks, since nothing can have moved. Chunk 3
-    # replaces this with the approval pause.
-    try:
-        frozen_mod.write_approval(frozen_dir, brief["edit_paths"], image["tag"])
-    except frozen_mod.FrozenError as exc:
-        problems = [str(exc)]
-        try:
-            frozen_mod.remove(frozen_dir)
-        except OSError as gone:
-            problems.append(f"the frozen folder {Path(frozen_dir).as_posix()} could not "
-                            f"be removed ({gone}); delete it by hand")
-        raise RunRefused(problems) from exc
     # create_run makes the folder, then writes its first state.json; a failure in
     # between leaves a folder this attempt made, removed here with the frozen folder.
     # A folder that was already there is never touched (code review R29-1).
@@ -1932,14 +2202,15 @@ def _create(ready, image, brief_arg, item, git_dir, *, root, deps, log_path, run
                                 f"not be removed ({gone}); delete it by hand")
         raise RunRefused(problems) from exc
     try:
-        return _fill(ready, image, brief_arg, item, git_dir, run_dir, frozen_dir,
+        return _fill(ready, brief_arg, item, git_dir, run_dir, frozen_dir,
                      started_ns, root=root, deps=deps, log_path=log_path, inject=inject,
                      wait=wait, python=python, baseline=baseline)
     except Exception as exc:
         # Code review R28-1: anything failing between the run record's creation and
         # its started entry would leave a half-made run no resume can continue. The
         # start removes both folders it made and refuses, naming the cause and any
-        # folder it could not remove; the caller stops Docker as for any refusal.
+        # folder it could not remove. A start makes no Docker command but the status
+        # query (A3 chunk 3), so there is no Docker of its own to stop.
         problems = [f"the run record could not be completed: {type(exc).__name__}: {exc}"]
         for what, folder in (("run record", run_dir), ("frozen folder", frozen_dir)):
             try:
@@ -1950,12 +2221,12 @@ def _create(ready, image, brief_arg, item, git_dir, *, root, deps, log_path, run
         raise RunRefused(problems) from exc
 
 
-def _fill(ready, image, brief_arg, item, git_dir, run_dir, frozen_dir, started_ns, *,
+def _fill(ready, brief_arg, item, git_dir, run_dir, frozen_dir, started_ns, *,
           root, deps, log_path, inject, wait, python, baseline):
-    """Fill a new run record and append its started entry. Returns the Run."""
+    """Fill a new run record, in its planning half. Returns the Run. No LOG.md entry is
+    written: a run with a planning half appends ``started`` at approval (plan 10.3 step
+    6, 10.7)."""
     settings, brief = ready["settings"], ready["brief"]
-    (run_dir / "image").mkdir()
-    shutil.copyfile(image["constraints"], run_dir / "image" / container.CONSTRAINTS_NAME)
     shutil.copyfile(Path(root) / brief_arg, run_dir / "brief.md")
     _write_json(run_dir / "settings.json", {**settings, "sdk_versions": sdk_versions()})
     heads = worktree.record_start(run_dir, root, brief["edit_paths"], git_dir)
@@ -1972,10 +2243,16 @@ def _fill(ready, image, brief_arg, item, git_dir, run_dir, frozen_dir, started_n
         "baseline": baseline, "started_ns": started_ns, "usage_source": {},
         "check_writes": [],
         "frozen_dir": Path(frozen_dir).as_posix(),
-        "image": {"tag": image["tag"], "built": image["built"]},
-        "docker": {"started_by_run": ready["docker_started"],
+        # The image is prepared and recorded at approval (plan 10.3 step 6).
+        "image": None,
+        "docker": {"started_by_run": False,
                    "events": [_docker_event("start", ready["docker_note"])]},
         "step": "preflight",
+        # The planning half (A3 chunk 3): nothing completed, the plan-review cap from
+        # the settings, and the label rounds both halves share (plan 10.3 step 4).
+        "planning": {"completed": [], "review_rounds": 0,
+                     "round_cap": settings["round_caps"]["plan_review"]},
+        "label_rounds": 0,
     })
     run = Run(run_dir, state, settings, root=root, deps=deps, log_path=log_path,
               wait=wait, python=python)
@@ -1983,7 +2260,6 @@ def _fill(ready, image, brief_arg, item, git_dir, run_dir, frozen_dir, started_n
     if ready.get("allow_paid"):
         _grant_paid(run, ready["reading"])
     run.save()
-    _log("started", f"Run {state['run_id']} started for item {item}.", log_path)
     return run
 
 
@@ -2004,6 +2280,8 @@ def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True)
                           f"{', '.join(sr.RESUMABLE)} can"])
     if allow_paid and run.wait:
         raise RunRefused(["--allow-paid cannot be used with --wait"])
+    _refuse_if_claimed(run)
+    seen = _claim_mark(run.state)
     try:
         reading = run.deps.read_codex(run.root, run.state.get("frozen_dir"))
     except Exception as exc:
@@ -2012,27 +2290,31 @@ def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True)
     sandboxed = sandbox_refusal(reading)
     if sandboxed is not None:
         raise RunRefused([f"{sandboxed}; the run is unchanged"])
-    saved = _effective_last(run.state, run.deps.now(), user_resume=user_started)
+    # A paid-overage reading with an unknown reset counts as reset only for a plain
+    # resume the user started; a --resume --wait refuses on it (plan 10.10 items 5 and
+    # 7, R44-1).
+    plain = user_started and not run.wait
+    saved = _effective_last(run.state, run.deps.now(), user_resume=plain)
+    # Only the next step's provider is checked (item 8, A3 chunk 3).
+    step_providers = (step_provider(run.settings, run.next_step()),)
     # --wait resumes only after a step reported its reset. Another window can
     # remain high; let before_step record that stop and its later reset so the
     # automatic wait can continue. User-started resumes still check here.
     if user_started:
-        _preflight_usage(reading, saved, run.settings["usage_ceiling_percent"],
-                         allow_paid=allow_paid)
+        _preflight_usage(_preflight_readings(step_providers, reading, saved),
+                         run.settings["usage_ceiling_percent"], allow_paid=allow_paid)
     credits = credit_snapshot(reading)
-    reason = None if allow_paid else untrackable(credits)
+    # Untrackable credits refuse only a resume whose next step uses Codex; otherwise the
+    # snapshot is recorded as read and stops the first later Codex step (item 3, R42-2).
+    reason = (None if allow_paid or limits.CODEX not in step_providers
+              else untrackable(credits))
     if reason is not None:
         raise RunRefused([f"Codex credits cannot be tracked: {reason} "
                           f"({reading.summary()}); the run is unchanged"])
-    # Docker, as a start has it (decision 31): the run's last end stopped it if the run
-    # had started it, and the checks after every builder turn need it. A real resume
-    # starts it if it is not running; a dry one only asks. A failure refuses the resume
-    # with the run unchanged.
-    started, note = _docker_at_start(run.deps, dry_run)
     if dry_run:
-        # Every check above has run and nothing has changed (review finding R3-3).
-        last_round = max([f["round"] for f in run.ledger.findings.values()] or [0])
-        cap = last_round + rounds if rounds is not None else run.state["round_cap"]
+        _, note = _docker_at_start(run.deps, True)
+        cap = (_build_rounds(run) + rounds if rounds is not None
+               else run.state["round_cap"])
         where = f"ended {last}" if status == sr.ENDED else f"paused {run.state.get('pause')}"
         note = note.replace("a real start", "a real resume")
         print(f"[DRY RUN] would resume run {run.state['run_id']} ({where}) from its "
@@ -2043,6 +2325,32 @@ def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True)
               + (" --allow-paid would permit the next step only."
                  if allow_paid else ""), file=sys.stderr)
         return
+    # The run is claimed before Docker, its first change (plan 10.10 item 5, R43-1).
+    lock = claim(run, seen)
+    try:
+        _resume_claimed(run, rounds=rounds, allow_paid=allow_paid,
+                        user_started=user_started, plain=plain, reading=reading,
+                        credits=credits)
+    finally:
+        release(lock)
+
+
+def _build_rounds(run):
+    """The build's own review rounds so far: the highest label round in the ledger less
+    the planning half's ``label_offset`` (plan 10.3 step 4, section 11 item 5)."""
+    offset = run.label_offset()
+    last_round = max([f["round"] for f in run.ledger.findings.values()
+                      if f["round"] > offset] or [offset])
+    return last_round - offset
+
+
+def _resume_claimed(run, *, rounds, allow_paid, user_started, plain, reading, credits):
+    """A resume's changes, made under its claim: Docker, then the resumed state."""
+    # Docker, as a start has it (decision 31): the run's last end stopped it if the run
+    # had started it, and the checks after every builder turn need it. A real resume
+    # starts it if it is not running. A failure refuses the resume with the run
+    # unchanged.
+    started, note = _docker_at_start(run.deps, False)
     # Anything failing between Docker's start and the resumed state being saved stops
     # the Docker this resume started and refuses; the saved run is untouched, so it is
     # still resumable (code review R29-2).
@@ -2059,12 +2367,12 @@ def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True)
         # records may still carry a pending value from before that was enforced.
         run.state.pop("paid_usage_pending", None)
         if rounds is not None:
-            last_round = max([f["round"] for f in run.ledger.findings.values()] or [0])
-            run.state["round_cap"] = last_round + rounds
+            # N more of the build's own rounds; labels carry on from the planning half.
+            run.state["round_cap"] = _build_rounds(run) + rounds
         run.state["credits"] = credits
         run.note_codex(reading)
         run.state["claude_unknown_reset_resume"] = bool(
-            user_started and _paid_overage(_last_claude(run.state))
+            plain and _paid_overage(_last_claude(run.state))
             and _last_claude(run.state).resets_at is None)
         if allow_paid:
             _grant_paid(run, reading)
@@ -2233,10 +2541,19 @@ def approval_problems(run, edit_paths):
     return problems
 
 
-def _approval_reading(run, *, allow_paid=False):
-    """The Codex reading and credit snapshot approval takes before Docker, as a resume
-    does, so the build's before-step check compares against a snapshot taken at
-    approval rather than at a start that may be days old. Read-only."""
+def _approval_reading(run, *, allow_paid=False, providers_=None, user_resume=False,
+                      check=True):
+    """The Codex reading and credit snapshot an approval, or a resume in the planning
+    half, takes before any change, so the next before-step check compares against a
+    snapshot taken then rather than at a start that may be days old. Read-only.
+
+    Only the provider or providers of the step the run starts next are checked
+    (``providers_``, by default ``next_providers``; plan 10.10 item 8, A3 chunk 3):
+    Codex's reading where that step uses Codex, ``claude_last_reading`` where it uses
+    Claude. Untrackable credits refuse only where it uses Codex; otherwise the snapshot
+    is recorded as read. ``check`` false (an automatic ``--wait`` resume) makes no
+    usage check, as the build's automatic resume makes none."""
+    step_providers = next_providers(run) if providers_ is None else tuple(providers_)
     try:
         reading = run.deps.read_codex(run.root, run.state.get("frozen_dir"))
     except Exception as exc:
@@ -2245,11 +2562,13 @@ def _approval_reading(run, *, allow_paid=False):
     sandboxed = sandbox_refusal(reading)
     if sandboxed is not None:
         raise RunRefused([f"{sandboxed}; nothing was changed"])
-    saved = _effective_last(run.state, run.deps.now())
-    _preflight_usage(reading, saved, run.settings["usage_ceiling_percent"],
-                     allow_paid=allow_paid)
+    saved = _effective_last(run.state, run.deps.now(), user_resume=user_resume)
+    if check:
+        _preflight_usage(_preflight_readings(step_providers, reading, saved),
+                         run.settings["usage_ceiling_percent"], allow_paid=allow_paid)
     credits = credit_snapshot(reading)
-    reason = None if allow_paid else untrackable(credits)
+    reason = (None if allow_paid or limits.CODEX not in step_providers
+              else untrackable(credits))
     if reason is not None:
         raise RunRefused([f"Codex credits cannot be tracked: {reason} "
                           f"({reading.summary()}); nothing was changed"])
@@ -2276,6 +2595,8 @@ def approve(run, dry_run=False, allow_paid=False):
         raise RunRefused(["--allow-paid cannot be used with --wait"])
     folder = _plan_approval_pause(run, "approved")
     run_id = run.state["run_id"]
+    _refuse_if_claimed(run)
+    seen = _claim_mark(run.state)
     try:
         brief = brief_mod.read_brief(_run_brief_arg(run), run.root)
     except ValueError as exc:
@@ -2287,7 +2608,9 @@ def approve(run, dry_run=False, allow_paid=False):
         raise RunRefused(problems + [f"nothing was changed and the run stays paused; the "
                                      f"way on is {STARTER} --stop {run_id}, a capture, "
                                      "and a new run"])
-    reading, credits = _approval_reading(run, allow_paid=allow_paid)
+    # The next step is the build, on the builder's provider alone (plan 10.10 item 8).
+    reading, credits = _approval_reading(
+        run, allow_paid=allow_paid, providers_=(run.settings["roles"]["builder"],))
     if dry_run:
         print(f"[DRY RUN] the four approval checks passed over the approved edit paths "
               f"{', '.join(edit_paths)} ({reading.summary()}; Codex credits {credits}; "
@@ -2303,6 +2626,17 @@ def approve(run, dry_run=False, allow_paid=False):
               + (" --allow-paid would permit the build only." if allow_paid else ""),
               file=sys.stderr)
         return None
+    # The run is claimed before Docker, approval's first change (plan 10.10 item 5).
+    lock = claim(run, seen)
+    try:
+        return _approve_claimed(run, folder, brief, reading, credits,
+                                allow_paid=allow_paid)
+    finally:
+        release(lock)
+
+
+def _approve_claimed(run, folder, brief, reading, credits, *, allow_paid):
+    """Approval's steps 2 to 5, made under its claim."""
     started, note = _docker_at_start(run.deps, False)
     try:
         work = Path(tempfile.mkdtemp(prefix="book-dragon-image-"))
@@ -2408,6 +2742,9 @@ def _approval_writes(run, folder, brief, image, started, note, reading, credits,
         # The build is the next step whatever planning step the run paused on (code
         # review R4-1); a build cut off later resumes from here too.
         state["step"] = APPROVED_STEP
+        # Labels run on across both halves (plan 10.3 step 4): the build's first review
+        # round takes the label after the planning half's last.
+        state["label_offset"] = label_rounds_used(run)
         state["credits"] = credits
         run.note_codex(reading)
         sr.continue_run(state)
@@ -2440,9 +2777,12 @@ def amend(run, brief_arg, dry_run=False):
     checker passes the revised brief, with logging off, replace the run's ``brief.md``
     with it and move every plan-review finding still open in the run's ledger to
     Addressed with the note ``superseded by amendment``. ``state.json``'s
-    ``edit_paths``, ``acceptance`` and ``start`` are left as they are. Restarting
-    planning is A3's later chunks' work, so in chunk 1 the run stays paused for plan
-    approval. Writes nothing outside the run's own record; a dry run changes nothing."""
+    ``edit_paths``, ``acceptance`` and ``start`` are left as they are. Since A3 chunk 3
+    the amendment restarts planning at step 1 in the same run record, against the same
+    starting commits (``restart_planning``): the run is set running with nothing of its
+    planning completed and the plan-review round count reset, while its labels carry on
+    (plan 10.3 step 4). The caller then advances the planning half. Writes nothing
+    outside the run's own record; a dry run changes nothing."""
     _plan_approval_pause(run, "amended")
     state, run_id = run.state, run.state["run_id"]
     lines, code = brief_mod.check_brief(brief_arg, run.root)
@@ -2457,8 +2797,10 @@ def amend(run, brief_arg, dry_run=False):
         print(f"[DRY RUN] the revised brief {brief_arg} passes the check. A real "
               f"amendment would replace run {run_id}'s brief.md with it and move "
               f"{len(open_labels)} open plan-review finding(s) to Addressed with the note "
-              f"'{SUPERSEDED_NOTE}': {', '.join(open_labels) or 'none'}. The run's edit "
-              "paths, acceptance checks and start record would not change. Nothing was "
+              f"'{SUPERSEDED_NOTE}': {', '.join(open_labels) or 'none'}, then restart "
+              "planning at its first step, both planners planning again from the revised "
+              "brief, with the plan-review round count reset. The run's edit paths, "
+              "acceptance checks and start record would not change. Nothing was "
               "changed.", file=sys.stderr)
         return None
     staged = target.with_name("brief.md.amend")
@@ -2475,6 +2817,7 @@ def amend(run, brief_arg, dry_run=False):
                                               superseded_by_amendment=True)
         state.setdefault("amendments", []).append(
             {"at": _now_text(), "brief": brief_arg, "superseded": open_labels})
+        restart_planning(run)
         run.save()
         saved = True
         os.replace(staged, target)
@@ -2516,3 +2859,35 @@ def amend(run, brief_arg, dry_run=False):
         rendered.write_text(packet_mod.render(state["item"], run_id, run.ledger),
                             encoding="utf-8", newline="\n")
     return open_labels
+
+
+def label_rounds_used(run):
+    """The highest label round issued so far in either half: the recorded
+    ``label_rounds``, or a ledger round above it (a record written before the counter
+    existed), so a new round never reuses a label."""
+    rounds = [f["round"] for f in run.ledger.findings.values()
+              if isinstance(f.get("round"), int)]
+    recorded = run.state.get("label_rounds")
+    recorded = recorded if isinstance(recorded, int) and not isinstance(recorded, bool) \
+        else 0
+    return max([recorded, *rounds])
+
+
+def restart_planning(run):
+    """Restart a paused run's planning at step 1 after an amendment (plan 10.3 step 6):
+    nothing of the planning half completed, its plans, labels, synthesis and plan-review
+    state dropped, and the plan-review round count reset to 0 with the cap from the
+    settings (the user's option A, 2026-10-15). The label rounds (``label_rounds``) are
+    kept, so the amended plan's review labels carry on counting. The sessions recorded
+    are kept for the identity check. The run is set from paused to running; the caller
+    saves it."""
+    state = run.state
+    old = state.get("planning") if isinstance(state.get("planning"), dict) else {}
+    state["planning"] = {
+        "completed": [], "review_rounds": 0,
+        "round_cap": run.settings["round_caps"]["plan_review"],
+        **({"sessions": old["sessions"]} if old.get("sessions") else {}),
+        "restarts": (old.get("restarts") or 0) + 1}
+    state.setdefault("label_rounds", 0)
+    state.pop("identity_refusal", None)
+    sr.continue_run(state)

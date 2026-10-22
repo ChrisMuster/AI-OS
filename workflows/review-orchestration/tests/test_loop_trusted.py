@@ -46,9 +46,11 @@ class TrustedCopyTests(LoopCase):
                 newline="\n")
 
     def started(self):
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings, builder="claude")
+        """A run approved and ready to build, so ``--advance`` takes the build's steps
+        (since A3 chunk 3 a run not yet approved advances through its planning half)."""
+        run = start_built("brief.md", "demo", str(self.personal), root=self.root,
+                          deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                          settings=self.settings, builder="claude")
         return run, Path(run.state["frozen_dir"])
 
     def paused(self):
@@ -410,10 +412,17 @@ class CommandLineTests(LoopCase):
         return code, out.getvalue()
 
     def test_positive_run_exits_0_on_reviewed_clean(self):
+        # Since A3 chunk 3 a run plans and pauses for approval (exit 1, as any pause),
+        # and the approval builds it; that run exits 0 on reviewed-clean.
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         code, out = self.call(*self.RUN, "--item", "demo", "--git-dir",
                               str(self.personal))
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"is paused ({sr.AWAITING_PLAN_APPROVAL})", out)
+        run_id = next(self.runs.iterdir()).name
+        with redirect_stderr(io.StringIO()):
+            code, out = self.call("--approve", run_id)
         self.assertEqual(code, 0, out)
         self.assertIn("ended reviewed-clean", out)
 
@@ -432,6 +441,8 @@ class CommandLineTests(LoopCase):
         self.h.builder_script = [reply("nothing")]
         self.call(*self.RUN, "--item", "demo", "--git-dir", str(self.personal))
         run_id = next(self.runs.iterdir()).name
+        with redirect_stderr(io.StringIO()):
+            self.call("--approve", run_id)  # builds, and ends no-change-made
         code, out = self.call("--stop", run_id)
         self.assertEqual(code, 3)
         self.assertIn("only a paused run", out)
@@ -487,17 +498,18 @@ class CommandLineTests(LoopCase):
         self.assertEqual(ready["settings"]["models"], settings_mod.DEFAULT_MODELS)
 
     def bytes_of(self, run_dir):
+        # A run in its planning half has written no LOG.md entry (A3 chunk 3).
         return ({p.name: p.read_bytes() for p in run_dir.iterdir() if p.is_file()},
-                self.log.read_bytes())
+                self.log.read_bytes() if self.log.exists() else None)
 
     def test_positive_resume_dry_run_checks_and_changes_nothing(self):
         self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
         self.h.reviews = [[finding()]]
         settings = json.loads(json.dumps(self.settings))
         settings["round_caps"]["build_review"] = 1
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
-                         settings=settings)
+        run = start_built("brief.md", "demo", str(self.personal), root=self.root,
+                          deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                          settings=settings)
         asyncio.run(run.advance())
         before = self.bytes_of(run.run_dir)
         err = io.StringIO()

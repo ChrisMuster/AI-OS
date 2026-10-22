@@ -144,14 +144,17 @@ class ReversePairingTests(SwappedCase):
                 limits.CLAUDE, limits.REPORTED, percent=85, resets_at=5,
                 window="five_hour")
         self.h.during_review = reported
-        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
         self.h.reviews = [[finding()]]
         run = self.start()
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT, run.state["stop_reasons"][-1])
-        self.assertEqual(run.state["step"], "review-R1")  # the fix pass never started
-        self.assertEqual(len(self.h.builders[0].prompts), 1)
+        # Since A3 chunk 3 Claude's reading never stops the Codex fix pass; it stops the
+        # next Claude step, the second review, before it starts.
+        self.assertEqual(run.state["step"], "fix-R1")
+        self.assertEqual(len(self.h.builders[0].prompts), 2)
         stop = run.state["stop_reasons"][-1]["evidence"]
         self.assertEqual(stop["provider"], "claude")
+        self.assertEqual(stop["step"], "review-R2")
         self.assertIn("ceiling", stop["detail"])
 
     def test_rejection_the_credit_rule_runs_before_a_codex_builder_step(self):
@@ -160,7 +163,7 @@ class ReversePairingTests(SwappedCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         run = self.start()
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
-        self.assertEqual(run.state["step"], "preflight")
+        self.assertEqual(run.state["step"], loop.APPROVED_STEP)
         self.assertEqual(self.h.builders, [])
         self.assertIn("balance '5.00' -> '4.50'", self.evidence(run))
 

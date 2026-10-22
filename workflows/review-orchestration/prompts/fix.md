@@ -12,6 +12,13 @@ For each finding, do exactly one of these:
     to rule.
 
 $tool_rules
+THE BRIEF (the same brief as your first turn, repeated so a long fix loop keeps it)
+$brief
+
+THE APPROVED PLAN (the merged plan the user approved for this run's brief, as before;
+where it and the brief differ, the brief holds)
+$plan
+
 THE OPEN FINDINGS
 $findings
 

@@ -22,3 +22,7 @@ and what you ran to check it.
 
 THE BRIEF
 $brief
+
+THE APPROVED PLAN (the merged plan the user approved for this brief; build from it, and
+where it and the brief differ, the brief holds)
+$plan

@@ -15,6 +15,10 @@ directory (CONTEXT.md Last modified and Revision History, LOG.md entries). $revi
 THE BRIEF
 $brief
 
+THE APPROVED PLAN (the merged plan the user approved, which the builder was given; the
+brief is what the change is reviewed against)
+$plan
+
 MECHANICAL CHECK RESULTS (run by the orchestrator; every failure here is already a
 finding, so do not repeat it)
 $mechanical

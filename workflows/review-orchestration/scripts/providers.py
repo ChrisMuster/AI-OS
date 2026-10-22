@@ -1553,6 +1553,16 @@ def make_synthesiser(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
                           usage=usage, frozen_dir=frozen_dir, **kwargs)
 
 
+def make_plan_reviewer(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
+    """The plan reviewer (plan 10.3 step 4, A3 chunk 3): a read-only session on the
+    provider that is not the builder's, the run's reviewer provider, taking its model
+    and effort from that provider's ``plan_reviewer`` entry. It is the reviewer session
+    class of that provider, so it is started with the reviewers' lockdown of step 7
+    (process table row 18)."""
+    return make_read_only(settings, settings["roles"]["reviewer"], "plan_reviewer",
+                          cwd=cwd, usage=usage, frozen_dir=frozen_dir, **kwargs)
+
+
 def make_reviewer(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
     """The reviewer session for the provider ``settings["roles"]["reviewer"]`` names.
     ``usage`` is the run's ``limits.ClaudeUsage``, given to a Claude reviewer;

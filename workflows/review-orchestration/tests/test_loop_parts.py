@@ -602,12 +602,14 @@ class ChecksTests(unittest.TestCase):
 class PromptTests(unittest.TestCase):
 
     def test_positive_every_prompt_renders_with_its_fields(self):
-        loop.render("builder", edit_paths="a/", tool_rules="  - x", brief="B")
-        text = loop.render("reviewer", round=1, brief="B", mechanical="M", prior="P",
-                           diff="D", changed_files="- a", check_written="None.",
-                           reviewer_tools="T")
+        loop.render("builder", edit_paths="a/", tool_rules="  - x", brief="B",
+                    plan="PL")
+        text = loop.render("reviewer", round=1, brief="B", plan="PL", mechanical="M",
+                           prior="P", diff="D", changed_files="- a",
+                           check_written="None.", reviewer_tools="T")
         self.assertIn("round\n1.", text)
-        fix = loop.render("fix", round=2, findings="F", tool_rules="")
+        fix = loop.render("fix", round=2, findings="F", tool_rules="", brief="BR",
+                          plan="PL")
         self.assertIn('"label": "R2-1"', fix)
 
     def test_rejection_a_missing_field_fails_loudly(self):
@@ -616,7 +618,8 @@ class PromptTests(unittest.TestCase):
 
     def test_positive_the_builder_prompt_lists_the_verification_commands(self):
         rules = loop.tool_rules(limits.CLAUDE, approver.load_verify_commands())
-        text = loop.render("builder", edit_paths="a/", tool_rules=rules, brief="B")
+        text = loop.render("builder", edit_paths="a/", tool_rules=rules, brief="B",
+                           plan="PL")
         self.assertIn("doc-sync-guard", text)
         self.assertIn("No git commands", text)
         self.assertNotIn("$", text.split("THE BRIEF")[0].replace("(?!-)", ""),

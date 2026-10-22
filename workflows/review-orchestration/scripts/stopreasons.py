@@ -11,6 +11,10 @@ stop reason from structured fields alone, never from finding titles or prose:
             ``declined-scope`` or ``declined-merits``) and a ``note``. A reply that
             omits an open finding, lists one twice, names one that is not open, or
             uses any other action ends the run with ``error`` (``ReplyError``).
+  synthesiser  in the planning half's plan review (plan 10.3 step 4, A3 chunk 3) the
+            synthesiser is in the builder's place: its revision reply carries an
+            ``actions`` list read by ``parse_plan_actions``, each ``fixed`` or
+            ``declined-merits``; ``declined-scope`` has no meaning before a build.
   reviewer  its structured reply (``REVIEW_SCHEMA``) marks a finding that raises an
             earlier one again with ``reraises: <label>``; an empty ``reraises`` means
             the finding is new. A title holding a label, or a ``reraises`` naming a
@@ -250,10 +254,37 @@ def parse_builder_reply(text, open_labels):
         raise ReplyError(f"the builder's action block is not valid JSON: {exc}") from exc
     if not isinstance(entries, list):
         raise ReplyError("the builder's action block is not a JSON list")
+    return _check_actions(entries, open_labels, ACTIONS, "builder")
+
+
+# The synthesiser's actions on plan-review findings (plan 10.3 step 4): the builder's
+# list without ``declined-scope``, which has no meaning before a build.
+PLAN_ACTIONS = (FIXED, DECLINED_MERITS)
+
+
+def parse_plan_actions(entries, open_labels):
+    """Read the synthesiser's action list from its revision reply (plan 10.3 step 4):
+    every open plan-review finding exactly once, each ``fixed`` or ``declined-merits``
+    with a text ``note``, and nothing else. ``declined-scope``, any other value, a
+    missing finding, a repeated one or one that is not open raises ``ReplyError``, and
+    the run ends ``error``. Returns ``{label: (action, note)}``."""
+    if not isinstance(entries, list):
+        raise ReplyError("the synthesiser's actions are not a JSON list")
+    for number, entry in enumerate(entries, 1):
+        if isinstance(entry, dict) and entry.get("action") == DECLINED_SCOPE:
+            raise ReplyError(f"synthesiser action {number}: {entry.get('label')} has "
+                             f"action {DECLINED_SCOPE!r}, which has no meaning before a "
+                             f"build; the action must be one of {', '.join(PLAN_ACTIONS)}")
+    return _check_actions(entries, open_labels, PLAN_ACTIONS, "synthesiser")
+
+
+def _check_actions(entries, open_labels, allowed, who):
+    """Every open finding exactly once, with one action from ``allowed`` and a text
+    note; nothing else."""
     open_set = set(open_labels)
     actions = {}
     for number, entry in enumerate(entries, 1):
-        where = f"builder action {number}"
+        where = f"{who} action {number}"
         if not isinstance(entry, dict) or set(entry) != {"label", "action", "note"}:
             raise ReplyError(f"{where} must hold exactly: label, action, note")
         name, action, note = entry["label"], entry["action"], entry["note"]
@@ -261,15 +292,15 @@ def parse_builder_reply(text, open_labels):
             raise ReplyError(f"{where} names {name!r}, which is not an open finding")
         if name in actions:
             raise ReplyError(f"{where}: {name} is given more than one action")
-        if action not in ACTIONS:
+        if action not in allowed:
             raise ReplyError(f"{where}: {name} has action {action!r}; the action must "
-                             f"be one of {', '.join(ACTIONS)}")
+                             f"be one of {', '.join(allowed)}")
         if not isinstance(note, str):
             raise ReplyError(f"{where}: {name}'s note is not text")
         actions[name] = (action, note)
     missing = [name for name in open_labels if name not in actions]
     if missing:
-        raise ReplyError(f"the builder gave no action for: {', '.join(missing)}")
+        raise ReplyError(f"the {who} gave no action for: {', '.join(missing)}")
     return actions
 
 

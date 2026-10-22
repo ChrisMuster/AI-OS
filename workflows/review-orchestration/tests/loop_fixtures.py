@@ -22,6 +22,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,7 @@ checks = _load("checks")
 frozen = _load("frozen")
 loop = _load("loop")
 run_py = _load("run")
+planning = _load("planning")
 
 sr = stopreasons
 MODEL = "claude-opus-5-5"
@@ -171,6 +173,90 @@ def finding(title="A defect", reraises=""):
             "evidence": "seen", "fix": "fix it", "reraises": reraises}
 
 
+def plan_reply(summary="Write done into the work file.", **changes):
+    """A planner's reply that passes the schema and the identity check. Its prose uses
+    the common words read and write as English, which is no tool form."""
+    reply = {"summary": summary,
+             "steps": [{"action": "Write the new text into work/a.txt.",
+                        "files": ["work/a.txt"],
+                        "verification": "Read it back and compare."}],
+             "risks": ["None worth naming."], "assumptions": ["The brief is complete."],
+             "open_questions": [], "confidence": "high"}
+    reply.update(changes)
+    return reply
+
+
+def synthesis_reply(**changes):
+    merged = {k: v for k, v in plan_reply(summary="The merged plan.").items()
+              if k != "open_questions"}
+    reply = {"agreements": ["Both change work/a.txt."], "disagreements": ["Wording."],
+             "resolutions": [{"disagreement": "Wording.", "resolution": "Use done.",
+                              "reason": "The brief says done."}],
+             "retained_risks": ["None."], "merged_plan": merged}
+    reply.update(changes)
+    return reply
+
+
+def open_labels_in(prompt):
+    """The finding labels a revision prompt lists as open, in order."""
+    section = prompt.split("THE OPEN FINDINGS", 1)[-1]
+    return re.findall(r"^(R[0-9]+-[0-9]+) ", section, re.MULTILINE)
+
+
+def revision_reply(action="fixed", **changes):
+    """A synthesiser's revision: the synthesis, plus an action for every open finding
+    its prompt lists. Returned as a function of the prompt, as the harness takes it."""
+    def answer(prompt):
+        reply = synthesis_reply(**changes)
+        reply["actions"] = [{"label": label, "action": action, "note": "n"}
+                            for label in open_labels_in(prompt)]
+        return reply
+    return answer
+
+
+class FakePlanningSession:
+    """A read-only planning session (planner, synthesiser or plan reviewer): records its
+    prompt and schema in ``harness.planning_calls`` and answers from the harness's
+    scripts. A plan reviewer answers ``harness.plan_reviews`` in turn (a list of
+    findings each, an empty list when the script is spent, so a review is clean unless a
+    test says otherwise); a synthesiser asked for a revision (its schema holds
+    ``actions``) answers ``harness.revisions`` in turn, by default every open finding
+    ``fixed``."""
+
+    def __init__(self, harness, provider, role):
+        self.harness, self.provider, self.role = harness, provider, role
+        self.model = f"{provider}-{role}-model"
+        self.refusals = []
+
+    def review(self, prompt, schema):
+        h = self.harness
+        h.planning_calls.append({"role": self.role, "provider": self.provider,
+                                 "prompt": prompt, "schema": schema})
+        if self.role == "planner":
+            # A plan that names no provider, so the identity check passes it.
+            answer = h.planner_replies.get(self.provider) or plan_reply(
+                "Plan from one planner." if self.provider == "claude"
+                else "Plan from the other planner.")
+        elif self.role == "plan_reviewer":
+            script = h.plan_reviews.pop(0) if h.plan_reviews else []
+            answer = (script if isinstance(script, BaseException)
+                      else {"summary": "s", "findings": script})
+        elif "actions" in schema.get("properties", {}):
+            script = h.revisions.pop(0) if h.revisions else revision_reply()
+            answer = script(prompt) if callable(script) else script
+        else:
+            answer = h.synthesis or synthesis_reply()
+        if isinstance(answer, BaseException):
+            raise answer
+        usage = ({"input_tokens": 10, "output_tokens": 5} if self.provider == "claude"
+                 else {"total": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}})
+        return providers.ReviewRecord(
+            reply=json.loads(json.dumps(answer)),
+            thread_id=f"{self.role}-session-{self.provider}-0001", status="completed",
+            usage=usage, wall_seconds=0.1, raw={"r": self.provider}, tokens=15,
+            model=self.model)
+
+
 class FakeUsage:
     """Stands in for the run's one limits.ClaudeUsage: its reading is whatever the
     harness holds at that moment, so a session can set it mid-run as an event would."""
@@ -260,6 +346,16 @@ class Harness:
         self.removed = []
         self.check_calls = []
         self.check_error = None
+        # A3 chunk 3: the planning half's fake sessions (``FakePlanningSession``). Each
+        # planner gives a clean plan unless ``planner_replies`` names one; the synthesis
+        # is ``synthesis`` or a clean one; ``plan_reviews`` and ``revisions`` are
+        # scripts taken in turn.
+        self.planning_calls = []
+        self.planner_replies = {}
+        self.synthesis = None
+        self.plan_reviews = []
+        self.revisions = []
+        self.uncaptured = set()
 
     def start_check(self, root, python, read_only=False):
         """The start-of-run close-out check: clean unless a test says otherwise."""
@@ -334,6 +430,16 @@ class Harness:
                              ("frozen", Path(folder).as_posix())),
                          remove_copies=lambda run_id: self.removed.append(
                              ("copies", run_id)),
+                         make_planner=lambda settings, provider, cwd, usage, frozen_dir:
+                         FakePlanningSession(self, provider, "planner"),
+                         make_synthesiser=lambda settings, cwd, usage, frozen_dir:
+                         FakePlanningSession(self, settings["roles"]["builder"],
+                                             "synthesiser"),
+                         make_plan_reviewer=lambda settings, cwd, usage, frozen_dir:
+                         FakePlanningSession(self, settings["roles"]["reviewer"],
+                                             "plan_reviewer"),
+                         choose_order=lambda items: list(items),
+                         uncaptured_category_a=lambda root, git_dir: set(self.uncaptured),
                          sleep=self.slept.append, now=lambda: self.clock)
 
     def probe_claude(self, model, cwd, on_event):
@@ -490,6 +596,79 @@ class FakeReviewer:
                                       launch=self.harness.review_launch)
 
 
+def start_built(brief_arg, item, git_dir, *, allow_paid=False, **kwargs):
+    """``loop.start``, then the run taken to its build as ``--approve`` leaves it: the
+    build-and-review suites test the build from there.
+
+    Since A3 chunk 3 a start plans first and builds only after approval. These suites
+    test the build loop, so the planning half is recorded as done, with a clean plan
+    review that used no label (``label_rounds`` 0, so the build's labels start at R1,
+    as for a run with no planning half), and the run is approved by the real
+    ``loop.approve``, which makes Docker, the image, the run's writes in the project and
+    ``approval.json``, as the interim start used to. So that a suite's scripted readings
+    and Docker calls line up as they did when the start did all of this itself, the
+    approval is given the start's own Codex reading again rather than the next scripted
+    one, and the start's Docker status query is left out of ``docker_calls``. The whole
+    path (start, plan, review, pause, approve, build) is tested with no such stand-in in
+    ``test_plan_review.py`` and ``test_plan_wiring.py``. Returns the Run, or None for a
+    dry run."""
+    deps = kwargs.get("deps")
+    real = deps.read_codex
+    harness = getattr(real, "__self__", None)
+    seen = []
+
+    def capturing(root, folder=None):
+        value = real(root, folder)
+        seen.append(value)
+        return value
+    calls = len(harness.docker_calls) if isinstance(harness, Harness) else None
+    deps.read_codex = capturing
+    try:
+        run = loop.start(brief_arg, item, git_dir, allow_paid=allow_paid, **kwargs)
+    finally:
+        deps.read_codex = real
+    if run is None:
+        return None
+    if calls is not None:
+        del harness.docker_calls[calls:]
+    return approve_planned(run, seen[-1], allow_paid=allow_paid)
+
+
+def approve_planned(run, reading, *, allow_paid=False):
+    """A started run's planning half recorded as done with a clean plan review, the run
+    paused for approval, then approved with ``reading`` as approval's Codex reading."""
+    pause_planned(run, allow_paid=allow_paid)
+    real = run.deps.read_codex
+    run.deps.read_codex = lambda root, folder=None: reading
+    try:
+        with redirect_stderr(io.StringIO()):
+            loop.approve(run, allow_paid=allow_paid)
+    finally:
+        run.deps.read_codex = real
+    return run
+
+
+def pause_planned(run, *, allow_paid=False):
+    """A started run's planning half recorded as done with a clean plan review that
+    used no label, and the run paused ``awaiting-plan-approval``, as the planning half
+    leaves it."""
+    state = run.state
+    if allow_paid:
+        # The start's permission was for the planners, which this stand-in does not
+        # run; the approval below permits the build instead.
+        state.pop("paid_usage_pending", None)
+        state["paid_usage"] = [p for p in state.get("paid_usage", [])
+                               if p.get("step") != "planners"]
+    state["planning"].update({
+        "completed": list(planning.STEPS), "reviewed": True,
+        "plans": {"claude": plan_reply("A."), "codex": plan_reply("B.")},
+        "labels": {"Plan 1": "claude", "Plan 2": "codex"},
+        "synthesis": synthesis_reply()})
+    sr.enter_pause(state, sr.AWAITING_PLAN_APPROVAL)
+    run.save()
+    return run
+
+
 class LoopCase(unittest.TestCase):
 
     def setUp(self):
@@ -504,10 +683,10 @@ class LoopCase(unittest.TestCase):
     def start(self, cap=3, inject=None, wait=False, item="demo"):
         settings = json.loads(json.dumps(self.settings))
         settings["round_caps"]["build_review"] = cap
-        run = loop.start("brief.md", item, str(self.personal), root=self.root,
-                         deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
-                         inject=inject, wait=wait, settings=settings,
-                         builder="codex" if self.h.swapped else "claude")
+        run = start_built("brief.md", item, str(self.personal), root=self.root,
+                          deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                          inject=inject, wait=wait, settings=settings,
+                          builder="codex" if self.h.swapped else "claude")
         asyncio.run(run.advance())
         return run
 

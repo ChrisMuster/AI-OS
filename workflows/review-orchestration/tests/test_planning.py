@@ -41,7 +41,7 @@ import loop_fixtures as suite  # noqa: E402
 
 loop, sr, limits, codex_rules = suite.loop, suite.sr, suite.limits, suite.codex_rules
 providers, runrecord, brief_mod = suite.providers, suite.runrecord, suite.brief
-planning = suite._load("planning")
+planning = suite.planning
 
 UUID = "123e4567-e89b-12d3-a456-426614174000"
 
@@ -87,7 +87,12 @@ class FakeSession:
                            "prompt": prompt, "schema": schema})
         if self.role == "planner" and case.barrier is not None:
             case.barrier.wait()
-        answer = (case.plans if self.role == "planner" else case.synth)[self.provider]
+        if self.role == "plan_reviewer":
+            # The plan review of A3 chunk 3: clean unless a test scripts findings.
+            answer = {"summary": "s", "findings": (case.plan_reviews.pop(0)
+                                                   if case.plan_reviews else [])}
+        else:
+            answer = (case.plans if self.role == "planner" else case.synth)[self.provider]
         if isinstance(answer, BaseException):
             raise answer
         usage = ({"input_tokens": 10, "output_tokens": 5} if self.provider == "claude"
@@ -108,6 +113,7 @@ class PlanningCase(suite.LoopCase):
         self.plans = {"claude": plan("Plan from the first planner."),
                       "codex": plan("Plan from the second planner.")}
         self.synth = {"claude": synthesis(), "codex": synthesis()}
+        self.plan_reviews = []
         self.order = ["codex", "claude"]
 
     def deps(self):
@@ -129,8 +135,13 @@ class PlanningCase(suite.LoopCase):
         def synthesiser(settings, cwd, usage, frozen_dir):
             self.events.append("make-synthesiser")
             return FakeSession(self, settings["roles"]["builder"], "synthesiser")
+
+        def plan_reviewer(settings, cwd, usage, frozen_dir):
+            self.events.append("make-plan-reviewer")
+            return FakeSession(self, settings["roles"]["reviewer"], "plan_reviewer")
         deps.read_codex, deps.probe_claude = reading, probing
         deps.make_planner, deps.make_synthesiser = planner, synthesiser
+        deps.make_plan_reviewer = plan_reviewer
         deps.choose_order = lambda items: list(self.order)
         deps.uncaptured_category_a = lambda root, git_dir: set()
         return deps
@@ -140,15 +151,15 @@ class PlanningCase(suite.LoopCase):
                          runs_dir=self.runs)
 
     def planning_run(self):
-        """A run at the start of its planning half, made by hand."""
+        """A run at the start of its planning half, as a start leaves one since A3
+        chunk 3: no approval.json, no LOG.md entry, nothing of its planning done."""
         run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
                          deps=self.deps(), log_path=self.log, runs_dir=self.runs,
                          settings=self.settings, builder="claude")
-        (Path(run.state["frozen_dir"]) / codex_rules.APPROVAL_FILE).unlink()
-        self.log.unlink()
-        run.state["planning"] = {"completed": []}
-        run.state["docker"] = {"started_by_run": False, "events": []}
-        run.save()
+        self.assertFalse((Path(run.state["frozen_dir"]) / codex_rules.APPROVAL_FILE)
+                         .exists())
+        self.assertFalse(self.log.exists())
+        self.assertEqual(run.state["planning"]["completed"], [])
         self.events.clear()
         return self.load(run.state["run_id"])
 
@@ -194,7 +205,7 @@ class PlannerTests(PlanningCase):
         # session is made or started.
         first_make = self.events.index("make-planner-claude")
         self.assertEqual(self.events[:first_make], ["reading", "probe", "reading"])
-        self.assertEqual([r["step"] for r in run.state["readings"][-3:-1]],
+        self.assertEqual([r["step"] for r in run.state["readings"][:2]],
                          ["planner-claude", "planner-codex"])
         planners = [c for c in self.calls if c["role"] == "planner"]
         self.assertEqual(sorted(c["provider"] for c in planners), ["claude", "codex"])
@@ -212,8 +223,9 @@ class PlannerTests(PlanningCase):
         # The barrier proves the two ran at the same time: one after the other, the
         # first would have waited alone and failed.
         self.assertFalse(self.barrier.broken)
+        # Then one clean plan-review round (A3 chunk 3) before the pause.
         self.assertEqual(planning.planning_state(run)["completed"],
-                         ["planners", "identity", "synthesis"])
+                         ["planners", "identity", "synthesis", "plan-review-R1"])
 
     def test_positive_each_planner_takes_its_providers_planner_entry(self):
         settings = json.loads(json.dumps(self.settings))
@@ -452,15 +464,22 @@ class QuestionTests(PlanningCase):
         self.assertFalse([s for s in runrecord.read_state(run.run_dir)["steps"]
                           if s["role"] == "builder"], "no build was started")
 
-    def test_rejection_run_py_refuses_build_options_for_a_planning_resume(self):
+    def test_positive_run_py_passes_build_options_to_a_planning_resume(self):
+        # Since A3 chunk 3 (the chunk 3 bullet's first follow-on) run.py no longer
+        # refuses --rounds, --allow-paid or --wait for a run in its planning half: it
+        # passes them on, and --rounds sets the plan-review cap from the rounds held.
         run = self.paused()
+        self.answered(run)
         out = io.StringIO()
-        with redirect_stdout(out):
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
             code = suite.run_py.main(["--resume", run.state["run_id"], "--rounds", "2"],
                                      root=self.root, log_path=self.log, deps=self.deps(),
                                      runs_dir=self.runs)
-        self.assertEqual(code, suite.run_py.REFUSED)
-        self.assertIn("do not apply to a run in its planning half", out.getvalue())
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertNotIn("do not apply to a run in its planning half", out.getvalue())
+        self.assertIn(f"is paused ({sr.AWAITING_PLAN_APPROVAL})", out.getvalue())
+        saved = runrecord.read_state(run.run_dir)
+        self.assertEqual(saved["planning"]["round_cap"], 2)
 
     def test_negative_a_run_with_no_planning_half_resumes_as_before(self):
         self.assertFalse(planning.in_planning(object()))
@@ -781,7 +800,7 @@ class SynthesisTests(PlanningCase):
         again = self.load(run.state["run_id"])
         planning.resume(again)
         self.advance(again)
-        self.assertEqual([c["role"] for c in self.calls], ["synthesiser"],
+        self.assertEqual([c["role"] for c in self.calls], ["synthesiser", "plan_reviewer"],
                          "never mid-step, and the planners are not run again")
         self.assertEqual(again.state["pause"], sr.AWAITING_PLAN_APPROVAL)
 
@@ -798,7 +817,7 @@ class PlanReportTests(PlanningCase):
                      self.plans["codex"]["summary"], self.plans["claude"]["summary"],
                      "## Synthesis", "Both change work/a.txt.", "Wording.: Use done.",
                      "### The merged plan", "The merged plan.", "`work/a.txt`",
-                     "## Plan review findings", "no plan review has run",
+                     "## Plan review findings", "None: the plan review found nothing",
                      "## Intent check", "No intent check has run"):
             self.assertIn(part, text)
 
@@ -833,7 +852,8 @@ class PlanReportTests(PlanningCase):
         self.h.reviews = [[]]
         again = self.load(run.state["run_id"])
         loop.approve(again)
-        self.assertEqual(again.state["approval"]["planning_step"], "plan-synthesis")
+        # The step it paused on is the clean plan review that follows the synthesis.
+        self.assertEqual(again.state["approval"]["planning_step"], "plan-review-R1")
         asyncio.run(again.advance())
         self.assertEqual(again.state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
 
@@ -944,7 +964,7 @@ class ReviewRoundOneTests(PlanningCase):
         again = self.load(run.state["run_id"])
         planning.resume(again)
         self.advance(again)
-        self.assertEqual([c["role"] for c in self.calls], ["synthesiser"])
+        self.assertEqual([c["role"] for c in self.calls], ["synthesiser", "plan_reviewer"])
         self.assertEqual(again.state["pause"], sr.AWAITING_PLAN_APPROVAL)
         self.assertEqual(planning.planning_state(again)["interrupted_resumes"], 1)
         self.assertFalse(self.log.exists())

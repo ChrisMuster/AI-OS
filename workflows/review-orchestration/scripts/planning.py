@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-planning.py - the planning half's sessions (plan 10.3 steps 1 to 3, A3 chunk 2).
+planning.py - the planning half (plan 10.3 steps 1 to 4 and 6; A3 chunks 2 and 3).
 
-A run with a planning half plans before it builds. Its steps, each recorded in
-``state.json`` under ``planning`` once it has completed:
+Every run plans before it builds: since A3 chunk 3 ``start.py --run`` begins here and
+builds only after ``--approve``. Its steps, each recorded in ``state.json`` under
+``planning`` once it has completed:
 
   planners   the before-step usage check of plan 10.10 for both planners, one after
              the other, then two read-only planner sessions, one per provider, started
@@ -20,18 +21,32 @@ A run with a planning half plans before it builds. Its steps, each recorded in
              and both plans as Plan 1 and Plan 2, in an order drawn at random and
              recorded, with no provider names, and replies in ``SYNTHESIS_SCHEMA``.
 
-After the synthesis the run writes ``plan-report.md`` and pauses
-``awaiting-plan-approval`` (step 6), where chunk 1's ``--approve``, ``--amend`` and
-``--stop`` act on it. The plan review (step 4) and the intent check (step 5) are
-later chunks' work, so the report says no plan review and no intent check has run.
+  plan-review-R<n>  the plan reviewer (step 4, A3 chunk 3), on the provider that is not
+             the builder's and its ``plan_reviewer`` entry, reviews the merged plan
+             against the brief in the packet's one label form. Its findings go into the
+             run's one ledger, labelled ``R<n>-<k>``; the labels run on into the build.
+  plan-revise-R<n>  the synthesiser revises: the synthesis's own fields revised, plus
+             the 10.5 action list, every open finding exactly once, each ``fixed`` or
+             ``declined-merits`` with a note (``stopreasons.parse_plan_actions``).
+
+The plan review loops, the 10.5 loop-exit rules applying with the synthesiser in the
+builder's place, until a round finds nothing, when the run writes ``plan-report.md``
+and pauses ``awaiting-plan-approval`` (step 6), or until the plan-review round cap
+(``round_caps.plan_review``), when it ends ``max-rounds``; ``--resume --rounds N`` then
+keeps both plans and the synthesis, the synthesiser acts on the open findings, and up
+to N more rounds follow. An amendment restarts at step 1 with the round count reset,
+its labels carrying on. The intent check (step 5) is A4's, so the report says no
+intent check has run.
 
 Nothing here writes outside the run's own record, ``runs/<run-id>/`` (step 6, "The run
 writes nothing in the project before approval"): no LOG.md entry at a pause, at an end
-or at a resume, and no packet in ``memory/``. A stop resumes from the last planning step
-completed, never mid-step, and the two planners always run again together.
+that can be resumed or at a resume, and no packet in ``memory/``. Plan-review findings
+are rendered to ``runs/<run-id>/plan-review/packet.md`` until approval writes the item's
+packet. A stop resumes from the last planning step completed, never mid-step, and the
+two planners always run again together.
 
 Every session is a read-only session of ``providers.py`` started with the reviewers'
-lockdown (step 7; process table rows 16 and 17), reached through ``loop.Deps`` so the
+lockdown (step 7; process table rows 16 to 18), reached through ``loop.Deps`` so the
 tests drive the whole half with fakes and no model call.
 """
 
@@ -56,9 +71,13 @@ SECTIONS = ("names", "distinctive", "common", "prefixes")
 
 PLANNERS, IDENTITY, SYNTHESIS = "planners", "identity", "synthesis"
 STEPS = (PLANNERS, IDENTITY, SYNTHESIS)
+# The plan review's two kinds of step (A3 chunk 3), and the run's next move once every
+# step above is done: a review round, the synthesiser's revision, or the pause.
+REVIEW, REVISE, PAUSE = "review", "revise", "pause"
 LABELS = ("Plan 1", "Plan 2")
 QUESTIONS_FILE = "questions.md"
 PLAN_REPORT = "plan-report.md"
+PLAN_REVIEW_PACKET = Path("plan-review") / "packet.md"
 
 # Plan 10.3 step 1: the planner's reply. Every field required and nothing else
 # allowed, enforced as the reviewer's reply schema is (``check_reply``).
@@ -94,6 +113,19 @@ SYNTHESIS_SCHEMA = {
             "properties": {"disagreement": _TEXT, "resolution": _TEXT,
                            "reason": _TEXT}}},
         "merged_plan": MERGED_PLAN_SCHEMA}}
+# The synthesiser's revision reply (plan 10.3 step 4): the synthesis's own fields,
+# revised, plus the 10.5 action list. The schema names the two actions allowed; the
+# script's own check (``stopreasons.parse_plan_actions``) holds whatever a provider did,
+# and names a ``declined-scope`` as having no meaning before a build.
+_ACTION = {"type": "object", "additionalProperties": False,
+           "required": ["label", "action", "note"],
+           "properties": {"label": _TEXT, "note": _TEXT,
+                          "action": {"type": "string", "enum": list(sr.PLAN_ACTIONS)}}}
+REVISION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": [*SYNTHESIS_SCHEMA["required"], "actions"],
+    "properties": {**SYNTHESIS_SCHEMA["properties"],
+                   "actions": {"type": "array", "items": _ACTION}}}
 
 # The tool-metadata rule (step 3), a whole-word match on each, with case.
 TOOL_METADATA = ("session_id", "sessionId", "thread_id", "threadId", "turn_id", "turnId",
@@ -362,13 +394,23 @@ def in_planning(run):
 def end(run, reason, evidence=None):
     """End a run in its planning half. ``error``, ``usage-limit`` and ``max-rounds`` can
     be resumed, so the end writes no LOG.md entry (step 6, R20-2): the stop reason goes
-    to ``state.json`` and the report only. Nothing is written in ``memory/``."""
+    to ``state.json`` and the report only. Nothing is written in ``memory/``. A paid-usage
+    permission belongs to one attempt, so it is cleared before the end is saved, as the
+    build's step does."""
+    run.state.pop("paid_usage_pending", None)
+    run.claude_usage.paid_allowed = False
     sr.record_stop(run.state, reason, evidence)
     try:
         run.save()
         loop.write_report(run)
     finally:
         run._after_end(reason)
+    if reason not in sr.RESUMABLE:
+        # An end no approval can follow (``disagreement`` or ``reopened`` in the plan
+        # review) writes its entry, as ``stopped-by-user`` does (step 6, R20-2); the
+        # packet in memory/ is still never written.
+        loop._log("completed", f"Run {run.state['run_id']} ended {reason} after step "
+                               f"{run.state['step']}, before approval.", run.log_path)
 
 
 def _complete(run, step):
@@ -404,9 +446,53 @@ def _usage_evidence(exc, step):
             "resets_at": exc.resets_at, "paid_usage": "paid overage" in exc.detail}
 
 
+def _permitted(run, group):
+    """Whether the paid-usage permission pending covers this planning step (plan 10.10
+    item 8); the two planners are one step, ``planners``. A Claude session of a
+    permitted step is not interrupted on paid overage (item 7's in-step watch)."""
+    permitted = loop._permits(run.state.get("paid_usage_pending"), group)
+    run.claude_usage.paid_allowed = permitted
+    return permitted
+
+
+def _group_providers(run, group):
+    """The provider or providers a planning step uses: both for the planners, the
+    reviewer's for a plan review, the builder's (the synthesiser's) otherwise."""
+    roles = run.settings["roles"]
+    if group == PLANNERS:
+        return PROVIDERS
+    if group.startswith("plan-review"):
+        return (roles["reviewer"],)
+    return (roles["builder"],)
+
+
+def _finish(run, group, permitted):
+    """After a planning session step, completed or not: the permission is spent, the
+    unknown-reset allowance of a plain resume is used, and after a permitted step that
+    left the run running a fresh Codex credit snapshot is what later steps compare with,
+    as after a permitted build step (``loop.Run.take``)."""
+    run.state.pop("paid_usage_pending", None)
+    # A plain resume's unknown-reset allowance is the first Claude step's (plan 10.10
+    # item 7): a plan review on Codex keeps it for the Claude step after (R3-2).
+    if limits.CLAUDE in _group_providers(run, group):
+        run.state["claude_unknown_reset_resume"] = False
+    run.claude_usage.paid_allowed = False
+    if permitted and run.state.get("status") == sr.RUNNING:
+        try:
+            fresh = run.note_codex(run.deps.read_codex(run.root,
+                                                       run.state.get("frozen_dir")))
+            run.state["credits"] = loop.credit_snapshot(fresh)
+        except Exception as exc:  # noqa: BLE001 - a later step stops on it
+            run.state["credits"] = None
+            run.state.setdefault("paid_usage_notes", []).append(
+                f"credit reading after {group} failed: {type(exc).__name__}: {exc}")
+    if run.state.get("status") != sr.ENDED:
+        run.save()
+
+
 async def _check_usage(run, step, provider):
-    """The before-step usage check (plan 10.10). Returns None, or ends the run and
-    returns True."""
+    """The before-step usage check (plan 10.10), against the one provider the step
+    uses. Returns None, or ends the run and returns True."""
     try:
         stop = await asyncio.to_thread(run.before_step, step, provider)
     except Exception as exc:  # the reading itself failed: nothing started
@@ -432,8 +518,17 @@ def planner_prompt(run):
 
 
 async def planners(run):
-    """Step 1: the usage check for both planners, one after the other, then both
-    sessions in parallel from the same prompt; then step 2's pause on any question."""
+    """Step 1: the usage check for both planners, one after the other, each against its
+    own provider, then both sessions in parallel from the same prompt; then step 2's
+    pause on any question. The two count as one step for a paid-usage permission."""
+    permitted = _permitted(run, PLANNERS)
+    try:
+        await _planners(run)
+    finally:
+        _finish(run, PLANNERS, permitted)
+
+
+async def _planners(run):
     deps, state = run.deps, run.state
     for provider in PROVIDERS:
         if await _check_usage(run, f"planner-{provider}", provider):
@@ -571,7 +666,15 @@ def synthesiser_prompt(run):
 
 
 async def synthesis(run):
-    """Step 3's synthesis, then ``plan-report.md`` and the approval pause."""
+    """Step 3's synthesis. The plan review follows (step 4)."""
+    permitted = _permitted(run, SYNTHESIS)
+    try:
+        await _synthesis(run)
+    finally:
+        _finish(run, SYNTHESIS, permitted)
+
+
+async def _synthesis(run):
     provider = run.settings["roles"]["builder"]
     if await _check_usage(run, SYNTHESIS, provider):
         return
@@ -594,6 +697,203 @@ async def synthesis(run):
         return
     planning_state(run)["synthesis"] = record.reply
     _complete(run, SYNTHESIS)
+
+
+# ------------------------------------------------------------- the plan review
+
+
+def next_label(run):
+    """The label round the next plan-review round takes: one past the highest label
+    round issued so far in the run (plan 10.3 step 4: labels run on, an amendment's
+    rounds included)."""
+    return loop.label_rounds_used(run) + 1
+
+
+def plan_review_schema(with_pattern=True):
+    """The plan reviewer's reply schema: the build reviewer's (``REVIEW_SCHEMA``), in the
+    packet's one label form with ``reraises``. A plan has no changed files, so there is
+    no ``files_reviewed``. Without the title pattern for a Claude session, or once Codex
+    has refused it, as for the build reviewer."""
+    schema = json.loads(json.dumps(sr.REVIEW_SCHEMA))
+    if not with_pattern:
+        schema["properties"]["findings"]["items"]["properties"]["title"].pop("pattern",
+                                                                            None)
+    return schema
+
+
+def _review_once(run, session, prompt):
+    """One plan review, with the build reviewer's title-pattern rule (``loop.Run.
+    _review_once``): a Claude session is never sent the pattern, and a Codex one that
+    refuses it is asked again without it, the refusal recorded for the run."""
+    live = run.state.setdefault("live", {})
+    if session.provider == limits.CLAUDE or live.get("title_pattern",
+                                                      "").startswith("refused"):
+        return session.review(prompt, plan_review_schema(with_pattern=False))
+    try:
+        record = session.review(prompt, plan_review_schema())
+    except providers.ProviderError as exc:
+        if "pattern" not in str(exc).lower():
+            raise
+        live["title_pattern"] = f"refused: {exc}"
+        run.save()
+        return session.review(prompt, plan_review_schema(with_pattern=False))
+    live.setdefault("title_pattern", "accepted")
+    return record
+
+
+def _prior(run):
+    return "\n".join(
+        f"- {f['label']} ({f['source']}) {f.get('title')}: synthesiser action "
+        f"{f.get('action') or 'none yet'}"
+        for f in run.ledger.findings.values()) or "None."
+
+
+def plan_reviewer_prompt(run, label):
+    """The brief, the merged plan and the prior findings with the synthesiser's action
+    on each: not the two plans, not the synthesiser's notes."""
+    merged = (planning_state(run).get("synthesis") or {}).get("merged_plan") or {}
+    return loop.render("plan-reviewer", round=label, brief=run.brief_text(),
+                       plan=loop.render_plan(merged), prior=_prior(run))
+
+
+def render_review_packet(run):
+    """The ledger rendered to ``runs/<run-id>/plan-review/packet.md`` during planning
+    (plan 10.3 step 6, R20-1), in the review packet's layout; nothing in ``memory/``."""
+    loop.render_record_packet(run)
+
+
+async def review_round(run):
+    """One plan-review round (step 4)."""
+    label = next_label(run)
+    step = f"plan-review-R{label}"
+    permitted = _permitted(run, step)
+    try:
+        await _review_round(run, label, step)
+    finally:
+        _finish(run, step, permitted)
+
+
+async def _review_round(run, label, step):
+    state, planning = run.state, planning_state(run)
+    provider = run.settings["roles"]["reviewer"]
+    if await _check_usage(run, step, provider):
+        return
+    session = None
+    try:
+        session = run.deps.make_plan_reviewer(run.settings, run.root, run.claude_usage,
+                                              state["frozen_dir"])
+        record = await asyncio.to_thread(_review_once, run, session,
+                                         plan_reviewer_prompt(run, label))
+    except limits.UsageLimitError as exc:
+        end(run, sr.USAGE_LIMIT, _usage_evidence(exc, step))
+        return
+    except Exception as exc:  # noqa: BLE001 - a provider failure
+        for refusal in getattr(session, "refusals", None) or ():
+            state.setdefault("refusals", []).append({"step": step, **refusal})
+        end(run, sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
+        return
+    _record_session(run, step, "plan_reviewer", provider, session, record)
+    try:
+        findings = sr.parse_review(record.reply, run.ledger)
+    except sr.ReplyError as exc:
+        end(run, sr.ERROR, {"step": step, "error": str(exc)})
+        return
+    new = run.ledger.add_round(label, [], findings)
+    run._accept_declines(label, new)
+    state["label_rounds"] = label
+    planning["review_rounds"] = planning.get("review_rounds", 0) + 1
+    planning["reviewed"] = not new
+    planning["completed"].append(step)
+    state["step"] = step
+    state.pop("interrupted", None)
+    run.save()
+    render_review_packet(run)
+    stop = sr.decide(run.ledger)
+    if stop is not None:
+        end(run, *stop)
+        return
+    if not new:
+        return  # the next move is the approval pause
+    cap = planning.get("round_cap") or run.settings["round_caps"]["plan_review"]
+    if planning["review_rounds"] >= cap:
+        end(run, sr.MAX_ROUNDS, {"round": label, "plan_review_rounds":
+                                 planning["review_rounds"], "cap": cap, "half": "planning",
+                                 "open": [f["label"] for f in new]})
+
+
+def revision_prompt(run, label):
+    planning = planning_state(run)
+    plans = [json.dumps(planning["plans"][planning["labels"][name]], indent=1,
+                        ensure_ascii=False) for name in LABELS]
+    blocks = []
+    for name in run.ledger.open_labels():
+        f = run.ledger.findings[name]
+        blocks.append(f"{name} ({f.get('severity')}) {f.get('title')}\nFile: "
+                      f"{f.get('file')}\nEvidence: {f.get('evidence')}\nSuggested fix: "
+                      f"{f.get('fix')}"
+                      + (f"\nRe-raises: {f['reraises']}" if f.get("reraises") else ""))
+    return loop.render("revision", round=label, brief=run.brief_text(),
+                       plan_1=plans[0], plan_2=plans[1],
+                       synthesis=json.dumps(planning.get("synthesis"), indent=1,
+                                            ensure_ascii=False),
+                       findings="\n\n".join(blocks))
+
+
+async def revise(run):
+    """The synthesiser's revision after a plan-review round with findings (step 4)."""
+    label = loop.label_rounds_used(run)
+    step = f"plan-revise-R{label}"
+    permitted = _permitted(run, step)
+    try:
+        await _revise(run, label, step)
+    finally:
+        _finish(run, step, permitted)
+
+
+async def _revise(run, label, step):
+    state, planning = run.state, planning_state(run)
+    provider = run.settings["roles"]["builder"]
+    if await _check_usage(run, step, provider):
+        return
+    open_labels = run.ledger.open_labels()
+    try:
+        session = run.deps.make_synthesiser(run.settings, run.root, run.claude_usage,
+                                            state["frozen_dir"])
+        record = await asyncio.to_thread(session.review, revision_prompt(run, label),
+                                         REVISION_SCHEMA)
+    except limits.UsageLimitError as exc:
+        end(run, sr.USAGE_LIMIT, _usage_evidence(exc, step))
+        return
+    except Exception as exc:  # noqa: BLE001 - a provider failure
+        end(run, sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
+        return
+    _record_session(run, step, "synthesiser", provider, session, record)
+    reply = record.reply
+    try:
+        if not isinstance(reply, dict):
+            raise sr.ReplyError("the synthesiser: the reply is not a JSON object")
+        actions = sr.parse_plan_actions(reply.get("actions"), open_labels)
+        revised = {k: v for k, v in reply.items() if k != "actions"}
+        check_reply(revised, SYNTHESIS_SCHEMA, "the synthesiser")
+    except sr.ReplyError as exc:
+        end(run, sr.ERROR, {"step": step, "error": str(exc)})
+        return
+    run.ledger.apply_actions(actions)
+    planning["synthesis"] = revised
+    planning["completed"].append(step)
+    state["step"] = step
+    state.pop("interrupted", None)
+    run.save()
+    render_review_packet(run)
+    stop = sr.decide(run.ledger)
+    if stop is not None:
+        end(run, *stop)
+
+
+async def pause(run):
+    """Every planning step done and the last plan review clean: write
+    ``plan-report.md`` (again, for a run interrupted after its last step, code review
+    R1-2) and pause ``awaiting-plan-approval`` (step 6)."""
     write_plan_report(run)
     sr.enter_pause(run.state, sr.AWAITING_PLAN_APPROVAL)
     run.save()
@@ -602,26 +902,13 @@ async def synthesis(run):
 # -------------------------------------------------------------- the plan report
 
 
-def render_plan(plan):
-    """A planner's plan, or the merged plan, as markdown."""
-    lines = [plan.get("summary", ""), "", f"Confidence: {plan.get('confidence')}.", ""]
-    for number, step in enumerate(plan.get("steps", []), 1):
-        lines.append(f"{number}. {step.get('action')}")
-        lines.append(f"   - Files: " + (", ".join(f"`{f}`" for f in step.get("files", []))
-                                        or "none named"))
-        lines.append(f"   - Verification: {step.get('verification')}")
-    for title, key in (("Risks", "risks"), ("Assumptions", "assumptions"),
-                       ("Open questions", "open_questions")):
-        if key in plan:
-            lines += ["", f"{title}:", ""]
-            lines += [f"- {item}" for item in plan[key]] or ["- None."]
-    return "\n".join(lines)
+render_plan = loop.render_plan
 
 
 def write_plan_report(run):
-    """``plan-report.md`` in the run record (plan 10.3, the paragraph after the chunk
-    list): both plans, the synthesis, the plan-review findings section (empty until the
-    plan review is built) and an intent section saying no intent check has run."""
+    """``plan-report.md`` in the run record (plan 10.3 step 6 and the paragraph after
+    the chunk list): both plans, the synthesis, the plan-review findings from the run's
+    ledger, and an intent section saying no intent check has run (A4's)."""
     planning = planning_state(run)
     synthesis_reply = planning.get("synthesis") or {}
     lines = [f"# Plan report, run {run.state['run_id']}", ""]
@@ -642,59 +929,159 @@ def write_plan_report(run):
     lines += [f"- {r}" for r in synthesis_reply.get("retained_risks", [])] or ["- None."]
     lines += ["", "### The merged plan", "",
               render_plan(synthesis_reply.get("merged_plan") or {}), ""]
-    lines += ["## Plan review findings", "",
-              "None: no plan review has run. The plan review (plan 10.3 step 4) is not "
-              "built yet.", ""]
+    lines += ["## Plan review findings", ""] + review_lines(run) + [""]
     lines += ["## Intent check", "",
               "No intent check has run: it is built in sub-stage A4 (plan 10.6).", ""]
     (run.run_dir / PLAN_REPORT).write_text("\n".join(lines), encoding="utf-8",
                                            newline="\n")
 
 
+def review_lines(run):
+    """The plan report's plan-review section: the rounds this plan was reviewed in and
+    every finding in the run's ledger, open or addressed, each with its label, the
+    synthesiser's action and note, and any reraise. Text from a session goes through the
+    packet's ``clean``."""
+    planning = planning_state(run)
+    clean = loop.packet_mod.clean
+    rounds = planning.get("review_rounds", 0)
+    lines = [f"Plan-review rounds for this plan: {rounds} of "
+             f"{planning.get('round_cap') or run.settings['round_caps']['plan_review']}; "
+             f"the findings are also in `{PLAN_REVIEW_PACKET.as_posix()}`.", ""]
+    findings = list(run.ledger.findings.values())
+    if not findings:
+        return lines + ["None: the plan review found nothing."]
+    for f in findings:
+        status = "addressed" if loop.packet_mod.is_addressed(f) else "open"
+        lines.append(f"- {f['label']} ({status}, {clean(f.get('severity'))}) "
+                     f"{clean(f.get('title'), 300)}. File: {clean(f.get('file'), 300)}. "
+                     f"Evidence: {clean(f.get('evidence'))}"
+                     + (f" Re-raises: {f['reraises']}." if f.get("reraises") else "")
+                     + (" Superseded by amendment." if f.get("superseded_by_amendment")
+                        else f" Synthesiser: {f['action']}. {clean(f.get('note'))}"
+                        if f.get("action") else ""))
+    return lines
+
+
 # ----------------------------------------------------------------- driving it
+
+
+def next_step(run):
+    """The planning half's next move: the first of the planners, the identity check and
+    the synthesis not completed; then the synthesiser's revision while any plan-review
+    finding is open (``revise``), the approval pause once the last plan review found
+    nothing (``pause``), and otherwise a plan-review round (``review``)."""
+    planning = planning_state(run)
+    done = planning.get("completed") or []
+    for step in STEPS:
+        if step not in done:
+            return step
+    if run.ledger.open_labels():
+        return REVISE
+    if planning.get("reviewed"):
+        return PAUSE
+    return REVIEW
+
+
+def next_step_name(run):
+    """The next step's name as a paid-usage permission names it: ``planners`` (one step
+    for both planners), ``synthesis`` (also after the identity check, which calls no
+    provider), ``plan-review-R<n>``, ``plan-revise-R<n>``, or ``pause``, which takes no
+    step."""
+    step = next_step(run)
+    if step == IDENTITY:
+        return SYNTHESIS
+    if step == REVIEW:
+        return f"plan-review-R{next_label(run)}"
+    if step == REVISE:
+        return f"plan-revise-R{loop.label_rounds_used(run)}"
+    return step
+
+
+def next_providers(run):
+    """The provider or providers of the planning step the run starts next, the only
+    ones a preflight checks (plan 10.10 item 8): both for the planners, the reviewer's
+    for a plan review, none for the pause, and the builder's (the synthesiser's) for
+    the rest."""
+    step = next_step(run)
+    roles = run.settings["roles"]
+    if step == PLANNERS:
+        return PROVIDERS
+    if step == REVIEW:
+        return (roles["reviewer"],)
+    if step == PAUSE:
+        return ()
+    return (roles["builder"],)
 
 
 async def advance(run):
     """Take the planning steps from the last one completed until the run pauses or
-    ends. A malformed identifiers file ends the run ``error`` before any session."""
-    planning = planning_state(run)
-    problems = preflight()
-    if problems and run.state.get("status") == sr.RUNNING:
-        end(run, sr.ERROR, {"step": "planning", "error": "; ".join(problems)})
-        return run.state
-    while run.state.get("status") == sr.RUNNING:
-        done = planning["completed"]
-        if PLANNERS not in done:
-            await planners(run)
-        elif IDENTITY not in done:
-            identity(run)
-        elif SYNTHESIS not in done:
-            await synthesis(run)
-        else:  # every step done: the run waits for the user's decision
-            # A run interrupted after its synthesis was saved may lack its report
-            # (code review R1-2), so it is written again, from the saved state.
-            write_plan_report(run)
-            sr.enter_pause(run.state, sr.AWAITING_PLAN_APPROVAL)
-            run.save()
+    ends. A malformed identifiers file ends the run ``error`` before any session. With
+    ``--wait``, a ``usage-limit`` end with a known reset sleeps until it and resumes,
+    as the build does (``loop.Run.wait_then_reload``), unless the run changed while the
+    process slept."""
+    while True:
+        await _advance(run)
+        if not run.wait_then_reload():
+            break
+        resume(run, user_started=False)
     return run.state
 
 
-def resume(run, dry_run=False):
+async def _advance(run):
+    problems = preflight()
+    if problems and run.state.get("status") == sr.RUNNING:
+        end(run, sr.ERROR, {"step": "planning", "error": "; ".join(problems)})
+        return
+    while run.state.get("status") == sr.RUNNING:
+        step = next_step(run)
+        if step == PLANNERS:
+            await planners(run)
+        elif step == IDENTITY:
+            identity(run)
+        elif step == SYNTHESIS:
+            await synthesis(run)
+        elif step == REVISE:
+            await revise(run)
+        elif step == REVIEW:
+            await review_round(run)
+        else:  # the last plan review found nothing: the run waits for the user
+            await pause(run)
+
+
+def resume(run, dry_run=False, *, allow_paid=False, rounds=None, user_started=True):
     """``--resume`` of a run in its planning half. Every check comes before any change,
     and a refusal (``loop.RunRefused``) changes nothing.
 
     A run paused ``awaiting-user`` for its planners' questions resumes in step 2's
     order: read the revised brief's edit paths, refusing if they cannot be read; make
     the four checks ``--approve`` makes over them, refusing the same way; check the
-    whole revised brief with the checker, logging nothing; then (in ``advance``) run
-    both planners again from it. An ended run whose stop reason can be resumed, or a
-    record left ``running`` by an interrupted process (code review R1-2), takes a fresh
-    Codex reading and credit snapshot, as a resume does, and resumes from its last
-    planning step completed. Nothing is logged in any case."""
+    whole revised brief with the checker, logging nothing; then the usage preflight
+    for the planners, and (in ``advance``) both planners again from it. An ended run
+    whose stop reason can be resumed, or a record left ``running`` by an interrupted
+    process (code review R1-2), takes a fresh Codex reading and credit snapshot, as a
+    resume does, and resumes from its last planning step completed. Nothing is logged
+    in any case.
+
+    Since A3 chunk 3 the build's options apply here too (the chunk 3 bullet's first
+    follow-on): ``allow_paid`` permits the next planning step (the two planners as one)
+    on paid usage, ``rounds`` allows N more plan-review rounds after those this plan has
+    had, and the run's ``wait`` makes the preflight's checks those of a waiting resume,
+    a Claude paid-overage reading with an unknown reset not cleared (plan 10.10 items
+    5, 7 and 8). The usage preflight checks only the next step's provider or providers.
+    ``user_started`` false is an automatic ``--wait`` resume, which makes no usage check
+    here, the next step's own check standing. Every resume claims the run with
+    ``resume.lock`` before its first change (item 5)."""
     state, run_id = run.state, run.state["run_id"]
     problems = preflight()
     if problems:
         raise loop.RunRefused(problems + ["nothing was changed"])
+    if allow_paid and run.wait:
+        raise loop.RunRefused(["--allow-paid cannot be used with --wait"])
+    if rounds is not None and rounds < 1:
+        raise loop.RunRefused(["--rounds must be at least 1"])
+    loop._refuse_if_claimed(run)
+    seen = loop._claim_mark(state)
+    plain = user_started and not run.wait
     status = state.get("status")
     if status == sr.PAUSED and state.get("pause") == sr.AWAITING_USER:
         arg = loop._run_brief_arg(run)
@@ -712,16 +1099,27 @@ def resume(run, dry_run=False):
         if code != 0:
             raise loop.RunRefused(["the revised brief does not pass the check: "
                                    + "; ".join(lines), "nothing was changed"])
+        reading, credits = loop._approval_reading(run, allow_paid=allow_paid,
+                                                  providers_=PROVIDERS,
+                                                  user_resume=plain, check=user_started)
         if dry_run:
             print(f"[DRY RUN] would resume run {run_id}, paused {sr.AWAITING_USER}: the "
                   "revised brief's edit paths were read, the four approval checks passed "
                   "over them and the brief passes the check; both planners would plan "
-                  "again from it. Nothing was changed.", file=sys.stderr)
+                  f"again from it ({reading.summary()}; Codex credits {credits})."
+                  + (" --allow-paid would permit the planners only."
+                     if allow_paid else "") + " Nothing was changed.", file=sys.stderr)
             return None
-        planning_state(run).pop("questions", None)
-        planning_state(run)["resumed"] = planning_state(run).get("resumed", 0) + 1
-        sr.continue_run(state)
-        run.save()
+        lock = loop.claim(run, seen)
+        try:
+            planning_state(run).pop("questions", None)
+            planning_state(run)["resumed"] = planning_state(run).get("resumed", 0) + 1
+            sr.continue_run(state)
+            _resumed(run, reading, credits, allow_paid=allow_paid, rounds=rounds,
+                     plain=plain)
+            run.save()
+        finally:
+            loop.release(lock)
         return run
     if status in (sr.ENDED, sr.RUNNING):
         # A planning record left ``running`` is one whose process was interrupted
@@ -733,24 +1131,56 @@ def resume(run, dry_run=False):
         if status == sr.ENDED and last not in sr.RESUMABLE:
             raise loop.RunRefused([f"a run that ended {last} cannot be resumed; only "
                                    f"{', '.join(sr.RESUMABLE)} can"])
-        reading, credits = loop._approval_reading(run)
-        done = planning_state(run)["completed"]
-        nxt = next((s for s in STEPS if s not in done), "the approval pause")
+        if status == sr.ENDED and last == sr.MAX_ROUNDS and rounds is None:
+            # More plan-review rounds are the user's to authorise (plan 10.3 step 4,
+            # code review R1-1): a plain resume would revise and review past the cap.
+            raise loop.RunRefused([
+                f"run {run_id} stopped at the plan-review cap; more rounds are given "
+                f"with {loop.STARTER} --resume {run_id} --rounds N, or the plan is "
+                f"amended ({loop.STARTER} --amend) or the run stopped. Nothing was "
+                "changed"])
+        reading, credits = loop._approval_reading(run, allow_paid=allow_paid,
+                                                  user_resume=plain, check=user_started)
+        nxt = {PAUSE: "the approval pause"}.get(next_step(run), next_step_name(run))
         where = f"ended {last}" if status == sr.ENDED else "interrupted while running"
         if dry_run:
             print(f"[DRY RUN] would resume run {run_id} ({where}) in its planning "
-                  f"half at {nxt}; {reading.summary()}; Codex credits {credits}. Nothing "
-                  "was changed.", file=sys.stderr)
+                  f"half at {nxt}; {reading.summary()}; Codex credits {credits}"
+                  + (f"; {rounds} more plan-review round(s)" if rounds else "")
+                  + ("; --allow-paid would permit that step only"
+                     if allow_paid else "") + ". Nothing was changed.", file=sys.stderr)
             return None
-        state["credits"] = credits
-        run.note_codex(reading)
-        if status == sr.ENDED:
-            sr.continue_run(state)
-        else:
-            planning_state(run)["interrupted_resumes"] = (
-                planning_state(run).get("interrupted_resumes", 0) + 1)
-        run.save()
+        lock = loop.claim(run, seen)
+        try:
+            if status == sr.ENDED:
+                sr.continue_run(state)
+            else:
+                planning_state(run)["interrupted_resumes"] = (
+                    planning_state(run).get("interrupted_resumes", 0) + 1)
+            _resumed(run, reading, credits, allow_paid=allow_paid, rounds=rounds,
+                     plain=plain)
+            run.save()
+        finally:
+            loop.release(lock)
         return run
     raise loop.RunRefused([f"run {run_id} cannot be resumed in its planning half (it is "
                            f"{status}" + (f", {state.get('pause')}" if state.get("pause")
                                           else "") + ")"])
+
+
+def _resumed(run, reading, credits, *, allow_paid, rounds, plain):
+    """A planning resume's changes to the state, under its claim: the fresh Codex
+    reading and credit snapshot, a permission left from an earlier attempt cleared and
+    a new one granted, the unknown-reset allowance of a plain resume, and the round
+    cap for ``--rounds``."""
+    state, planning = run.state, planning_state(run)
+    state["credits"] = credits
+    run.note_codex(reading)
+    state.pop("paid_usage_pending", None)
+    last = loop._last_claude(state)
+    state["claude_unknown_reset_resume"] = bool(
+        plain and loop._paid_overage(last) and last.resets_at is None)
+    if rounds is not None:
+        planning["round_cap"] = planning.get("review_rounds", 0) + rounds
+    if allow_paid:
+        loop._grant_paid(run, reading)

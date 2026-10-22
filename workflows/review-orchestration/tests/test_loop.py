@@ -251,7 +251,10 @@ class RunTests(LoopCase):
         # the same file is not (R5-2).
         self.assertIn("+check wrote this", written)
         self.assertNotIn("+x", written)
-        self.assertEqual(run.state["check_writes"], ["rounds/R1/check-writes.patch"])
+        # Approval's own writes (its LOG.md entry and the packet) come first (A3 chunk 3:
+        # every run is approved before it builds).
+        self.assertEqual(run.state["check_writes"],
+                         ["approval/check-writes.patch", "rounds/R1/check-writes.patch"])
         # The reviewed diff and the archive both hold the state the checks left.
         diff = (run.run_dir / "rounds/R1/diff.patch").read_text(encoding="utf-8")
         self.assertIn("+check wrote this", diff)
@@ -268,7 +271,8 @@ class RunTests(LoopCase):
         run = self.start()
         self.assertEqual(self.h.start_check_calls, [{"read_only": True}])
         self.assertFalse((run.run_dir / "start/check-writes.patch").exists())
-        self.assertEqual(run.state["check_writes"], [])
+        # Only approval's own writes are recorded; nothing from the start (A3 chunk 3).
+        self.assertEqual(run.state["check_writes"], ["approval/check-writes.patch"])
         self.assertNotIn("start-of-run", self.h.review_calls[0][0])
 
     def test_rejection_a_failure_while_saving_a_failed_step_still_ends_the_run(self):
@@ -280,16 +284,17 @@ class RunTests(LoopCase):
 
         def classification(root):
             calls.append(1)
-            if len(calls) > 1 and not self.fixed:
+            # Reads 1 and 2 are the preflight's and approval's (A3 chunk 3).
+            if len(calls) > 2 and not self.fixed:
                 raise SyntaxError("invalid syntax (allowlist.py, line 1)")
             return CAT_A
         self.fixed = False
         deps = self.h.deps()
         deps.category_a = classification
         self.h.builder_script = [edit(self.root, "x\n")]
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=deps, log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings)
+        run = start_built("brief.md", "demo", str(self.personal), root=self.root,
+                          deps=deps, log_path=self.log, runs_dir=self.runs,
+                          settings=self.settings)
         asyncio.run(run.advance())
         self.assertEqual(self.reason(run), sr.ERROR)
         self.assertEqual(run.state["status"], sr.ENDED)
@@ -318,18 +323,19 @@ class RunTests(LoopCase):
 
         def classification(root):
             calls.append(1)
-            # Reads 1 to 4: preflight, after the build, and the review's two (either side
-            # of its checks). The fifth is the partial diff's, after the reviewer failed.
-            if len(calls) > 4:
+            # Reads 1 to 5: preflight, approval, after the build, and the review's two
+            # (either side of its checks). The sixth is the partial diff's, after the
+            # reviewer failed.
+            if len(calls) > 5:
                 raise OSError("classification unreadable")
             return CAT_A
         deps = self.h.deps()
         deps.category_a = classification
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [providers.ProviderError("Codex failed")]
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=deps, log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings)
+        run = start_built("brief.md", "demo", str(self.personal), root=self.root,
+                          deps=deps, log_path=self.log, runs_dir=self.runs,
+                          settings=self.settings)
         asyncio.run(run.advance())
         self.assertEqual(self.reason(run), sr.ERROR)
         error = run.state["stop_reasons"][-1]["evidence"]["error"]
@@ -367,11 +373,16 @@ class RunTests(LoopCase):
 class UsageTests(LoopCase):
 
     def test_rejection_the_ceiling_stops_before_the_step(self):
-        self.h.readings = [reading(30), reading(85)]
+        # Since A3 chunk 3 a step is stopped only by its own provider's reading: Codex
+        # over the ceiling stops the Codex review, never the Claude build before it.
+        self.h.readings = [reading(30), reading(85), reading(85)]
+        self.h.builder_script = [edit(self.root, "x\n")]
         run = self.start()
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT, run.state["stop_reasons"][-1])
-        self.assertEqual(self.h.builders, [])  # no builder turn was made
+        self.assertEqual(run.state["step"], "build")  # the build ran; no review turn
+        self.assertEqual(self.h.review_calls, [])
         self.assertIn("ceiling", run.state["stop_reasons"][-1]["evidence"]["detail"])
+        self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["step"], "review-R1")
 
     def test_rejection_the_ceiling_at_preflight_refuses_the_run(self):
         self.h.readings = [reading(90)]
@@ -387,9 +398,13 @@ class UsageTests(LoopCase):
                 window="five_hour", reason="using paid overage")
             return edit(self.root, "x\n")(prompt)
         self.h.builder_script = [build]
+        self.h.reviews = [[finding()]]
         run = self.start()
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT, run.state["stop_reasons"][-1])
-        self.assertEqual(run.state["step"], "build")  # the build finished; review never ran
+        # Since A3 chunk 3 Claude's overage does not stop the Codex review; it stops the
+        # next Claude step, the fix pass, before it starts.
+        self.assertEqual(run.state["step"], "review-R1")
+        self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["step"], "fix-R1")
         self.assertIn("paid overage", run.state["stop_reasons"][-1]["evidence"]["detail"])
 
     def test_rejection_a_changed_credit_balance_stops_the_codex_step(self):
@@ -451,7 +466,9 @@ class UsageTests(LoopCase):
         self.assertIn("Codex usage not reported: x", caught.exception.args[0][0])
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        run = self.start(inject="build")
+        # The next step is the Codex review, so untrackable credits refuse the resume
+        # (a resume whose next step is a Claude one records them as read, A3 chunk 3).
+        run = self.start(inject="review-R1")
         self.h.readings = [reading(credits=None, source="unavailable")]
         with self.assertRaises(loop.RunRefused) as caught:
             loop.resume(run)
@@ -468,9 +485,9 @@ class UsageTests(LoopCase):
     def test_rejection_a_start_inside_codex_sandbox_is_refused_saying_so(self):
         """The reading Codex answers inside its sandbox, in a process a Codex session
         started (probed 2026-10-12), refuses the start naming the sandbox and the way
-        out, with nothing created, instead of "credits cannot be tracked". Docker starts
-        stopped, so the start launches it before the reading and the refusal must stop
-        it again (code review R1-1)."""
+        out, with nothing created, instead of "credits cannot be tracked". Docker is
+        stopped, and since A3 chunk 3 a start only asks its status (code review R1-1's
+        stop is approval's now), so nothing is started."""
         self.h.docker_up = False
         self.h.readings = [self.sandboxed_reading()]
         with mock.patch.dict(os.environ, {loop.CODEX_SESSION_ENV: "thread-1"}):
@@ -481,7 +498,7 @@ class UsageTests(LoopCase):
         self.assertIn("run the same command again outside the sandbox", message)
         self.assertIn("authentication required to read rate limits", message)
         self.assertNotIn("credits cannot be tracked", message)
-        self.assertEqual(self.h.docker_calls, ["status", "start", "stop"])
+        self.assertEqual(self.h.docker_calls, ["status"])
         self.assertFalse(self.h.docker_up)
         self.assertFalse(self.runs.exists())
 
@@ -547,9 +564,9 @@ class UsageTests(LoopCase):
             return reading()
         deps = self.h.deps()
         deps.read_codex = read
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=deps, log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings)
+        run = start_built("brief.md", "demo", str(self.personal), root=self.root,
+                          deps=deps, log_path=self.log, runs_dir=self.runs,
+                          settings=self.settings)
         asyncio.run(run.advance())
         self.assertEqual(self.reason(run), sr.ERROR)
         self.assertIn("usage reading", run.state["stop_reasons"][-1]["evidence"]["error"])
@@ -562,7 +579,7 @@ class LimitStopTests(LoopCase):
         self.h.reviews = [[]]
         run = self.start(inject="build")
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
-        self.assertEqual(run.state["step"], "preflight")  # the last completed step
+        self.assertEqual(run.state["step"], loop.APPROVED_STEP)  # the last completed step
         self.assertTrue(run.state["inject"]["fired"])
         self.assertIn("injected", run.state["stop_reasons"][-1]["evidence"]["detail"])
         again = self.resume(run)
@@ -616,8 +633,10 @@ class LimitStopTests(LoopCase):
         secondary = limits.Reading(limits.CODEX, limits.REPORTED, percent=85,
                                    window="secondary", resets_at=second, raw=credits)
         # The first window resets while the second remains over the ceiling.
-        # The resumed preflight must reach before_step to record the later reset.
-        self.h.readings = [reading(), primary, secondary, secondary]
+        # The resumed preflight must reach before_step to record the later reset. Since
+        # A3 chunk 3 Codex's readings stop only a Codex step, so the stops come before
+        # the review, after a build read at 30%.
+        self.h.readings = [reading(), reading(), primary, secondary, secondary]
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         deps = self.h.deps()
@@ -627,9 +646,9 @@ class LimitStopTests(LoopCase):
             self.h.clock += seconds
 
         deps.sleep = sleep
-        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
-                         deps=deps, log_path=self.log, runs_dir=self.runs,
-                         settings=self.settings, builder="claude", wait=True)
+        run = start_built("brief.md", "demo", str(self.personal), root=self.root,
+                          deps=deps, log_path=self.log, runs_dir=self.runs,
+                          settings=self.settings, builder="claude", wait=True)
         asyncio.run(run.advance())
         self.assertEqual(self.h.slept, [600 + loop.WAIT_MARGIN_SECONDS, 600])
         self.assertEqual([stop["reason"] for stop in run.state["stop_reasons"]],
@@ -723,14 +742,22 @@ class PreflightTests(LoopCase):
         before = {name: (run.run_dir / name).read_bytes()
                   for name in ("state.json", "report.md", "report.json")}
         log_before = self.log.read_bytes()
-        for trouble in (reading(credits=None), RuntimeError("transport closed")):
+        # The next step is the Claude fix pass, so since A3 chunk 3 untrackable credits
+        # no longer refuse this resume (they are recorded as read); a claim already held
+        # (resume.lock, plan 10.10 item 5) is the second refusal tried instead.
+        lock = run.run_dir / loop.LOCK_FILE
+        for trouble in ("a claim already held", RuntimeError("transport closed")):
             deps = self.h.deps()
-            deps.read_codex = (lambda root, folder=None, r=trouble: (_ for _ in ()).throw(r)) \
-                if isinstance(trouble, Exception) else (lambda root, folder=None, r=trouble: r)
+            if isinstance(trouble, Exception):
+                deps.read_codex = (lambda root, folder=None, r=trouble:
+                                   (_ for _ in ()).throw(r))
+            else:
+                lock.write_bytes(b"held\n")
             again = loop.load(run.state["run_id"], root=self.root, deps=deps,
                               log_path=self.log, runs_dir=self.runs)
             with self.assertRaises(loop.RunRefused):
                 loop.resume(again, rounds=1)
+            lock.unlink(missing_ok=True)
             for name, content in before.items():
                 self.assertEqual((run.run_dir / name).read_bytes(), content, name)
             self.assertEqual(self.log.read_bytes(), log_before)
@@ -892,7 +919,8 @@ class FrozenFolderStartTests(LoopCase):
     def test_rejection_a_first_state_write_that_fails_removes_the_half_made_folder(self):
         # Code review R29-1: create_run made the folder, then its first state.json
         # write failed. The folder this attempt made goes, with the frozen folder; the
-        # start is refused and the Docker it started is stopped.
+        # start is refused. Since A3 chunk 3 a start makes no Docker command but the
+        # status query, so there is no Docker of its own to stop.
         self.h.docker_up = False
         original = runrecord.write_state
 
@@ -910,7 +938,8 @@ class FrozenFolderStartTests(LoopCase):
         call, = self.h.frozen_calls
         self.assertFalse((self.runs / call["run_id"]).exists())
         self.assertFalse((self.root.parent / "frozen" / call["run_id"]).exists())
-        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+        self.assertEqual(self.h.docker_calls, ["status"])
+        self.assertFalse(self.h.docker_up)
 
     def test_negative_a_run_folder_that_was_already_there_is_never_removed(self):
         # The run id's folder existing before the attempt: create_run refuses it, and
@@ -954,8 +983,34 @@ class FrozenFolderStartTests(LoopCase):
 
 class DockerStartTests(LoopCase):
     """Orchestrator isolation S6b, plan 7.1 items 1 to 4 and section 8 ("Dry run",
-    "Refused start and Docker"): Docker at the start, the read-only start check, and
-    the image step, against the harness's fake Docker (no test touches the real one)."""
+    "Refused start and Docker"), as A3 chunk 3 moved them (plan 10.3 step 6, "Docker and
+    the check image wait for approval"): a start makes the read-only start check and
+    Docker's status query and nothing else of Docker; Docker and the image step are
+    approval's, and every refusal there stops a Docker that approval started. Against
+    the harness's fake Docker (no test touches the real one)."""
+
+    def paused(self):
+        """A run at the approval pause, its start's Docker calls cleared."""
+        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                         deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                         settings=self.settings, builder="claude")
+        pause_planned(run)
+        self.h.docker_calls.clear()
+        return run
+
+    def approve_refused(self, run):
+        with redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(loop.RunRefused) as caught:
+            loop.approve(run)
+        self.err = err.getvalue()
+        return " ".join(caught.exception.args[0])
+
+    def approve_command(self, run):
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = run_py.main(["--approve", run.state["run_id"]], root=self.root,
+                               log_path=self.log, deps=self.h.deps(), runs_dir=self.runs)
+        return code, out.getvalue()
 
     def dry(self):
         err = io.StringIO()
@@ -977,31 +1032,27 @@ class DockerStartTests(LoopCase):
         text = self.dry()
         self.assertIn("the close-out verifier's clean-start check passed", text)
         self.assertIn("Docker is running", text)
-        self.assertIn(f"The check image {self.h.image_tag}: a real start would reuse it",
-                      text)
+        self.assertIn("Docker and the check image wait for --approve", text)
         self.assertEqual(self.h.start_check_calls, [{"read_only": True}])
-        self.assertEqual(self.h.docker_calls, ["status", "status", "inspect"])
-        call, = self.h.image_calls
-        self.assertTrue(call["dry_run"])
-        self.assertFalse(call["work_dir"].exists(), "the temporary folder is removed")
+        self.assertEqual(self.h.docker_calls, ["status"])
+        self.assertEqual(self.h.image_calls, [], "no image step before approval")
         self.assertFalse(self.runs.exists())
         self.assertFalse(self.log.exists())
 
     def test_positive_a_dry_run_previews_a_build_when_the_tag_is_absent(self):
+        # Since A3 chunk 3 the image waits for approval, so even a missing tag is
+        # neither asked about nor built by a start's dry run.
         self.h.image_exists = False
         text = self.dry()
-        self.assertIn("a real start would build it", text)
+        self.assertNotIn("build it", text)
+        self.assertNotIn("inspect", self.h.docker_calls)
         self.assertNotIn("build", self.h.docker_calls)
 
     def test_rejection_a_dry_run_with_docker_stopped_starts_nothing(self):
-        # R24-1: only the engine can say whether the tag exists, and a dry run never
-        # starts it, so the image is reported unknown.
         self.h.docker_up = False
         text = self.dry()
-        self.assertIn("Docker is not running; a real start would start it", text)
-        self.assertIn("The check image bookdragon-checks:0123456789ab: unknown: Docker is "
-                      "not running", text)  # written out, not read from the code (R29-3)
-        self.assertEqual(set(self.h.docker_calls), {"status"})
+        self.assertIn("Docker is not running; approval will start it", text)
+        self.assertEqual(self.h.docker_calls, ["status"])
         self.assertFalse(self.h.docker_up)
 
     def test_rejection_a_failing_real_start_check_never_reaches_the_image_step(self):
@@ -1012,42 +1063,47 @@ class DockerStartTests(LoopCase):
         self.assertFalse(self.runs.exists())
 
     def test_rejection_a_start_that_started_docker_stops_it_once_when_the_check_refuses(self):
+        # A start no longer starts Docker at all: a refused start check leaves a
+        # stopped Docker stopped, with the status query its one Docker command.
         self.h.docker_up = False
         self.h.baseline = {"clean": False, "status": "fail", "problems": ["x"]}
         self.refused()
-        self.assertEqual(self.h.docker_calls, ["status", "start", "stop"])
+        self.assertEqual(self.h.docker_calls, ["status"])
+        self.assertFalse(self.h.docker_up)
 
     def test_rejection_a_start_that_started_docker_stops_it_once_when_the_image_refuses(self):
+        # The image step is approval's: an approval that started Docker stops it once
+        # when the image refuses, leaves no temporary folder and stays approvable.
         self.h.docker_up = False
+        run = self.paused()
         self.h.image_error = container.ContainerError("build failed")
-        text = self.refused()
+        text = self.approve_refused(run)
         self.assertIn("the check image: build failed", text)
         self.assertEqual(self.h.docker_calls.count("stop"), 1)
         self.assertEqual(self.h.docker_calls[-1], "stop")
         call, = self.h.image_calls
         self.assertFalse(call["work_dir"].exists(), "no temporary folder left")
-        self.assertFalse(self.runs.exists())
+        self.assertEqual(runrecord.read_state(run.run_dir)["pause"],
+                         sr.AWAITING_PLAN_APPROVAL)
 
     def test_rejection_a_start_that_started_docker_stops_it_when_the_usage_refuses(self):
         self.h.docker_up = False
         self.h.readings = [reading(percent=95)]
         self.assertIn("usage", self.refused())
-        self.assertEqual(self.h.docker_calls, ["status", "start", "stop"])
+        self.assertEqual(self.h.docker_calls, ["status"])
+        self.assertFalse(self.runs.exists())
 
     def test_rejection_a_file_error_in_the_image_step_is_a_refusal(self):
-        # Code review R30-1: a constraints or build-context write failing is the image
-        # step's refusal through run.py (exit 3), not a traceback; the temporary folder
-        # goes and the Docker this run started is stopped.
+        # Code review R30-1, at approval since A3 chunk 3: a constraints or
+        # build-context write failing is the image step's refusal through run.py (exit
+        # 3), not a traceback; the temporary folder goes and the Docker the approval
+        # started is stopped.
         self.h.docker_up = False
+        run = self.paused()
         self.h.image_error = PermissionError(13, "Access is denied")
-        out = io.StringIO()
-        with redirect_stdout(out), redirect_stderr(io.StringIO()):
-            code = run_py.main(["--run", "brief.md", "--builder", "claude", "--item",
-                                "demo", "--git-dir", str(self.personal)],
-                               root=self.root, log_path=self.log, deps=self.h.deps(),
-                               runs_dir=self.runs)
+        code, out = self.approve_command(run)
         self.assertEqual(code, run_py.REFUSED)
-        self.assertIn("the check image: PermissionError", out.getvalue())
+        self.assertIn("the check image: PermissionError", out)
         call, = self.h.image_calls
         self.assertFalse(call["work_dir"].exists())
         self.assertEqual(self.h.docker_calls.count("stop"), 1)
@@ -1064,57 +1120,51 @@ class DockerStartTests(LoopCase):
         return mock.patch.object(loop.container, "remove_copy", remove)
 
     def test_rejection_an_image_folder_left_after_a_start_is_reported_not_hidden(self):
-        self.h.builder_script = [edit(self.root, "x\n")]
-        self.h.reviews = [[]]
+        # At approval since A3 chunk 3: the approval goes ahead and says so.
+        run = self.paused()
         err = io.StringIO()
         with self.keep_image_folder(), redirect_stderr(err):
-            run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN, "the start went ahead")
+            loop.approve(run)
+        self.assertEqual(run.state["status"], sr.RUNNING, "the approval went ahead")
         self.assertIn("WARNING: the image step's temporary folder", err.getvalue())
-        left = [c for c in run.state["cleanup"]
-                if c["what"] == "the image step's temporary folder"]
-        self.assertEqual(len(left), 1)
-        self.assertFalse(left[0]["removed"])
-        self.assertIn("delete it by hand", left[0]["error"])
+        self.assertIn("delete it by hand", err.getvalue())
         shutil.rmtree(self.h.image_calls[0]["work_dir"], ignore_errors=True)
 
     def test_rejection_an_image_folder_left_after_a_refusal_is_in_the_refusal(self):
+        run = self.paused()
         self.h.image_error = container.ContainerError("build failed")
         with self.keep_image_folder():
-            text = self.refused()
+            text = self.approve_refused(run)
         self.assertIn("the check image: build failed", text)
-        self.assertIn("the image step's temporary folder", text)
-        self.assertIn("could not be removed", text)
+        self.assertIn("the image step's temporary folder", self.err)
+        self.assertIn("could not be removed", self.err)
         shutil.rmtree(self.h.image_calls[0]["work_dir"], ignore_errors=True)
 
     def test_rejection_a_temporary_folder_that_cannot_be_made_is_a_refusal(self):
         self.h.docker_up = False
+        run = self.paused()
         with mock.patch.object(loop.tempfile, "mkdtemp",
                                side_effect=PermissionError(13, "Access is denied")):
-            text = self.refused()
+            text = self.approve_refused(run)
         self.assertIn("its temporary folder could not be made", text)
         self.assertEqual(self.h.image_calls, [])
         self.assertEqual(self.h.docker_calls.count("stop"), 1)
 
     def test_negative_docker_already_running_is_left_running_after_a_refusal(self):
+        run = self.paused()
         self.h.image_error = container.ContainerError("build failed")
-        self.refused()
+        self.approve_refused(run)
         self.assertNotIn("stop", self.h.docker_calls)
         self.assertTrue(self.h.docker_up)
 
     def test_rejection_a_failing_stop_is_printed_with_the_refusal_and_keeps_its_code(self):
         self.h.docker_up = False
+        run = self.paused()
         self.h.docker_stop_error = container.ContainerError("stop refused")
-        self.h.baseline = {"clean": False, "status": "fail", "problems": ["x"]}
-        out = io.StringIO()
-        with redirect_stdout(out), redirect_stderr(io.StringIO()):
-            code = run_py.main(["--run", "brief.md", "--builder", "claude", "--item",
-                                "demo", "--git-dir", str(self.personal)],
-                               root=self.root, log_path=self.log, deps=self.h.deps(),
-                               runs_dir=self.runs)
+        self.h.image_error = container.ContainerError("build failed")
+        code, text = self.approve_command(run)
         self.assertEqual(code, run_py.REFUSED)
-        text = out.getvalue()
-        self.assertIn("not clean", text)
+        self.assertIn("the check image: build failed", text)
         self.assertIn("could not be stopped again: stop refused", text)
 
     def test_rejection_a_dry_run_whose_docker_status_fails_is_refused(self):
@@ -1134,16 +1184,27 @@ class DockerStartTests(LoopCase):
 
     def test_rejection_docker_that_cannot_be_started_refuses_with_nothing_to_stop(self):
         self.h.docker_up = False
+        run = self.paused()
         self.h.docker_start_error = container.ContainerError("no engine")
-        self.assertIn("Docker: no engine", self.refused())
+        self.assertIn("Docker: no engine", self.approve_refused(run))
         self.assertNotIn("stop", self.h.docker_calls)
-        self.assertEqual(self.h.start_check_calls, [])
+        self.assertEqual(self.h.image_calls, [])
+        self.assertFalse((Path(run.state["frozen_dir"])
+                          / codex_rules.APPROVAL_FILE).exists())
 
 
 class ConstraintsFileTests(LoopCase):
-    """Decision 32 and R24-3 (plan 5.2, 7.1 item 4): the image step runs before the run
-    record exists, writing its constraints file to a temporary folder; a started run
-    keeps the file as runs/<run-id>/image/constraints.txt and the folder is removed."""
+    """Decision 32 and R24-3 (plan 5.2, 7.1 item 4), as A3 chunk 3 moved the image step
+    to approval: approval writes the constraints file to a temporary folder, the run
+    keeps it as runs/<run-id>/image/constraints.txt and the folder is removed; a start
+    makes no image step, and one that fails once its record exists removes the record
+    and the frozen folder (R28-1)."""
+
+    def broken_record_start(self):
+        """``worktree.record_start`` failing, a write made once runs/<run-id>/ exists."""
+        def refuse(*args, **kwargs):
+            raise FileNotFoundError(2, "No such file", "start")
+        return mock.patch.object(loop.worktree, "record_start", refuse)
 
     def test_positive_the_file_is_copied_into_the_run_record_once_it_exists(self):
         self.h.builder_script = [edit(self.root, "x\n")]
@@ -1151,7 +1212,8 @@ class ConstraintsFileTests(LoopCase):
         run = self.start()
         call, = self.h.image_calls
         self.assertFalse(call["dry_run"])
-        self.assertEqual(call["runs_existed"], [], "the image step ran before the record")
+        self.assertEqual(call["runs_existed"], [run.state["run_id"]],
+                         "the image step runs at approval, after the record")
         self.assertEqual((run.run_dir / "image" / "constraints.txt").read_bytes(),
                          b"pkg==1.0\n")
         self.assertFalse(call["work_dir"].exists(), "the temporary folder is removed")
@@ -1165,19 +1227,18 @@ class ConstraintsFileTests(LoopCase):
             loop.start("brief.md", "demo", str(self.personal), root=self.root,
                        deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
                        settings=self.settings, builder="claude")
-        call, = self.h.image_calls
-        self.assertFalse(call["work_dir"].exists())
+        self.assertEqual(self.h.image_calls, [], "a start makes no image step")
         self.assertFalse(self.runs.exists())
 
     def test_rejection_a_failure_after_the_record_is_made_removes_it_and_refuses(self):
-        # Code review R28-1: a write failing once runs/<run-id>/ exists (here the
-        # constraints copy) removes the new record and frozen folder, refuses the start
-        # through run.py (exit 3, no traceback), stops a Docker this run started, and
-        # appends no started entry.
+        # Code review R28-1: a write failing once runs/<run-id>/ exists (here the start
+        # record) removes the new record and frozen folder, refuses the start through
+        # run.py (exit 3, no traceback), and appends no started entry. Since A3 chunk 3
+        # a start makes no Docker command but the status query.
         self.h.docker_up = False
-        self.h.constraints_missing = True
         out = io.StringIO()
-        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+        with self.broken_record_start(), redirect_stdout(out), \
+                redirect_stderr(io.StringIO()):
             code = run_py.main(["--run", "brief.md", "--builder", "claude", "--item",
                                 "demo", "--git-dir", str(self.personal)],
                                root=self.root, log_path=self.log, deps=self.h.deps(),
@@ -1188,11 +1249,10 @@ class ConstraintsFileTests(LoopCase):
         call, = self.h.frozen_calls
         self.assertEqual(list(self.runs.glob("*")), [], "no half-made run record")
         self.assertFalse((self.root.parent / "frozen" / call["run_id"]).exists())
-        self.assertEqual(self.h.docker_calls.count("stop"), 1)
+        self.assertEqual(self.h.docker_calls, ["status"])
         self.assertFalse(self.log.exists(), "no started entry")
 
     def test_rejection_a_half_made_record_that_cannot_be_removed_is_named(self):
-        self.h.constraints_missing = True
         original = container.remove_copy
 
         def refuse(folder):
@@ -1200,6 +1260,7 @@ class ConstraintsFileTests(LoopCase):
                 raise PermissionError(13, "Access is denied", str(folder))
             return original(folder)
         with mock.patch.object(loop.container, "remove_copy", refuse), \
+                self.broken_record_start(), \
                 redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused) as caught:
             loop.start("brief.md", "demo", str(self.personal), root=self.root,
                        deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
@@ -1219,7 +1280,7 @@ class ConstraintsFileTests(LoopCase):
         run = self.start()
         self.assertEqual(run.state["image"]["built"], True)
         self.assertIn("build", self.h.docker_calls)
-        self.assertIn(f"image {self.h.image_tag}: built at the start",
+        self.assertIn(f"image {self.h.image_tag}: built at approval",
                       (run.run_dir / "report.md").read_text(encoding="utf-8"))
 
 
@@ -1244,8 +1305,11 @@ class EndOfRunTests(LoopCase):
                 ("max-rounds", lambda: setattr(self.h, "reviews", [[finding()]])),
                 ("error", lambda: setattr(self.h, "check_error",
                                           container.ContainerError("engine gone"))),
+                # Codex over the ceiling stops the Codex review (A3 chunk 3: each step
+                # is stopped only by its own provider's reading).
                 ("usage-limit", lambda: setattr(self.h, "readings",
-                                                [reading(), reading(percent=95)]))):
+                                                [reading(), reading(),
+                                                 reading(percent=95)]))):
             with self.subTest(reason=name):
                 self.reset_work()
                 self.h = Harness(self.root)
