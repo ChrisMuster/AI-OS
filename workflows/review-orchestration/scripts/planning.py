@@ -431,6 +431,7 @@ def _record_session(run, step, role, provider, session, record):
     if record.launch is not None:
         state.setdefault("live", {}).setdefault(f"codex_{role}_launches", []).append(
             {"step": step, **record.launch})
+    _store_callbacks(run, step, role, getattr(record, "callbacks", None))
     state.setdefault("steps", []).append(
         {"step": step, "role": role, "provider": provider,
          "model": getattr(session, "model", None), "tokens": record.tokens,
@@ -439,6 +440,23 @@ def _record_session(run, step, role, provider, session, record):
          "thread_id": record.thread_id})
     loop._write_json(run.run_dir / "transcripts" / f"{step}.json",
                      {"reply": record.reply, "raw": record.raw})
+
+
+def _store_callbacks(run, step, role, record):
+    """A Claude read-only session's callback record, under
+    ``live.claude_<role>_callbacks`` with its step (the A3 proof run's live checks,
+    after decision 39); a Codex session has none."""
+    if record is not None:
+        run.state.setdefault("live", {}).setdefault(
+            f"claude_{role}_callbacks", []).append({"step": step, **record})
+
+
+def _failed_callbacks(run, step, role, session):
+    """What a Claude session's callback judged before it failed, kept as a failed
+    Claude builder turn's record is."""
+    record = getattr(session, "callback_record", None)
+    if callable(record):
+        _store_callbacks(run, step, role, record())
 
 
 def _usage_evidence(exc, step):
@@ -543,11 +561,19 @@ async def _planners(run):
     results = await asyncio.gather(
         *(asyncio.to_thread(session.review, prompt, PLANNER_SCHEMA)
           for session in sessions), return_exceptions=True)
+    failed_any = any(isinstance(result, BaseException) for result in results)
     for provider, session, result in zip(PROVIDERS, sessions, results):
         if isinstance(result, BaseException):
             for refusal in getattr(session, "refusals", None) or ():
                 state.setdefault("refusals", []).append(
                     {"step": f"planner-{provider}", **refusal})
+            _failed_callbacks(run, f"planner-{provider}", "planner", session)
+        elif failed_any:
+            # The other planner failed, so the step ends before ``_record_session``
+            # stores this one; its callback record is kept here, once, and the step
+            # is not marked complete (code review R46-1).
+            _store_callbacks(run, f"planner-{provider}", "planner",
+                             getattr(result, "callbacks", None))
     limited = [(p, r) for p, r in zip(PROVIDERS, results)
                if isinstance(r, limits.UsageLimitError)]
     if limited:
@@ -678,15 +704,18 @@ async def _synthesis(run):
     provider = run.settings["roles"]["builder"]
     if await _check_usage(run, SYNTHESIS, provider):
         return
+    session = None
     try:
         session = run.deps.make_synthesiser(run.settings, run.root, run.claude_usage,
                                             run.state["frozen_dir"])
         record = await asyncio.to_thread(session.review, synthesiser_prompt(run),
                                          SYNTHESIS_SCHEMA)
     except limits.UsageLimitError as exc:
+        _failed_callbacks(run, SYNTHESIS, "synthesiser", session)
         end(run, sr.USAGE_LIMIT, _usage_evidence(exc, SYNTHESIS))
         return
     except Exception as exc:  # noqa: BLE001 - a provider failure
+        _failed_callbacks(run, SYNTHESIS, "synthesiser", session)
         end(run, sr.ERROR, {"step": SYNTHESIS, "error": f"{type(exc).__name__}: {exc}"})
         return
     _record_session(run, SYNTHESIS, "synthesiser", provider, session, record)
@@ -785,11 +814,13 @@ async def _review_round(run, label, step):
         record = await asyncio.to_thread(_review_once, run, session,
                                          plan_reviewer_prompt(run, label))
     except limits.UsageLimitError as exc:
+        _failed_callbacks(run, step, "plan_reviewer", session)
         end(run, sr.USAGE_LIMIT, _usage_evidence(exc, step))
         return
     except Exception as exc:  # noqa: BLE001 - a provider failure
         for refusal in getattr(session, "refusals", None) or ():
             state.setdefault("refusals", []).append({"step": step, **refusal})
+        _failed_callbacks(run, step, "plan_reviewer", session)
         end(run, sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
         return
     _record_session(run, step, "plan_reviewer", provider, session, record)
@@ -856,15 +887,18 @@ async def _revise(run, label, step):
     if await _check_usage(run, step, provider):
         return
     open_labels = run.ledger.open_labels()
+    session = None
     try:
         session = run.deps.make_synthesiser(run.settings, run.root, run.claude_usage,
                                             state["frozen_dir"])
         record = await asyncio.to_thread(session.review, revision_prompt(run, label),
                                          REVISION_SCHEMA)
     except limits.UsageLimitError as exc:
+        _failed_callbacks(run, step, "synthesiser", session)
         end(run, sr.USAGE_LIMIT, _usage_evidence(exc, step))
         return
     except Exception as exc:  # noqa: BLE001 - a provider failure
+        _failed_callbacks(run, step, "synthesiser", session)
         end(run, sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
         return
     _record_session(run, step, "synthesiser", provider, session, record)

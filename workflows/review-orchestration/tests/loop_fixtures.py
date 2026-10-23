@@ -214,6 +214,15 @@ def revision_reply(action="fixed", **changes):
     return answer
 
 
+def callback_stub(role):
+    """A Claude read-only session's callback record as the fakes report it (the A3
+    proof run's live checks): one allowed Read, its id naming the session's role."""
+    call = {"tool": "Read", "id": f"{role}-call"}
+    return {"judged": [{**call, "decision": "allow"}], "tool_uses": [dict(call)],
+            "not_judged": [], "rejected_before_hook": [], "not_in_transcript": [],
+            "duplicate_ids": [], "undecided": []}
+
+
 class FakePlanningSession:
     """A read-only planning session (planner, synthesiser or plan reviewer): records its
     prompt and schema in ``harness.planning_calls`` and answers from the harness's
@@ -221,12 +230,17 @@ class FakePlanningSession:
     findings each, an empty list when the script is spent, so a review is clean unless a
     test says otherwise); a synthesiser asked for a revision (its schema holds
     ``actions``) answers ``harness.revisions`` in turn, by default every open finding
-    ``fixed``."""
+    ``fixed``. With ``harness.claude_callbacks`` a Claude session also has a callback
+    record, ``callback_stub(role)``, returned with its review and held when it fails."""
 
     def __init__(self, harness, provider, role):
         self.harness, self.provider, self.role = harness, provider, role
         self.model = f"{provider}-{role}-model"
         self.refusals = []
+        self.callbacks = (callback_stub(role) if harness.claude_callbacks
+                          and provider == limits.CLAUDE else None)
+        if self.callbacks is not None:
+            self.callback_record = lambda: self.callbacks
 
     def review(self, prompt, schema):
         h = self.harness
@@ -254,7 +268,7 @@ class FakePlanningSession:
             reply=json.loads(json.dumps(answer)),
             thread_id=f"{self.role}-session-{self.provider}-0001", status="completed",
             usage=usage, wall_seconds=0.1, raw={"r": self.provider}, tokens=15,
-            model=self.model)
+            model=self.model, callbacks=self.callbacks)
 
 
 class FakeUsage:
@@ -329,6 +343,10 @@ class Harness:
         # Decision 39: what a fake Claude builder reports as each turn's callback
         # record, one per turn; None gives the fake no callback_record at all.
         self.callback_records = None
+        # The A3 proof run's live checks: with this set, every fake Claude read-only
+        # session (planner, synthesiser, plan reviewer and reviewer) has a callback
+        # record, ``callback_stub`` of its role; unset, none has one, as before.
+        self.claude_callbacks = False
         # Orchestrator isolation S6b: a fake Docker and image step. No test starts or
         # stops the real Docker. ``docker_calls`` records every Docker action in order.
         self.docker_up = True
@@ -565,6 +583,10 @@ class FakeReviewer:
         self.provider = limits.CLAUDE if harness.swapped else limits.CODEX
         self.model = MODEL if harness.swapped else "gpt-6-sol"
         self.refusals = []
+        self.callbacks = (callback_stub("reviewer") if harness.claude_callbacks
+                          and harness.swapped else None)
+        if self.callbacks is not None:
+            self.callback_record = lambda: self.callbacks
 
     def review(self, prompt, schema):
         self.harness.review_calls.append((prompt, schema))
@@ -586,7 +608,8 @@ class FakeReviewer:
                 reply={"summary": "s", "findings": answer, "files_reviewed": listed},
                 thread_id="claude-session", status="completed", usage=usage,
                 wall_seconds=0.1, raw={"r": 1}, tokens=providers.claude_tokens(usage),
-                model=MODEL, refusals=list(self.harness.review_refusals))
+                model=MODEL, refusals=list(self.harness.review_refusals),
+                callbacks=self.callbacks)
         usage = {"total": {"total_tokens": 1000}}
         return providers.ReviewRecord(reply={"summary": "s", "findings": answer,
                                              "files_reviewed": listed},

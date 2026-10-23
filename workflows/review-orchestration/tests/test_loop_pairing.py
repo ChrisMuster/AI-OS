@@ -210,6 +210,35 @@ class ReversePairingTests(SwappedCase):
         self.assertEqual([(r["step"], r["tool"]) for r in run.state["refusals"]],
                          [("review-R1", "Bash")])
 
+    # The A3 proof run's live checks: the Claude reviewer's callback record per round.
+
+    def test_positive_each_claude_review_stores_its_callback_record_with_its_step(self):
+        self.h.claude_callbacks = True
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
+        self.h.reviews = [[finding()], []]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(run.state["live"]["claude_reviewer_callbacks"],
+                         [{"step": "review-R1", **callback_stub("reviewer")},
+                          {"step": "review-R2", **callback_stub("reviewer")}])
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("- claude_reviewer_callbacks: ", report)
+
+    def test_positive_a_failed_claude_review_still_stores_its_record(self):
+        self.h.claude_callbacks = True
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [providers.ProviderError("no structured reply")]
+        run = self.start()
+        self.assertEqual(self.reason(run), sr.ERROR)
+        self.assertEqual(run.state["live"]["claude_reviewer_callbacks"],
+                         [{"step": "review-R1", **callback_stub("reviewer")}])
+
+    def test_negative_a_reviewer_with_no_callback_record_adds_nothing(self):
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertNotIn("claude_reviewer_callbacks", run.state["live"])
+
     def test_positive_both_prompts_take_the_form_for_their_provider(self):
         self.h.builder_script = [edit(self.root, "x\n"),
                                  reply(actions(("R1-1", "fixed")))]
@@ -359,6 +388,13 @@ class TodaysPairingTests(LoopCase):
         self.h.reviews = [[]]
         run = self.start()
         self.assertNotIn("claude_builder_callbacks", run.state["live"])
+
+    def test_negative_a_codex_reviewer_adds_no_claude_reviewer_record(self):
+        self.h.claude_callbacks = True
+        self.h.builder_script = [edit(self.root, "done\n")]
+        self.h.reviews = [[]]
+        run = self.start()
+        self.assertNotIn("claude_reviewer_callbacks", run.state["live"])
 
 
 class TurnCheckTests(SwappedCase):

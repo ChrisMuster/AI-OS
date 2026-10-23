@@ -1267,6 +1267,18 @@ class Run:
             self.state.setdefault("live", {}).setdefault(
                 "claude_builder_callbacks", []).append({"step": step, **record()})
 
+    def _record_review_callbacks(self, step, record):
+        """A Claude reviewer's callback record for this step's round (the A3 proof
+        run's live checks, after decision 39), stored in
+        ``live.claude_reviewer_callbacks`` whether the round completed or failed:
+        the record a completed review returned, or the method a failed session
+        still holds. A Codex reviewer has none."""
+        if callable(record):
+            record = record()
+        if record is not None:
+            self.state.setdefault("live", {}).setdefault(
+                "claude_reviewer_callbacks", []).append({"step": step, **record})
+
     async def _close_builder(self):
         if self.builder is not None:
             try:
@@ -1506,8 +1518,11 @@ class Run:
             # What a reviewer was refused before its round failed still goes in the
             # report.
             self._take_refusals(step, getattr(reviewer, "refusals", None))
+            self._record_review_callbacks(step, getattr(reviewer, "callback_record",
+                                                        None))
             raise
         self._take_refusals(step, record.refusals)
+        self._record_review_callbacks(step, getattr(record, "callbacks", None))
         self._record_model(reviewer.provider, record.model)
         # A Codex reviewer's launch readings (plan 7.6 item 4, live check 4b).
         launch = getattr(record, "launch", None)

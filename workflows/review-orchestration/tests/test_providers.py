@@ -2054,6 +2054,103 @@ class ClaudeReviewerTests(unittest.TestCase):
             return await asyncio.to_thread(self.reviewer.review, "review this", self.SCHEMA)
         self.assertEqual(asyncio.run(from_the_loop()).reply, self.REPLY)
 
+    # ------------- the callback's record (the A3 proof run's live checks, as decision 39)
+
+    def fires(self, tool, call_id, tool_input=None):
+        """A scripted step: the callback judging one call mid-session, as the SDK calls
+        it before running the tool."""
+        reviewer = self.reviewer
+        return lambda: reviewer.pre_tool_use(
+            {"tool_name": tool, "tool_input": tool_input if tool_input is not None
+             else {"file_path": "notes/a.md"}}, call_id, None)
+
+    def test_positive_the_callback_records_every_call_with_its_decision(self):
+        # The allowed calls are the point: before this, an allowed call left no trace.
+        for tool, call_id, tool_input in (
+                ("Read", "r1", {"file_path": "notes/a.md"}),
+                ("Glob", "g1", {"pattern": "**/*.py"}),
+                ("StructuredOutput", "s1", self.REPLY),
+                ("Write", "w1", {"file_path": "x.txt"}),
+                ("Read", "r2", {"file_path": ".env"})):
+            asyncio.run(self.reviewer.pre_tool_use(
+                {"tool_name": tool, "tool_input": tool_input}, call_id, None))
+        self.assertEqual(self.reviewer.callback_calls, [
+            {"tool": "Read", "id": "r1", "decision": "allow"},
+            {"tool": "Glob", "id": "g1", "decision": "allow"},
+            {"tool": "StructuredOutput", "id": "s1", "decision": "allow"},
+            {"tool": "Write", "id": "w1", "decision": "deny"},
+            {"tool": "Read", "id": "r2", "decision": "deny"}])
+
+    def test_positive_a_session_returns_its_calls_and_tool_uses_matching(self):
+        record = self.review(init(), self.fires("Read", "r1"), used("Read", "r1"),
+                             returned("r1", "text"),
+                             self.fires("StructuredOutput", "s1", self.REPLY),
+                             used("StructuredOutput", "s1"), review_result(self.REPLY))
+        self.assertEqual(record.callbacks, {
+            "judged": [{"tool": "Read", "id": "r1", "decision": "allow"},
+                       {"tool": "StructuredOutput", "id": "s1", "decision": "allow"}],
+            "tool_uses": [{"tool": "Read", "id": "r1"},
+                          {"tool": "StructuredOutput", "id": "s1"}],
+            "not_judged": [], "rejected_before_hook": [], "not_in_transcript": [],
+            "duplicate_ids": [], "undecided": []})
+
+    def test_positive_a_refused_call_is_judged_and_matched(self):
+        record = self.review(init(), self.fires("Bash", "b1", {"command": "ls"}),
+                             used("Bash", "b1"),
+                             returned("b1", providers.REVIEWER_REFUSAL, is_error=True),
+                             review_result(self.REPLY))
+        self.assertEqual(record.callbacks["judged"],
+                         [{"tool": "Bash", "id": "b1", "decision": "deny"}])
+        self.assertEqual((record.callbacks["not_judged"],
+                          record.callbacks["not_in_transcript"]), ([], []))
+
+    def test_rejection_a_tool_use_the_callback_never_saw(self):
+        record = self.review(init(), self.fires("Read", "r1"), used("Read", "r1"),
+                             used("Grep", "g1"), review_result(self.REPLY))
+        self.assertEqual(record.callbacks["not_judged"], [{"id": "g1", "tool": "Grep"}])
+        self.assertEqual(record.callbacks["not_in_transcript"], [])
+
+    def test_rejection_a_judged_call_the_transcript_does_not_hold(self):
+        record = self.review(init(), self.fires("Read", "r1"), review_result(self.REPLY))
+        self.assertEqual(record.callbacks["not_in_transcript"],
+                         [{"id": "r1", "tool": "Read"}])
+        self.assertEqual(record.callbacks["not_judged"], [])
+
+    def test_rejection_a_failed_session_keeps_its_record(self):
+        # A usage-limit message's tool-use block is collected before the limit is
+        # raised (as R49-1 for the builder), so a failed session's record holds it.
+        limited = AssistantMessage(content=[ToolUseBlock(id="g1", name="Grep", input={})],
+                                   model=MODEL, error="rate_limit")
+        with self.assertRaises(limits.UsageLimitError):
+            self.review(init(), self.fires("Read", "r1"), used("Read", "r1"), limited,
+                        review_result(self.REPLY))
+        record = self.reviewer.callback_record()
+        self.assertEqual(record["tool_uses"], [{"tool": "Read", "id": "r1"},
+                                               {"tool": "Grep", "id": "g1"}])
+        self.assertEqual(record["not_judged"], [{"id": "g1", "tool": "Grep"}])
+
+    def test_rejection_a_callback_that_fails_records_no_decision(self):
+        def broken(name, tool_input):
+            raise RuntimeError("broken read rules")
+        real = providers.read_rules
+        providers.read_rules = broken
+        self.addCleanup(setattr, providers, "read_rules", real)
+        with self.assertRaisesRegex(RuntimeError, "broken read rules"):
+            self.hook("Read", {"file_path": "notes/a.md"})
+        self.assertEqual(self.reviewer.callback_calls,
+                         [{"tool": "Read", "id": "use-1", "decision": "pending"}])
+        self.assertEqual(self.reviewer.callback_record()["undecided"],
+                         [{"id": "use-1", "tool": "Read"}])
+
+    def test_negative_a_second_session_records_only_its_own_calls(self):
+        self.review(init(), self.fires("Read", "r1"), used("Read", "r1"),
+                    review_result(self.REPLY))
+        record = self.review(init(), self.fires("Glob", "g1"), used("Glob", "g1"),
+                             review_result(self.REPLY))
+        self.assertEqual(record.callbacks["judged"],
+                         [{"tool": "Glob", "id": "g1", "decision": "allow"}])
+        self.assertEqual(record.callbacks["tool_uses"], [{"tool": "Glob", "id": "g1"}])
+
 
 class RegistryTests(unittest.TestCase):
 

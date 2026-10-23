@@ -570,5 +570,102 @@ class LockTests(WiringCase):
         self.assertEqual(self.h.docker_calls.count("start"), 0)
 
 
+# --------------------------------- the read-only sessions' callback records
+
+
+class CallbackRecordTests(WiringCase):
+    """The A3 proof run's live checks: every Claude planner, synthesiser and plan
+    reviewer session's callback record is stored in the run record, under
+    ``live.claude_<role>_callbacks`` with its step, whether the session completed or
+    failed, as a Claude builder turn's is (decision 39); a Codex session adds none."""
+
+    def setUp(self):
+        super().setUp()
+        self.h.claude_callbacks = True
+
+    def plan(self, builder="claude"):
+        settings = settings_mod.assign_roles(settings_mod.load_settings(), builder)
+        run = loop.start("brief.md", "demo", str(self.personal), root=self.root,
+                         deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
+                         settings=settings, builder=builder)
+        asyncio.run(planning.advance(run))
+        return run
+
+    def stored(self, run, role):
+        return run.state["live"].get(f"claude_{role}_callbacks", [])
+
+    def steps(self, run, role):
+        return [s["step"] for s in run.state["steps"] if s["role"] == role]
+
+    def test_positive_claude_building_stores_its_planner_and_synthesiser_records(self):
+        run = self.plan()
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+        self.assertEqual(self.stored(run, "planner"),
+                         [{"step": "planner-claude", **callback_stub("planner")}])
+        self.assertEqual(self.stored(run, "synthesiser"),
+                         [{"step": "synthesis", **callback_stub("synthesiser")}])
+        self.assertEqual(self.stored(run, "plan_reviewer"), [], "Codex reviews the plan")
+
+    def test_positive_codex_building_stores_the_claude_plan_reviewers_record(self):
+        run = self.plan("codex")
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+        self.assertEqual(self.stored(run, "planner"),
+                         [{"step": "planner-claude", **callback_stub("planner")}])
+        review, = self.steps(run, "plan_reviewer")
+        self.assertEqual(self.stored(run, "plan_reviewer"),
+                         [{"step": review, **callback_stub("plan_reviewer")}])
+        self.assertEqual(self.stored(run, "synthesiser"), [], "Codex synthesises")
+
+    def test_positive_a_revision_stores_its_record_with_its_own_step(self):
+        self.h.plan_reviews = [[finding()], []]
+        run = self.plan()
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+        self.assertEqual([e["step"] for e in self.stored(run, "synthesiser")],
+                         ["synthesis", "plan-revise-R1"])
+
+    def test_positive_a_failed_session_still_stores_its_record(self):
+        for failure in (RuntimeError("the session broke"),
+                        limits.UsageLimitError(limits.CLAUDE, "limit reached")):
+            for role, script in (("planner", "planner_replies"), ("synthesiser", "synthesis")):
+                with self.subTest(role=role, failure=type(failure).__name__):
+                    self.setUp()
+                    if script == "planner_replies":
+                        self.h.planner_replies = {"claude": failure}
+                    else:
+                        self.h.synthesis = failure
+                    run = self.plan()
+                    self.assertIsNone(run.state.get("pause"))
+                    entry, = self.stored(run, role)
+                    self.assertEqual(entry["judged"], callback_stub(role)["judged"])
+
+    def test_positive_a_finished_claude_planner_is_stored_when_codex_fails(self):
+        # Code review R46-1: the step ends on the Codex planner's failure, before the
+        # Claude planner's completed session would be recorded.
+        for failure in (RuntimeError("the session broke"),
+                        limits.UsageLimitError(limits.CODEX, "limit reached")):
+            with self.subTest(failure=type(failure).__name__):
+                self.setUp()
+                self.h.planner_replies = {"codex": failure}
+                run = self.plan()
+                self.assertIsNone(run.state.get("pause"))
+                self.assertEqual(self.stored(run, "planner"),
+                                 [{"step": "planner-claude", **callback_stub("planner")}])
+                self.assertNotIn("planners", planning.planning_state(run)["completed"])
+
+    def test_positive_a_failed_claude_plan_review_still_stores_its_record(self):
+        self.h.plan_reviews = [providers.ProviderError("no structured reply")]
+        run = self.plan("codex")
+        self.assertEqual(self.reason(run), sr.ERROR)
+        entry, = self.stored(run, "plan_reviewer")
+        self.assertTrue(entry["step"].startswith("plan-review-R"))
+
+    def test_negative_sessions_with_no_callback_record_add_nothing(self):
+        self.h.claude_callbacks = False
+        run = self.plan()
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+        self.assertEqual([key for key in run.state["live"] if key.endswith("_callbacks")],
+                         [])
+
+
 if __name__ == "__main__":
     unittest.main()

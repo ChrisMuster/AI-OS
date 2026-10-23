@@ -319,6 +319,9 @@ class ReviewRecord:
     refusals: list = dataclasses.field(default_factory=list)
     # What a Codex reviewer's launch read back (plan 7.6 item 4, live check 4b).
     launch: dict | None = None
+    # A Claude read-only session's callback record, shaped as a Claude builder
+    # turn's (the A3 proof run's live checks); a Codex session has none.
+    callbacks: dict | None = None
 
 
 def claude_tokens(usage):
@@ -1324,22 +1327,48 @@ class ClaudeReviewer:
         self._client_factory = client_factory
         self.stderr = []
         self.refusals = []
+        # Every call the callback judged, as {"tool", "id", "decision"}, and the
+        # session's tool-use and tool-result blocks, compared by ``callback_record``
+        # as a Claude builder turn's are (decision 39), for the A3 proof run: without
+        # them an allowed call left no trace, so the callback was shown firing only
+        # by a refusal. One session per object; each ``review`` starts them afresh.
+        self.callback_calls = []
+        self._tool_uses = []
+        self._tool_results = []
 
     async def pre_tool_use(self, hook_input, tool_use_id, context):
         """Deny everything but the read tools and the reply. An allowed call gets no
         decision, so the project's own hooks and rules still run after this one."""
         name, tool_input = hook_input.get("tool_name"), hook_input.get("tool_input")
+        # Pending until a decision is made, so a callback that fails while judging
+        # claims none (as R49-2 for the builder).
+        judged = {"tool": name, "id": tool_use_id, "decision": PENDING}
+        self.callback_calls.append(judged)
         if name == STRUCTURED_OUTPUT_TOOL:
+            judged["decision"] = "allow"
             return {}
         reason = read_rules(name, tool_input) if name in REVIEWER_TOOLS else REVIEWER_REFUSAL
         if reason is None:
+            judged["decision"] = "allow"
             return {}
+        judged["decision"] = "deny"
         text = " ".join(str(tool_input).split())
         self.refusals.append({"tool": name, "reason": reason,
                               "detail": text if len(text) <= 300 else text[:297] + "..."})
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                        "permissionDecision": "deny",
                                        "permissionDecisionReason": reason}}
+
+    def callback_record(self):
+        """The session's callback record (the A3 proof run's live checks, after decision
+        39): every call the callback judged,
+        every tool-use block the session's assistant messages held, and their
+        comparison by ``callback_match``, as a Claude builder turn's record is."""
+        judged = [dict(call) for call in self.callback_calls]
+        tool_uses = [dict(use) for use in self._tool_uses]
+        tool_results = [dict(entry) for entry in self._tool_results]
+        return {"judged": judged, "tool_uses": tool_uses,
+                **callback_match(judged, tool_uses, tool_results)}
 
     def options(self, schema):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
@@ -1366,6 +1395,7 @@ class ClaudeReviewer:
         else:
             factory = self._client_factory
         started = time.time()
+        self.callback_calls, self._tool_uses, self._tool_results = [], [], []
         client = factory(options=self.options(schema))
         await client.connect()
         messages, result, init_model = [], None, None
@@ -1374,6 +1404,18 @@ class ClaudeReviewer:
             async for message in client.receive_response():
                 messages.append(jsonable(message))
                 kind = type(message).__name__
+                # Every block is collected before any check on its message can raise,
+                # so a failed session's record still holds it (as R49-1 and plan 10.7
+                # for the builder).
+                blocks = getattr(message, "content", None)
+                if isinstance(blocks, list):
+                    self._tool_results += [
+                        tool_result_entry(block) for block in blocks
+                        if type(block).__name__ == "ToolResultBlock"]
+                    if kind == "AssistantMessage":
+                        self._tool_uses += [
+                            {"tool": block.name, "id": block.id} for block in blocks
+                            if type(block).__name__ == "ToolUseBlock"]
                 if kind == "RateLimitEvent":
                     await watch_claude_event(client, self.usage, message)
                 elif kind == "SystemMessage" and getattr(message, "subtype", None) == "init":
@@ -1403,7 +1445,8 @@ class ClaudeReviewer:
                             usage=result.usage,
                             wall_seconds=round(time.time() - started, 1), raw=messages,
                             tokens=claude_tokens(result.usage), model=init_model,
-                            refusals=list(self.refusals))
+                            refusals=list(self.refusals),
+                            callbacks=self.callback_record())
 
 
 @dataclasses.dataclass
