@@ -11,9 +11,15 @@ Four parts, standard library only:
   The image     ``requirements_files`` (the root requirements.txt with every file it
                 includes, resolved as pip resolves them, plus this workflow's own),
                 ``write_constraints`` (``pip freeze --exclude-editable`` from the
-                project .venv), ``image_tag`` (a hash over both), ``build_image``,
-                which builds from a generated Dockerfile when the tag is absent and
-                then compares the image's package versions with the constraints, and
+                project .venv), ``image_tags`` (the tags pip in the base image
+                installs, asked of the image offline), ``fill_wheel_store`` (for each
+                pinned release the wheel pip there prefers, ``wheel_rank``, fetched
+                from its own PyPI record and checked by its SHA-256, kept outside the
+                project and reused), ``image_tag`` (a hash over the
+                requirements, the constraints and the Dockerfile), ``build_image``,
+                which builds from a generated Dockerfile when the tag is absent,
+                installing from the wheels with no index and no network, and then
+                compares the image's package versions with the constraints, and
                 ``prepare_image``, a run's image step (a build, or a dry run's
                 preview).
   The copy      ``start_ignored`` (the ignore floor, recorded once at run start),
@@ -35,15 +41,16 @@ and the checks after every builder turn) and the check helper from S7 (decision 
 """
 
 import hashlib
+import http.client
 import json
 import os
 import re
 import shutil
-import ssl
 import stat
 import subprocess
 import tempfile
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -245,63 +252,324 @@ def write_constraints(python, dest, run=_start):
     return dest
 
 
-TRUST_NAME = "host-roots.crt"
-SERVER_AUTH = "1.3.6.1.5.5.7.3.1"  # the TLS server authentication purpose
-IMAGE_TRUST_STORE = "/etc/ssl/certs/ca-certificates.crt"
+# ---------------------------------------------------------------------------
+# The wheel store (decision 41, replacing decision 26)
+# ---------------------------------------------------------------------------
+# The image installs its packages from a folder of wheels with its network off, and
+# the folder is filled on the host from each pinned release's own PyPI record, never
+# from PyPI's index pages. On the build machine an HTTPS scanner breaks one index
+# page (`/simple/mcp/`) every time while every release record and file comes through,
+# so a build that asks the index fails and one that asks for the pinned files does
+# not, and the image needs none of the host's certificates.
+WHEEL_STORE_DIR = "book-dragon-wheels"
+WHEELS_NAME = "wheels"
+PYPI_RELEASE = "https://pypi.org/pypi/{name}/{version}/json"
+PYPI_FILES = "https://files.pythonhosted.org/"
+FETCH_ATTEMPTS = 3
+FETCH_TIMEOUT = 120
+_SAFE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+_TAG_LINE = re.compile(r"[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+")
+# Run by Python in BASE_IMAGE, offline: every tag pip there installs, most preferred
+# first, one per line. ``packaging`` is the copy pip carries, so the answer is pip's
+# own (code review R50-1: three hand-written versions of it were each found wrong).
+# The list is framed by its count and an end line, so an answer cut short anywhere is
+# refused rather than read as a shorter list (code review R51-3).
+_IMAGE_TAGS = ("from pip._vendor.packaging.tags import sys_tags\n"
+               "tags = [str(t) for t in sys_tags()]\n"
+               "print('COUNT', len(tags))\n"
+               "print('\\n'.join(tags))\n"
+               "print('END')\n")
+_BUILD_TAG = re.compile(r"\d+[A-Za-z0-9_.]*")
+# A plain project-name component: letters and digits joined by single `_` or `.`, so a
+# doubled or trailing separator, which pip refuses (`__` among them), is never used
+# (code review R52-1).
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9]+(?:[._][A-Za-z0-9]+)*")
 
 
-def host_trust_bundle():
-    """The root certificates this machine trusts, as one PEM text, sorted and
-    without duplicates so the same trust always gives the same bytes. On Windows,
-    the system ROOT store; elsewhere, Python's default certificate file. An HTTPS
-    scanner on the host (antivirus re-signing every site with its own root, as on
-    the build machine) is trusted there, so the image build trusts it too."""
-    pems = set()
-    if hasattr(ssl, "enum_certificates"):
-        for der, encoding, trust in ssl.enum_certificates("ROOT"):
-            # Only a root Windows trusts for TLS servers: for every purpose (True),
-            # or with server authentication among its purposes (code review R14-1).
-            if encoding == "x509_asn" and (trust is True or SERVER_AUTH in trust):
-                pems.add(ssl.DER_cert_to_PEM_cert(der).replace("\r\n", "\n"))
-    else:
-        cafile = ssl.get_default_verify_paths().cafile
-        if cafile and Path(cafile).is_file():
-            text = Path(cafile).read_text(encoding="utf-8", errors="replace")
-            pems.update(re.findall(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----\n?",
-                                   text, re.DOTALL))
-    return "".join(p if p.endswith("\n") else p + "\n" for p in sorted(pems))
+def wheel_store():
+    """The store's folder, outside the project like the clean copies. Emptied by
+    anything that empties the temporary folder, which costs a fresh download only."""
+    return Path(tempfile.gettempdir()) / WHEEL_STORE_DIR
 
 
-def image_tag(root, files, constraints, trust=""):
+def image_tags():
+    """The tags pip in BASE_IMAGE installs, most preferred first, asked of the image
+    itself with one ``docker run`` that has no network. Nothing about the image's
+    Python, platform or glibc is assumed here, so a new base image needs no change.
+    Refused unless the answer is whole, its count line matching the tags between it
+    and the end line (R51-3), and is a list of well-formed tags that includes
+    ``py3-none-any``, which every Python 3 installs."""
+    result = docker(["run", "--rm", "--network", "none", BASE_IMAGE, "python", "-c",
+                     _IMAGE_TAGS], timeout=300)
+    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    count = re.fullmatch(r"COUNT (\d+)", lines[0]) if lines else None
+    tags = lines[1:-1]
+    if (result.returncode != 0 or not count or lines[-1] != "END"
+            or int(count.group(1)) != len(tags) or "py3-none-any" not in tags
+            or not all(_TAG_LINE.fullmatch(tag) for tag in tags)):
+        raise ContainerError(f"pip in {BASE_IMAGE} did not list the tags it installs: "
+                             + ((result.stderr or "").strip()[-600:]
+                                or f"exit {result.returncode}, {len(lines)} line(s), "
+                                   "not a whole framed list"))
+    return tags
+
+
+def _normal(name):
+    return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def _names_release(filename, name, version):
+    """Whether a wheel's name is plainly this release's: the project's name (as wheel
+    names spell it), exactly the pinned version, and a build tag, if any, of the
+    plain shape pip reads. Anything else is not used rather than interpreted (code
+    review R51-1: a name pip refuses must never be chosen)."""
+    parts = filename[:-4].split("-") if filename.endswith(".whl") else []
+    if len(parts) not in (5, 6):
+        return False
+    return (bool(_PLAIN_NAME.fullmatch(parts[0]))
+            and _normal(parts[0]) == _normal(name) and parts[1] == version
+            and (len(parts) == 5 or bool(_BUILD_TAG.fullmatch(parts[2]))))
+
+
+def wheel_rank(filename, ranks):
+    """Where this wheel stands in the image's preference, or None if pip there would
+    not install it: the best rank of any tag its compressed tag sets expand to. Each
+    tag is looked up as pip reads a wheel name (``packaging.utils.
+    parse_wheel_filename``): lowercased, otherwise as written, so ``manylinux_2_05``
+    is not ``manylinux_2_5``. ``ranks`` maps a tag to its position in
+    ``image_tags()``."""
+    if not filename.endswith(".whl"):
+        return None
+    parts = filename[:-4].split("-")
+    if len(parts) not in (5, 6):
+        return None
+    pythons, abis, platforms = (part.lower().split(".") for part in parts[-3:])
+    found = [ranks[f"{p}-{a}-{pl}"] for p in pythons for a in abis for pl in platforms
+             if f"{p}-{a}-{pl}" in ranks]
+    return min(found) if found else None
+
+
+def _pins(constraints):
+    """The ``name==version`` lines of a constraints file, in file order."""
+    pins = []
+    for line in Path(constraints).read_text(encoding="utf-8").splitlines():
+        match = _FREEZE_LINE.match(line)
+        if match:
+            pins.append((match.group(1), match.group(2)))
+    return pins
+
+
+def _get(url):
+    """One HTTPS GET with the host's own certificate store, so an HTTPS scanner the
+    host trusts is trusted here and every certificate is still verified."""
+    with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT) as response:
+        return response.read()
+
+
+def _fetch(get, url, what):
+    """``get(url)``, tried FETCH_ATTEMPTS times; the last failure is a
+    ``ContainerError`` naming what was being fetched and from where."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return get(url)
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise ContainerError(f"{what} could not be downloaded from {url} "
+                                     f"({FETCH_ATTEMPTS} tries): {exc}") from exc
+    raise AssertionError("unreachable")
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _checked_file(entry, release):
+    """A release record's file entry, refused unless its name is a plain file name,
+    its address is PyPI's file host and it carries a SHA-256."""
+    name, url = entry.get("filename"), entry.get("url")
+    sha = (entry.get("digests") or {}).get("sha256")
+    if not (isinstance(name, str) and _SAFE_FILE.fullmatch(name)
+            and isinstance(url, str) and url.startswith(PYPI_FILES)
+            and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+        raise ContainerError(f"the PyPI record for {release} lists a file this build "
+                             f"will not take: {entry.get('filename')!r}")
+    return name, url, sha
+
+
+def _stored(folder, entry, release, get):
+    """The file a release record names, in ``folder``: reused when the copy there
+    has the record's SHA-256, else downloaded and checked before it is kept."""
+    name, url, sha = _checked_file(entry, release)
+    target = folder / name
+    if target.is_file() and _sha256(target) == sha:
+        return target
+    data = _fetch(get, url, f"{release} ({name})")
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise ContainerError(f"{name} for {release} does not match the SHA-256 PyPI "
+                             "publishes for it; nothing was kept")
+    folder.mkdir(parents=True, exist_ok=True)
+    partial = folder / f".{name}.{uuid.uuid4().hex}.part"
+    partial.write_bytes(data)
+    os.replace(partial, target)
+    return target
+
+
+BUILT_RECORD = "built.json"
+
+
+def _reusable_build(folder, source_sha, ranks):
+    """The wheel a previous build kept in ``folder``, or None. Reused only while its
+    record names the source archive the release record still lists (by SHA-256)
+    and the wheel still has the SHA-256 recorded when it was built (code review
+    R48-1): a built wheel has no PyPI digest of its own, so its record is what
+    proves it is the wheel that source produced. It must also still be one the
+    image installs."""
+    try:
+        record = json.loads((folder / BUILT_RECORD).read_text(encoding="utf-8"))
+        wheel = folder / record["wheel"]
+        if (record["source_sha256"] == source_sha and _SAFE_FILE.fullmatch(record["wheel"])
+                and wheel_rank(record["wheel"], ranks) is not None and wheel.is_file()
+                and _sha256(wheel) == record["wheel_sha256"]):
+            return wheel
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def _built(store, release, entry, python, ranks, get, run):
+    """A release PyPI publishes only as source: its source file is fetched and
+    checked like a wheel, then built into a wheel by the host's Python with the
+    project .venv's own setuptools, nothing fetched for the build. A built wheel
+    is kept with a record of both SHA-256s and reused while both still hold; one
+    the image could not install is refused."""
+    folder = store / "built" / re.sub(r"[^A-Za-z0-9.]+", "_", release)
+    _name, _url, source_sha = _checked_file(entry, release)
+    reused = _reusable_build(folder, source_sha, ranks)
+    if reused:
+        return reused
+    kept = sorted(folder.glob("*.whl")) if folder.is_dir() else []
+    source = _stored(store / "source", entry, release, get)
+    with tempfile.TemporaryDirectory(prefix="wheel-build-") as out:
+        result = run([str(python), "-m", "pip", "wheel", "--no-deps",
+                      "--no-build-isolation", "--no-index", "-w", out, str(source)],
+                     capture_output=True, encoding="utf-8", errors="replace",
+                     env=_host_env())
+        wheels = sorted(Path(out).glob("*.whl"))
+        if result.returncode != 0 or len(wheels) != 1:
+            raise ContainerError(f"{release} is published only as source and its wheel "
+                                 "could not be built: "
+                                 + ((result.stderr or result.stdout).strip()[-800:] or
+                                    f"exit {result.returncode}"))
+        if wheel_rank(wheels[0].name, ranks) is None:
+            raise ContainerError(f"{release} is published only as source and builds "
+                                 f"{wheels[0].name}, which the image cannot install")
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / BUILT_RECORD).unlink(missing_ok=True)
+        for old in kept:
+            old.unlink()
+        target = folder / wheels[0].name
+        shutil.copyfile(wheels[0], target)
+        record = {"source_sha256": source_sha, "wheel": target.name,
+                  "wheel_sha256": _sha256(target)}
+        with open(folder / BUILT_RECORD, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(record, handle)
+    return target
+
+
+def fill_wheel_store(constraints, store, python, tags, get=_get, run=_start):
+    """For every pinned release, the wheel the image installs, in ``store``.
+    ``tags`` is ``image_tags()``: of a release's wheels the image installs, the one
+    whose best tag pip there prefers most is taken, as pip would choose. Returns
+    ``(wheels, skipped)``: one path per release that has one, and the releases with
+    neither a wheel the image can install nor a source file (Windows-only ones such
+    as pywin32), which the image does not need. A release the image does need and
+    the store lacks fails the offline install, naming it."""
+    store = Path(store)
+    ranks = {}
+    for position, tag in enumerate(tags):
+        ranks.setdefault(tag, position)
+    wheels, skipped = [], []
+    for name, version in _pins(constraints):
+        release = f"{name}=={version}"
+        url = PYPI_RELEASE.format(name=name, version=version)
+        try:
+            record = json.loads(_fetch(get, url, f"the PyPI record for {release}"))
+            files = record["urls"]
+            if not isinstance(files, list):
+                raise TypeError("urls is not a list")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ContainerError(f"the PyPI record for {release} could not be "
+                                 f"read: {exc}") from exc
+        # A file name that is not a plain file name is refused outright, whatever else
+        # is listed, before any filtering could pass it over quietly.
+        for entry in files:
+            if isinstance(entry, dict) and not (isinstance(entry.get("filename"), str)
+                                                and _SAFE_FILE.fullmatch(entry["filename"])):
+                raise ContainerError(f"the PyPI record for {release} lists a file this "
+                                     f"build will not take: {entry.get('filename')!r}")
+        # A yanked file (withdrawn by its publisher) is never used, and a wheel is used
+        # only when its name is plainly this release's (code review R51-1, R51-2).
+        current = [f for f in files if isinstance(f, dict) and f.get("yanked") is not True]
+        usable = sorted(((wheel_rank(str(f.get("filename")), ranks), str(f.get("filename")), f)
+                         for f in current if f.get("packagetype") == "bdist_wheel"
+                         and _names_release(str(f.get("filename")), name, version)
+                         and wheel_rank(str(f.get("filename")), ranks) is not None),
+                        key=lambda item: item[:2])
+        sources = [f for f in current if f.get("packagetype") == "sdist"]
+        if len(usable) > 1 and usable[0][0] == usable[1][0]:
+            tied = [item[1] for item in usable if item[0] == usable[0][0]]
+            raise ContainerError(f"{release} has {len(tied)} wheels the image would rank "
+                                 f"equally ({', '.join(tied)}); pip would choose between "
+                                 "them by rules this build does not model, so none is "
+                                 "chosen. Pin a release with one, or choose by hand.")
+        if usable:
+            wheels.append(_stored(store, usable[0][2], release, get))
+        elif sources:
+            wheels.append(_built(store, release, sources[0], python, ranks, get, run))
+        else:
+            skipped.append(release)
+    return wheels, skipped
+
+
+def image_tag(root, files, constraints):
     """``bookdragon-checks:<12 hex>``: SHA-256 over each requirements file (its
     project-relative path and bytes, in the given order), then the constraints,
-    then the trusted root certificates the build adds."""
+    then the Dockerfile those files give. Nothing about the host is in it, so a
+    change to the host's certificates no longer rebuilds the image (decision 41)."""
     root = Path(root).resolve()
     digest = hashlib.sha256()
+    relative = []
     for path in files:
-        digest.update(Path(path).resolve().relative_to(root).as_posix().encode("utf-8"))
+        rel = Path(path).resolve().relative_to(root).as_posix()
+        relative.append(rel)
+        digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
         digest.update(Path(path).read_bytes())
         digest.update(b"\0")
     digest.update(Path(constraints).read_bytes())
     digest.update(b"\0")
-    digest.update(trust.encode("utf-8"))
+    digest.update(dockerfile(relative).encode("utf-8"))
     return f"{IMAGE_REPO}:{digest.hexdigest()[:12]}"
 
 
 def dockerfile(relative_files):
-    """The host's trusted roots are added to the image's trust store before
-    anything is downloaded, and pip is pointed at that store, so a build behind an
-    HTTPS scanner still verifies every certificate (decision 26)."""
+    """The packages come only from the wheel store copied in with the requirements,
+    installed with no index and the build step's network off, so nothing in the
+    install talks to PyPI (decision 41). Debian's own package source is plain HTTP
+    and verified by its signatures, so the git install needs no host certificate."""
     installs = " ".join(f"-r {rel}" for rel in relative_files)
     return (f"FROM {BASE_IMAGE}\n"
+            "ENV PIP_DISABLE_PIP_VERSION_CHECK=1\n"
             "COPY . /req\n"
-            f"RUN cat /req/{TRUST_NAME} >> {IMAGE_TRUST_STORE}\n"
-            f"ENV PIP_CERT={IMAGE_TRUST_STORE}\n"
             "RUN apt-get update && apt-get install -y --no-install-recommends git "
             "&& rm -rf /var/lib/apt/lists/*\n"
             "WORKDIR /req\n"
-            f"RUN pip install --no-cache-dir {installs} -c {CONSTRAINTS_NAME}\n"
+            f"RUN --network=none pip install --no-cache-dir --no-index "
+            f"--find-links /req/{WHEELS_NAME} {installs} -c {CONSTRAINTS_NAME}\n"
             "RUN useradd -m checker && git config --system safe.directory '*'\n"
             "USER checker\n"
             "WORKDIR /work\n")
@@ -322,28 +590,31 @@ def image_exists(tag):
     return docker(["image", "inspect", tag], timeout=60).returncode == 0
 
 
-def build_image(root, constraints, context_dir, trust=None):
-    """Build the checks image unless its tag exists. Returns (tag, built). The build
+def build_image(root, constraints, context_dir, wheels):
+    """Build the checks image unless its tag exists. Returns (tag, built). ``wheels``
+    is called only for a build and returns ``(paths, skipped)`` as
+    ``fill_wheel_store`` does, so an existing image costs no download. The build
     context holds only the Dockerfile, the requirements files, the constraints file
-    and the host's trusted roots (``trust``, by default ``host_trust_bundle()``).
-    After a build, every package both the image and the constraints name must have
-    the same version, or the image is removed and the build fails."""
+    and those wheels. After a build, every package both the image and the
+    constraints name must have the same version, or the image is removed and the
+    build fails."""
     root = Path(root).resolve()
-    trust = host_trust_bundle() if trust is None else trust
     files = requirements_files(root)
-    tag = image_tag(root, files, constraints, trust)
+    tag = image_tag(root, files, constraints)
     if image_exists(tag):
         return tag, False
     context = Path(context_dir)
     if context.exists():
         raise ContainerError(f"build context already exists: {context}")
+    paths, _skipped = wheels()
     relative = [path.relative_to(root).as_posix() for path in files]
     for rel, path in zip(relative, files):
         (context / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, context / rel)
     shutil.copyfile(constraints, context / CONSTRAINTS_NAME)
-    with open(context / TRUST_NAME, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(trust)
+    (context / WHEELS_NAME).mkdir(parents=True, exist_ok=True)
+    for path in paths:
+        shutil.copyfile(path, context / WHEELS_NAME / Path(path).name)
     with open(context / "Dockerfile", "w", encoding="utf-8", newline="\n") as handle:
         handle.write(dockerfile(relative))
     # Built and checked under a staging tag; only a passing check gives it the real
@@ -396,11 +667,13 @@ def prepare_image(root, python, work_dir, *, dry_run=False):
     constraints = write_constraints(python, work_dir / CONSTRAINTS_NAME)
     if dry_run:
         files = requirements_files(root)
-        tag = image_tag(root, files, constraints, host_trust_bundle())
+        tag = image_tag(root, files, constraints)
         if not docker_running():
             return {"tag": tag, "would": UNKNOWN_IMAGE}
         return {"tag": tag, "would": "reuse" if image_exists(tag) else "build"}
-    tag, built = build_image(root, constraints, work_dir / "context")
+    tag, built = build_image(root, constraints, work_dir / "context",
+                             lambda: fill_wheel_store(constraints, wheel_store(), python,
+                                                      image_tags()))
     return {"tag": tag, "built": built, "constraints": constraints}
 
 

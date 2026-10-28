@@ -12,6 +12,8 @@ code under test.
 
 import hashlib
 import importlib.util
+import inspect
+import json
 import os
 import subprocess
 import sys
@@ -318,87 +320,547 @@ class RequirementsTests(ImageCase):
             container.requirements_files(self.root)
 
 
-TRUST = "-----BEGIN CERTIFICATE-----\nVEVTVA==\n-----END CERTIFICATE-----\n"
+# The Dockerfile for the two files TagTests hash, written out here rather than taken
+# from the code under test (decision 41: the packages come only from the wheels).
+TAG_DOCKERFILE = (
+    "FROM python:3.13-slim\n"
+    "ENV PIP_DISABLE_PIP_VERSION_CHECK=1\n"
+    "COPY . /req\n"
+    "RUN apt-get update && apt-get install -y --no-install-recommends git "
+    "&& rm -rf /var/lib/apt/lists/*\n"
+    "WORKDIR /req\n"
+    "RUN --network=none pip install --no-cache-dir --no-index --find-links /req/wheels "
+    "-r requirements.txt -r a/req.txt -c constraints.txt\n"
+    "RUN useradd -m checker && git config --system safe.directory '*'\n"
+    "USER checker\n"
+    "WORKDIR /work\n")
 
 
 class TagTests(ImageCase):
 
-    def expected(self, constraints_bytes, trust):
+    def expected(self, constraints_bytes):
         digest = hashlib.sha256()
         for rel in ("requirements.txt", "a/req.txt"):
             digest.update(rel.encode() + b"\0" + (self.root / rel).read_bytes() + b"\0")
-        digest.update(constraints_bytes + b"\0" + trust.encode())
+        digest.update(constraints_bytes + b"\0" + TAG_DOCKERFILE.encode())
         return "bookdragon-checks:" + digest.hexdigest()[:12]
 
-    def test_positive_the_tag_is_the_hash_of_the_files_constraints_and_trust(self):
+    def test_positive_the_tag_is_the_hash_of_the_files_constraints_and_dockerfile(self):
         files = [self.root / "requirements.txt", self.root / "a" / "req.txt"]
-        self.assertEqual(container.image_tag(self.root, files, self.constraints, TRUST),
-                         self.expected(self.constraints.read_bytes(), TRUST))
+        self.assertEqual(container.image_tag(self.root, files, self.constraints),
+                         self.expected(self.constraints.read_bytes()))
 
     def test_positive_any_input_changing_changes_the_tag(self):
         files = [self.root / "requirements.txt", self.root / "a" / "req.txt"]
-        before = container.image_tag(self.root, files, self.constraints, TRUST)
+        before = container.image_tag(self.root, files, self.constraints)
         self.assertNotEqual(before, container.image_tag(self.root, files[::-1],
-                                                        self.constraints, TRUST))
-        self.assertNotEqual(before, container.image_tag(self.root, files,
-                                                        self.constraints, TRUST + TRUST))
+                                                        self.constraints))
+        with mock.patch.object(container, "dockerfile", lambda rel: "FROM other\n"):
+            self.assertNotEqual(before, container.image_tag(self.root, files,
+                                                            self.constraints))
         write(self.constraints, b"alpha==1.1\n")
         self.assertNotEqual(before, container.image_tag(self.root, files,
-                                                        self.constraints, TRUST))
+                                                        self.constraints))
+
+    def test_negative_control_nothing_about_the_host_is_in_the_tag(self):
+        # Decision 41: a Windows certificate update rebuilt the image under decision
+        # 26. The tag takes no host input, so the host's certificate store, which the
+        # code no longer reads, cannot move it.
+        self.assertEqual(list(inspect.signature(container.image_tag).parameters),
+                         ["root", "files", "constraints"])
+        self.assertFalse(hasattr(container, "host_trust_bundle"))
+        files = [self.root / "requirements.txt", self.root / "a" / "req.txt"]
+        with mock.patch("ssl.enum_certificates", create=True, return_value=[]):
+            self.assertEqual(container.image_tag(self.root, files, self.constraints),
+                             self.expected(self.constraints.read_bytes()))
 
 
-class HostTrustTests(unittest.TestCase):
-    """Decision 26: the image build trusts the roots the host trusts, so an HTTPS
-    scanner's root (which re-signs every site on the build machine) is trusted
-    while every certificate is still verified."""
+def wheel_entry(filename, data, packagetype="bdist_wheel"):
+    return {"filename": filename, "packagetype": packagetype,
+            "url": f"https://files.pythonhosted.org/packages/ab/{filename}",
+            "digests": {"sha256": hashlib.sha256(data).hexdigest()}}
 
-    def test_rejection_a_root_not_trusted_for_tls_servers_is_left_out(self):
-        # Code review R14-1: Windows trusts some roots only for other purposes.
-        server, everything, signing = b"\x01server", b"\x02all", b"\x03signing"
-        store = [(server, "x509_asn", {"1.3.6.1.5.5.7.3.3", "1.3.6.1.5.5.7.3.1"}),
-                 (everything, "x509_asn", True),
-                 (signing, "x509_asn", {"1.3.6.1.5.5.7.3.3"}),
-                 (b"\x04nothing", "x509_asn", set())]
-        with mock.patch.object(container.ssl, "enum_certificates", create=True,
-                               return_value=store):
-            bundle = container.host_trust_bundle()
-        pem = lambda d: container.ssl.DER_cert_to_PEM_cert(d).replace("\r\n", "\n")
-        self.assertEqual(bundle, "".join(sorted([pem(server), pem(everything)])))
-        self.assertNotIn(pem(signing), bundle)
 
-    def test_positive_windows_roots_as_sorted_unique_pem(self):
-        der_b, der_a = b"\x02second", b"\x01first"
-        store = [(der_b, "x509_asn", True), (der_a, "x509_asn", True),
-                 (der_a, "x509_asn", True), (b"\x03ignored", "pkcs_7_asn", True)]
-        with mock.patch.object(container.ssl, "enum_certificates", create=True,
-                               return_value=store):
-            bundle = container.host_trust_bundle()
-        expected = "".join(sorted(container.ssl.DER_cert_to_PEM_cert(d).replace("\r\n", "\n")
-                                  for d in (der_a, der_b)))
-        self.assertEqual(bundle, expected)
-        self.assertEqual(bundle.count("BEGIN CERTIFICATE"), 2)
+class FakePyPI:
+    """Answers ``get(url)`` from release records and files, recording every URL."""
 
-    def test_positive_elsewhere_the_default_certificate_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cafile = Path(tmp) / "ca.pem"
-            write(cafile, (TRUST + "not a certificate\n" + TRUST).encode())
-            fake_ssl = mock.Mock(spec=["get_default_verify_paths"])
-            fake_ssl.get_default_verify_paths.return_value = mock.Mock(cafile=str(cafile))
-            with mock.patch.object(container, "ssl", fake_ssl):
-                self.assertEqual(container.host_trust_bundle(), TRUST)
+    def __init__(self, releases, files):
+        self.releases, self.files, self.urls = releases, files, []
 
-    def test_positive_this_machine_trusts_at_least_one_root(self):
-        self.assertIn("-----BEGIN CERTIFICATE-----", container.host_trust_bundle())
+    def __call__(self, url):
+        self.urls.append(url)
+        for (name, version), entries in self.releases.items():
+            if url == f"https://pypi.org/pypi/{name}/{version}/json":
+                return json.dumps({"urls": entries}).encode()
+        for entry_url, data in self.files.items():
+            if url == entry_url:
+                return data
+        raise OSError(f"no such page: {url}")
+
+
+def pip_image_tags():
+    """The tags pip in python:3.13-slim lists, most preferred first, as the image
+    gave them on 2026-10-28 (1,205 tags, the same set and order): produced here by
+    pip's own ``packaging`` for CPython 3.13 on x86-64 Linux with glibc 2.41, its
+    manylinux list generated by pip given only that glibc, so no tag is written by
+    hand. A stand-in for ``container.image_tags()``, which asks the image itself."""
+    import itertools
+    from pip._vendor.packaging import _manylinux, tags
+    with mock.patch.object(_manylinux, "_get_glibc_version", return_value=(2, 41)), \
+            mock.patch.object(_manylinux, "_have_compatible_abi", return_value=True,
+                              create=True):
+        platforms = list(_manylinux.platform_tags(["x86_64"])) + ["linux_x86_64"]
+    return [str(t) for t in itertools.chain(
+        tags.cpython_tags((3, 13), ["cp313"], platforms),
+        tags.compatible_tags((3, 13), "cp313", platforms))]
+
+
+IMAGE_TAGS = pip_image_tags()
+RANKS = {tag: n for n, tag in reversed(list(enumerate(IMAGE_TAGS)))}
+
+
+class ImageTagsTests(DockerCase):
+    """Code review R50-1: the tags come from pip in the image, asked offline."""
+
+    def answer(self, out, code=0, err=""):
+        return self.fake((["run"], done(code, out=out, err=err)))
+
+    @staticmethod
+    def framed(tags):
+        return f"COUNT {len(tags)}\n" + "".join(f"{t}\n" for t in tags) + "END\n"
+
+    def test_positive_the_image_is_asked_offline_and_its_list_kept_in_order(self):
+        fake = self.answer(self.framed(IMAGE_TAGS))
+        self.assertEqual(container.image_tags(), IMAGE_TAGS)
+        self.assertEqual(len(fake.calls), 1)
+        argv = fake.calls[0]
+        self.assertEqual(argv[:6], ["run", "--rm", "--network", "none",
+                                    "python:3.13-slim", "python"])
+        self.assertEqual(argv[6], "-c")
+        self.assertIn("from pip._vendor.packaging.tags import sys_tags", argv[7])
+
+    def test_rejection_an_answer_that_is_not_a_whole_tag_list_is_refused(self):
+        whole = self.framed(IMAGE_TAGS)
+        keep = IMAGE_TAGS.index("py3-none-any") + 1
+        cases = [("", 0), (whole, 1),
+                 ("\n".join(IMAGE_TAGS) + "\n", 0),                # not framed
+                 (whole.rsplit("END", 1)[0], 0),                   # end line missing
+                 # Code review R51-3: cut short after py3-none-any, end line kept.
+                 (f"COUNT {len(IMAGE_TAGS)}\n" + "\n".join(IMAGE_TAGS[:keep]) + "\nEND\n", 0),
+                 (self.framed([]), 0),
+                 (self.framed(["cp313-cp313-linux_x86_64"]), 0),   # no py3-none-any
+                 (self.framed(["py3-none-any", "Traceback (most recent call last)"]), 0)]
+        for out, code in cases:
+            with self.subTest(out=out[:60], code=code):
+                self.answer(out, code, err="boom")
+                with self.assertRaisesRegex(container.ContainerError,
+                                            "did not list the tags it installs"):
+                    container.image_tags()
+
+    def test_negative_control_the_hand_written_rule_is_gone(self):
+        for name in ("image_wheel_ok", "IMAGE_GLIBC", "IMAGE_PYTHON_MINOR",
+                     "OLDEST_MANYLINUX", "_tags_ok", "_platform_ok"):
+            self.assertFalse(hasattr(container, name), name)
+
+
+class WheelRankTests(unittest.TestCase):
+    """A wheel is matched against the image's own tags, each tag as written."""
+
+    def rank(self, name):
+        return container.wheel_rank(name, RANKS)
+
+    def test_positive_wheels_the_image_installs(self):
+        for name in ("pure-1.0-py3-none-any.whl", "pure-1.0-py2.py3-none-any.whl",
+                     "pure-1.0-py313-none-any.whl",
+                     "c-1.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+                     "c-1.0-cp313-cp313-manylinux_2_41_x86_64.whl",
+                     "c-1.0-cp313-cp313-manylinux1_x86_64.whl",
+                     "c-1.0-cp313-cp313-linux_x86_64.whl",
+                     "stable-1.0-cp39-abi3-manylinux_2_28_x86_64.whl",
+                     "stable-1.0-cp32-abi3-manylinux1_x86_64.whl",
+                     "c-1.0-cp313-none-any.whl",
+                     # pip lowercases a wheel name's tags before it compares them.
+                     "c-1.0-CP313-cp313-manylinux_2_17_x86_64.whl",
+                     "built-1.0-1-py3-none-any.whl"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(self.rank(name))
+
+    def test_positive_every_answer_is_pips_own_for_a_grid_of_names(self):
+        # The match is checked against pip's own reading of each name
+        # (parse_wheel_filename) and the image's tags, across case, leading zeros,
+        # compressed sets and every manylinux glibc from 2.0 to 2.45.
+        from pip._vendor.packaging.utils import InvalidWheelFilename, parse_wheel_filename
+        wanted = set(IMAGE_TAGS)
+        pythons = ("py3", "py2.py3", "py313", "py314", "cp313", "CP313", "cp32", "cp31")
+        abis = ("none", "abi3", "cp313", "ABI3", "cp313t")
+        shapes = ([f"manylinux_2_{n}_x86_64" for n in range(0, 46)]
+                  + ["manylinux_2_05_x86_64", "manylinux_2_017_x86_64", "any", "ANY",
+                     "linux_x86_64", "manylinux1_x86_64", "manylinux2014_x86_64",
+                     "manylinux_2_17_x86_64.manylinux2014_x86_64", "win_amd64"])
+        disagree = []
+        for p in pythons:
+            for a in abis:
+                for s in shapes:
+                    name = f"x-1.0-{p}-{a}-{s}.whl"
+                    try:
+                        pips = bool({str(t) for t in parse_wheel_filename(name)[3]} & wanted)
+                    except InvalidWheelFilename:
+                        pips = False
+                    if (self.rank(name) is not None) != pips:
+                        disagree.append(name)
+        self.assertEqual(disagree, [])
+
+    def test_positive_a_wheel_ranks_by_its_best_tag_as_pip_prefers(self):
+        # Compressed tag sets expand; the best-placed tag gives the rank.
+        both = "c-1.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+        self.assertEqual(self.rank(both), IMAGE_TAGS.index("cp313-cp313-manylinux_2_17_x86_64"))
+        self.assertLess(self.rank("c-1.0-cp313-cp313-manylinux_2_17_x86_64.whl"),
+                        self.rank("c-1.0-cp313-abi3-manylinux_2_17_x86_64.whl"))
+        self.assertLess(self.rank("c-1.0-cp313-abi3-manylinux_2_17_x86_64.whl"),
+                        self.rank("pure-1.0-py3-none-any.whl"))
+
+    def test_rejection_wheels_the_image_cannot_install(self):
+        for name in ("c-1.0-cp313-cp313-win_amd64.whl",
+                     "c-1.0-cp313-cp313-macosx_11_0_arm64.whl",
+                     "c-1.0-cp313-cp313-manylinux_2_42_x86_64.whl",
+                     "c-1.0-cp313-cp313-manylinux_2_17_aarch64.whl",
+                     "c-1.0-cp313-cp313-musllinux_1_2_x86_64.whl",
+                     "c-1.0-cp312-cp312-manylinux_2_17_x86_64.whl",
+                     "c-1.0-cp314-cp314-manylinux_2_17_x86_64.whl",
+                     "c-1.0-cp313-cp313t-manylinux_2_17_x86_64.whl",
+                     "stable-1.0-cp314-abi3-manylinux_2_28_x86_64.whl",
+                     "pure-1.0-py2-none-any.whl", "pure-1.0-py314-none-any.whl",
+                     # Code review R48-2: `any` goes with ABI `none` only, and abi3
+                     # starts at CPython 3.2.
+                     "c-1.0-cp313-cp313-any.whl", "c-1.0-cp313-abi3-any.whl",
+                     "c-1.0-cp312-none-any.whl",
+                     "stable-1.0-cp31-abi3-manylinux_2_17_x86_64.whl",
+                     # Code review R49-1: pip names no manylinux glibc below 2.5.
+                     "c-1.0-cp313-cp313-manylinux_2_4_x86_64.whl",
+                     "c-1.0-cp313-cp313-manylinux_2_0_x86_64.whl",
+                     # Code review R50-1: a tag is matched as pip reads it, which
+                     # keeps a leading zero.
+                     "c-1.0-cp313-cp313-manylinux_2_05_x86_64.whl",
+                     "pure-1.0.tar.gz", "short-py3-none-any.whl"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.rank(name))
+
+
+class WheelStoreTests(unittest.TestCase):
+    """Decision 41: each pinned release's wheel comes from its own PyPI record,
+    checked by its SHA-256, and is reused; PyPI's index pages are never asked."""
+
+    LINUX = b"linux wheel"
+    WINDOWS = b"windows wheel"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.store = self.tmp / "store"
+        self.constraints = self.tmp / "constraints.txt"
+        write(self.constraints, b"alpha==1.0\npywin32==311\n")
+        self.linux = wheel_entry("alpha-1.0-cp313-cp313-manylinux_2_17_x86_64.whl", self.LINUX)
+        self.windows = wheel_entry("alpha-1.0-cp313-cp313-win_amd64.whl", self.WINDOWS)
+        self.pypi = FakePyPI(
+            {("alpha", "1.0"): [self.windows, self.linux],
+             ("pywin32", "311"): [wheel_entry("pywin32-311-cp313-cp313-win_amd64.whl", b"w")]},
+            {self.linux["url"]: self.LINUX, self.windows["url"]: self.WINDOWS})
+
+    def fill(self, get=None, run=None):
+        return container.fill_wheel_store(self.constraints, self.store, "py", IMAGE_TAGS,
+                                          get=get or self.pypi, run=run or self.no_run)
+
+    def release(self, *entries):
+        """Make alpha==1.0's record ``entries``, each a (filename, data, extra) triple."""
+        made = []
+        for filename, data, extra in entries:
+            entry = dict(wheel_entry(filename, data), **extra)
+            self.pypi.files[entry["url"]] = data
+            made.append(entry)
+        self.pypi.releases[("alpha", "1.0")] = made
+        return made
+
+    def test_rejection_a_wheel_not_plainly_named_for_this_release_is_never_used(self):
+        # Code review R51-1: a name pip would refuse, or another project's or
+        # version's, is not used; the good one is taken.
+        good = "alpha-1.0-py3-none-any.whl"
+        for bad in ("alpha-1.0-bad-cp313-cp313-manylinux_2_17_x86_64.whl",
+                    "alpha-1.0-cp313-cp313-cp313-manylinux_2_17_x86_64.whl",
+                    "alpha-1.0.post1-cp313-cp313-manylinux_2_17_x86_64.whl",
+                    "beta-1.0-cp313-cp313-manylinux_2_17_x86_64.whl",
+                    "alpha-1.01-cp313-cp313-manylinux_2_17_x86_64.whl"):
+            with self.subTest(bad=bad):
+                self.store = self.tmp / f"store-{len(bad)}-{bad[:14]}"
+                self.release((bad, b"bad", {}), (good, b"good", {}))
+                wheels, _ = self.fill()
+                self.assertEqual(wheels[0].name, good)
+
+    def test_positive_a_plain_build_tag_and_a_differently_spelt_name_are_used(self):
+        self.constraints.write_text("Alpha.Lib==1.0\n", encoding="utf-8", newline="\n")
+        name = "alpha_lib-1.0-1-cp313-cp313-manylinux_2_17_x86_64.whl"
+        entry = wheel_entry(name, b"built")
+        self.pypi.releases[("Alpha.Lib", "1.0")] = [entry]
+        self.pypi.files[entry["url"]] = b"built"
+        wheels, _ = self.fill()
+        self.assertEqual([w.name for w in wheels], [name])
+
+    def test_rejection_a_project_name_with_a_doubled_or_stray_separator_is_never_used(self):
+        # Code review R52-1: pip refuses `__` in a wheel's project name; a doubled,
+        # leading or trailing separator is not plain, so none is used even when it
+        # ranks above the plain one.
+        self.constraints.write_text("Alpha.Lib==1.0\n", encoding="utf-8", newline="\n")
+        good = "alpha_lib-1.0-py3-none-any.whl"
+        for bad in ("alpha__lib-1.0-cp313-cp313-manylinux_2_17_x86_64.whl",
+                    "alpha._lib-1.0-cp313-cp313-manylinux_2_17_x86_64.whl",
+                    "alpha_lib_-1.0-cp313-cp313-manylinux_2_17_x86_64.whl"):
+            with self.subTest(bad=bad):
+                self.store = self.tmp / f"store-{bad[:12]}"
+                entries = [wheel_entry(bad, b"bad"), wheel_entry(good, b"good")]
+                self.pypi.releases[("Alpha.Lib", "1.0")] = entries
+                self.pypi.files.update({entries[0]["url"]: b"bad", entries[1]["url"]: b"good"})
+                wheels, _ = self.fill()
+                self.assertEqual([w.name for w in wheels], [good])
+        # A leading separator is not even a plain file name: the whole record is
+        # refused, the stricter outcome.
+        self.pypi.releases[("Alpha.Lib", "1.0")] = [
+            wheel_entry("_alpha_lib-1.0-cp313-cp313-manylinux_2_17_x86_64.whl", b"x"),
+            wheel_entry(good, b"good")]
+        with self.assertRaisesRegex(container.ContainerError, "will not take"):
+            self.fill()
+
+    def test_rejection_a_yanked_file_is_never_used(self):
+        # Code review R51-2: a yanked wheel is passed over even when it ranks
+        # first; a release whose only usable wheel is yanked has none.
+        self.release(("alpha-1.0-cp313-cp313-manylinux_2_17_x86_64.whl", b"yanked",
+                      {"yanked": True}), ("alpha-1.0-py3-none-any.whl", b"pure", {}))
+        wheels, _ = self.fill()
+        self.assertEqual(wheels[0].name, "alpha-1.0-py3-none-any.whl")
+        self.store = self.tmp / "store-only-yanked"
+        self.release(("alpha-1.0-py3-none-any.whl", b"pure", {"yanked": True}))
+        wheels, skipped = self.fill()
+        self.assertEqual((wheels, skipped), ([], ["alpha==1.0", "pywin32==311"]))
+
+    def test_rejection_wheels_that_rank_equally_are_refused_not_guessed(self):
+        # Code review R51-2: two builds with the same tags; pip would choose by build
+        # tag, which this build does not model, so it stops and names both.
+        one = "alpha-1.0-1-cp313-cp313-manylinux_2_17_x86_64.whl"
+        two = "alpha-1.0-2-cp313-cp313-manylinux_2_17_x86_64.whl"
+        self.release((one, b"one", {}), (two, b"two", {}))
+        with self.assertRaisesRegex(container.ContainerError,
+                                    rf"alpha==1\.0 has 2 wheels .*{one}.*{two}"):
+            self.fill()
+        self.assertFalse(self.store.exists() and list(self.store.glob("*.whl")))
+
+    def test_positive_of_several_usable_wheels_the_one_pip_prefers_is_taken(self):
+        # Code review R50-1: chosen by the image's own preference, not by name. The
+        # cp313-cp313 wheel sorts after the abi3 one by name but pip prefers it.
+        stable = wheel_entry("alpha-1.0-cp313-abi3-manylinux_2_17_x86_64.whl", b"stable")
+        exact = wheel_entry("alpha-1.0-cp313-cp313-manylinux_2_17_x86_64.whl", b"exact")
+        pure = wheel_entry("alpha-1.0-py3-none-any.whl", b"pure")
+        self.pypi.releases[("alpha", "1.0")] = [pure, stable, exact, self.windows]
+        self.pypi.files.update({e["url"]: d for e, d in ((stable, b"stable"),
+                                                       (exact, b"exact"), (pure, b"pure"))})
+        wheels, _ = self.fill()
+        self.assertEqual(wheels[0].name, exact["filename"])
+        self.assertEqual(wheels[0].read_bytes(), b"exact")
+
+    def no_run(self, *_a, **_k):
+        self.fail("nothing is built when a wheel exists")
+
+    def test_positive_the_linux_wheel_is_stored_and_a_windows_only_release_skipped(self):
+        wheels, skipped = self.fill()
+        self.assertEqual(wheels, [self.store / self.linux["filename"]])
+        self.assertEqual(wheels[0].read_bytes(), self.LINUX)
+        self.assertEqual(skipped, ["pywin32==311"])
+        self.assertNotIn(self.windows["url"], self.pypi.urls)
+
+    def test_positive_only_release_records_and_their_files_are_asked_for(self):
+        self.fill()
+        self.assertEqual(self.pypi.urls, ["https://pypi.org/pypi/alpha/1.0/json",
+                                          self.linux["url"],
+                                          "https://pypi.org/pypi/pywin32/311/json"])
+        self.assertFalse([u for u in self.pypi.urls if "/simple/" in u])
+
+    def test_negative_control_a_stored_wheel_with_the_right_hash_is_not_downloaded(self):
+        self.fill()
+        self.pypi.urls.clear()
+        self.fill()
+        self.assertNotIn(self.linux["url"], self.pypi.urls)
+
+    def test_rejection_a_stored_wheel_with_the_wrong_hash_is_downloaded_again(self):
+        write(self.store / self.linux["filename"], b"tampered")
+        wheels, _ = self.fill()
+        self.assertIn(self.linux["url"], self.pypi.urls)
+        self.assertEqual(wheels[0].read_bytes(), self.LINUX)
+
+    def test_rejection_a_download_that_does_not_match_its_hash_is_refused_and_not_kept(self):
+        self.pypi.files[self.linux["url"]] = b"not what PyPI published"
+        with self.assertRaisesRegex(container.ContainerError,
+                                    r"alpha-1\.0.*does not match the SHA-256.*nothing was kept"):
+            self.fill()
+        self.assertEqual(list(self.store.rglob("*")) if self.store.exists() else [], [])
+
+    def test_rejection_a_file_entry_with_an_unsafe_name_or_host_is_refused(self):
+        bad = [dict(self.linux, filename="../escape-1.0-py3-none-any.whl"),
+               dict(self.linux, url="https://example.com/alpha.whl"),
+               dict(self.linux, digests={})]
+        for entry in bad:
+            with self.subTest(entry=entry):
+                self.pypi.releases[("alpha", "1.0")] = [entry]
+                with self.assertRaisesRegex(container.ContainerError, "will not take"):
+                    self.fill()
+        self.assertFalse((self.tmp / "escape-1.0-py3-none-any.whl").exists())
+
+    def test_rejection_a_fetch_is_tried_three_times_then_names_the_release(self):
+        calls = []
+
+        def failing(url):
+            calls.append(url)
+            raise OSError("Connection broken: InvalidChunkLength")
+        with self.assertRaisesRegex(container.ContainerError,
+                                    r"PyPI record for alpha==1\.0.*3 tries.*InvalidChunkLength"):
+            self.fill(get=failing)
+        self.assertEqual(calls, ["https://pypi.org/pypi/alpha/1.0/json"] * 3)
+
+    def test_positive_a_fetch_that_fails_once_is_retried(self):
+        failures = []
+
+        def flaky(url):
+            if not failures:
+                failures.append(url)
+                raise OSError("reset")
+            return self.pypi(url)
+        wheels, _ = self.fill(get=flaky)
+        self.assertEqual(len(wheels), 1)
+
+    def test_rejection_an_unreadable_release_record_names_the_release(self):
+        for body in (b"<html>", b'{"urls": 3}', b"{}"):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(container.ContainerError,
+                                            r"PyPI record for alpha==1\.0 could not be read"):
+                    self.fill(get=lambda url, b=body: b)
+
+    def source_release(self):
+        source = b"source archive"
+        entry = wheel_entry("sgml-1.0.tar.gz", source, packagetype="sdist")
+        write(self.constraints, b"sgml==1.0\n")
+        self.pypi.releases[("sgml", "1.0")] = [entry]
+        self.pypi.files[entry["url"]] = source
+        return entry
+
+    def builder(self, name="sgml-1.0-py3-none-any.whl", code=0):
+        calls = []
+
+        def run(argv, **_kw):
+            calls.append(argv)
+            out = Path(argv[argv.index("-w") + 1])
+            if code == 0:
+                write(out / name, b"built wheel")
+            return done(code, err="" if code == 0 else "setuptools missing")
+        return run, calls
+
+    def test_positive_a_source_only_release_is_built_with_nothing_fetched_for_the_build(self):
+        entry = self.source_release()
+        run, calls = self.builder()
+        wheels, skipped = self.fill(run=run)
+        self.assertEqual((len(wheels), skipped), (1, []))
+        self.assertEqual(wheels[0].name, "sgml-1.0-py3-none-any.whl")
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertEqual(argv[:4], ["py", "-m", "pip", "wheel"])
+        for flag in ("--no-deps", "--no-build-isolation", "--no-index"):
+            self.assertIn(flag, argv)
+        self.assertEqual(Path(argv[-1]), self.store / "source" / entry["filename"])
+
+    def test_negative_control_a_built_wheel_is_reused_without_a_second_build(self):
+        self.source_release()
+        run, calls = self.builder()
+        self.fill(run=run)
+        self.fill(run=run)
+        self.assertEqual(len(calls), 1)
+
+    def test_rejection_a_built_wheel_that_cannot_be_proved_is_built_again(self):
+        # Code review R48-1: a built wheel has no PyPI digest, so it is reused only
+        # while its record matches both the source the release lists and the wheel.
+        def altered(folder):
+            next(folder.glob("*.whl")).write_bytes(b"altered wheel")
+
+        def unrecorded(folder):
+            (folder / "built.json").unlink()
+
+        def garbled(folder):
+            (folder / "built.json").write_text("{not json", encoding="utf-8", newline="\n")
+
+        def new_source(_folder):
+            source = b"a different source archive"
+            entry = wheel_entry("sgml-1.0.tar.gz", source, packagetype="sdist")
+            self.pypi.releases[("sgml", "1.0")] = [entry]
+            self.pypi.files[entry["url"]] = source
+        for change in (altered, unrecorded, garbled, new_source):
+            with self.subTest(change=change.__name__):
+                self.store = self.tmp / f"store-{change.__name__}"
+                self.source_release()
+                run, calls = self.builder()
+                wheels, _ = self.fill(run=run)
+                change(wheels[0].parent)
+                again, _ = self.fill(run=run)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(again[0].read_bytes(), b"built wheel")
+                record = json.loads((again[0].parent / "built.json").read_text(encoding="utf-8"))
+                self.assertEqual(record["wheel_sha256"],
+                                 hashlib.sha256(b"built wheel").hexdigest())
+                self.assertEqual(len(list(again[0].parent.glob("*.whl"))), 1)
+
+    def test_positive_a_build_records_the_source_and_wheel_hashes(self):
+        entry = self.source_release()
+        run, _calls = self.builder()
+        wheels, _ = self.fill(run=run)
+        record = json.loads((wheels[0].parent / "built.json").read_text(encoding="utf-8"))
+        self.assertEqual(record, {"source_sha256": entry["digests"]["sha256"],
+                                  "wheel": "sgml-1.0-py3-none-any.whl",
+                                  "wheel_sha256": hashlib.sha256(b"built wheel").hexdigest()})
+
+    def test_rejection_a_source_build_that_fails_or_gives_a_platform_wheel_is_refused(self):
+        self.source_release()
+        for run, message in ((self.builder(code=1)[0], "could not be built.*setuptools"),
+                             (self.builder("sgml-1.0-cp313-cp313-win_amd64.whl")[0],
+                              "which the image cannot install")):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(container.ContainerError, message):
+                    self.fill(run=run)
+        self.assertFalse((self.store / "built").exists()
+                         and list((self.store / "built").rglob("*.whl")))
+
+    def test_positive_the_store_is_outside_the_project(self):
+        store = container.wheel_store()
+        self.assertEqual(store, Path(tempfile.gettempdir()) / "book-dragon-wheels")
+        with self.assertRaises(ValueError):
+            store.resolve().relative_to(SCRIPTS.parent.parent.parent.resolve())
 
 
 class BuildTests(ImageCase):
 
     FREEZE_OK = done(out="alpha==1.0\nbeta==2.0\nsdk==1.1\nsetuptools==80\n")
 
+    def wheels(self):
+        """A ``wheels`` callable over two stored wheels, counting its calls."""
+        self.wheel_calls = getattr(self, "wheel_calls", 0)
+        paths = []
+        for name in ("alpha-1.0-py3-none-any.whl", "beta-2.0-py3-none-any.whl"):
+            write(self.tmp / "store" / name, name.encode())
+            paths.append(self.tmp / "store" / name)
+
+        def call():
+            self.wheel_calls += 1
+            return paths, ["pywin32==311"]
+        return call
+
     def build(self, *rules):
         fake = self.fake((["image", "inspect"], done(1)), *rules)
         ctx = self.tmp / "ctx"
-        return fake, ctx, container.build_image(self.root, self.constraints, ctx, trust=TRUST)
+        return fake, ctx, container.build_image(self.root, self.constraints, ctx,
+                                                self.wheels())
 
     def test_positive_build_installs_each_requirements_file_with_the_constraints(self):
         fake, ctx, (tag, built) = self.build(
@@ -413,45 +875,64 @@ class BuildTests(ImageCase):
             ["tag", staging, tag],
             ["image", "rm", staging]])
         dockerfile = (ctx / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("RUN pip install --no-cache-dir -r requirements.txt -r a/req.txt "
+        self.assertIn("RUN --network=none pip install --no-cache-dir --no-index "
+                      "--find-links /req/wheels -r requirements.txt -r a/req.txt "
                       "-r a/sub.txt -r b/req.txt -r workflows/review-orchestration/"
                       "requirements.txt -c constraints.txt\n", dockerfile)
         self.assertNotIn("-r constraints.txt", dockerfile)
         self.assertEqual(sorted(p.relative_to(ctx).as_posix() for p in ctx.rglob("*")
                                 if p.is_file()),
                          ["Dockerfile", "a/req.txt", "a/sub.txt", "b/req.txt",
-                          "constraints.txt", "host-roots.crt", "requirements.txt",
+                          "constraints.txt", "requirements.txt",
+                          "wheels/alpha-1.0-py3-none-any.whl",
+                          "wheels/beta-2.0-py3-none-any.whl",
                           "workflows/review-orchestration/requirements.txt"])
+        self.assertEqual((ctx / "wheels" / "alpha-1.0-py3-none-any.whl").read_bytes(),
+                         b"alpha-1.0-py3-none-any.whl")
 
-    def test_positive_the_host_roots_are_trusted_before_anything_is_downloaded(self):
+    def test_positive_the_install_uses_no_index_no_network_and_no_host_certificate(self):
+        # Decision 41, replacing decision 26: nothing in the install talks to PyPI,
+        # so the image carries none of the host's certificates.
         _fake, ctx, _result = self.build(
             (["run", "--rm", "--network", "none"], self.FREEZE_OK))
-        self.assertEqual((ctx / "host-roots.crt").read_text(encoding="utf-8"), TRUST)
         lines = (ctx / "Dockerfile").read_text(encoding="utf-8").splitlines()
-        append = lines.index("RUN cat /req/host-roots.crt >> /etc/ssl/certs/ca-certificates.crt")
-        pip_cert = lines.index("ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt")
-        apt = next(i for i, l in enumerate(lines) if l.startswith("RUN apt-get"))
-        pip = next(i for i, l in enumerate(lines) if l.startswith("RUN pip install"))
-        self.assertLess(append, apt)
-        self.assertLess(append, pip)
-        self.assertLess(pip_cert, pip)
+        pip = [l for l in lines if " pip install " in l]
+        self.assertEqual(len(pip), 1)
+        self.assertTrue(pip[0].startswith("RUN --network=none pip install "))
+        self.assertIn(" --no-index ", pip[0])
+        self.assertIn(" --find-links /req/wheels ", pip[0])
+        text = "\n".join(lines)
+        for absent in ("PIP_CERT", "host-roots", "ca-certificates", "BEGIN CERTIFICATE",
+                       "--index-url", "--extra-index-url", "--trusted-host"):
+            self.assertNotIn(absent, text)
         self.assertIn("USER checker", lines)
         self.assertEqual(lines[0], "FROM python:3.13-slim")
 
-    def test_negative_control_an_existing_tag_is_not_rebuilt(self):
+    def test_negative_control_an_existing_tag_is_not_rebuilt_or_fetched_for(self):
         fake = self.fake((["image", "inspect"], done(0)))
         tag, built = container.build_image(self.root, self.constraints, self.tmp / "ctx",
-                                           trust=TRUST)
+                                           self.wheels())
         self.assertIs(built, False)
         self.assertEqual([c[0] for c in fake.calls], ["image"])
         self.assertFalse((self.tmp / "ctx").exists())
+        self.assertEqual(self.wheel_calls, 0)
+
+    def test_rejection_a_store_that_cannot_be_filled_refuses_before_any_build(self):
+        fake = self.fake((["image", "inspect"], done(1)))
+
+        def failing():
+            raise container.ContainerError("mcp==1.28.1 could not be downloaded")
+        with self.assertRaisesRegex(container.ContainerError, "mcp==1.28.1"):
+            container.build_image(self.root, self.constraints, self.tmp / "ctx", failing)
+        self.assertEqual([c for c in fake.calls if c[0] == "build"], [])
 
     def test_rejection_a_version_that_differs_fails_the_build_and_removes_the_image(self):
         fake = self.fake((["image", "inspect"], done(1)),
                          (["run", "--rm", "--network", "none"],
                           done(out="alpha==1.0\nbeta==2.1\n")))
         with self.assertRaisesRegex(container.ContainerError, "beta 2.0 != 2.1"):
-            container.build_image(self.root, self.constraints, self.tmp / "ctx")
+            container.build_image(self.root, self.constraints, self.tmp / "ctx",
+                                  self.wheels())
         self.assertEqual(fake.calls[-1][:3], ["image", "rm", "-f"])
         self.assertTrue(fake.calls[-1][3].endswith("-unverified"))
         self.assertEqual([c for c in fake.calls if c[0] == "tag"], [])
@@ -462,7 +943,7 @@ class BuildTests(ImageCase):
                          (["image", "rm", "-f"], remove))
         ctx = Path(tempfile.mkdtemp(dir=self.tmp)) / "ctx"  # a fresh folder each call
         with self.assertRaises(container.ContainerError) as caught:
-            container.build_image(self.root, self.constraints, ctx, trust=TRUST)
+            container.build_image(self.root, self.constraints, ctx, self.wheels())
         removals = [c for c in fake.calls if c[:3] == ["image", "rm", "-f"]]
         return str(caught.exception), removals
 
@@ -495,7 +976,7 @@ class BuildTests(ImageCase):
                                  (["run", "--rm", "--network", "none"], answer))
                 ctx = self.tmp / f"ctx-{len(fake.calls)}-{answer.returncode}"
                 with self.assertRaisesRegex(container.ContainerError, "version check"):
-                    container.build_image(self.root, self.constraints, ctx)
+                    container.build_image(self.root, self.constraints, ctx, self.wheels())
                 self.assertEqual(fake.calls[-1][:3], ["image", "rm", "-f"])
                 self.assertEqual([c for c in fake.calls if c[0] == "tag"], [])
 
@@ -519,7 +1000,7 @@ class BuildTests(ImageCase):
         for n in (1, 2):
             with self.assertRaisesRegex(container.ContainerError, "version check"):
                 container.build_image(self.root, self.constraints, self.tmp / f"ctx-{n}",
-                                      trust=TRUST)
+                                      self.wheels())
         self.assertEqual(len([c for c in fake.calls if c[0] == "build"]), 2)
         self.assertEqual([c for c in fake.calls if c[0] == "tag"], [])
         self.assertTrue(all(i.endswith("-unverified") for i in images))
@@ -529,7 +1010,8 @@ class BuildTests(ImageCase):
                   (["run", "--rm", "--network", "none"], self.FREEZE_OK),
                   (["tag"], done(1, err="no space")))
         with self.assertRaisesRegex(container.ContainerError, "could not be tagged.*no space"):
-            container.build_image(self.root, self.constraints, self.tmp / "ctx", trust=TRUST)
+            container.build_image(self.root, self.constraints, self.tmp / "ctx",
+                                  self.wheels())
 
     def test_negative_a_windows_only_constraint_absent_from_the_image_is_fine(self):
         # pywin32 is in the constraints only; versions are compared where both name it.
@@ -540,7 +1022,8 @@ class BuildTests(ImageCase):
     def test_rejection_a_failed_build_raises(self):
         self.fake((["image", "inspect"], done(1)), (["build"], done(1, err="no network")))
         with self.assertRaisesRegex(container.ContainerError, "no network"):
-            container.build_image(self.root, self.constraints, self.tmp / "ctx")
+            container.build_image(self.root, self.constraints, self.tmp / "ctx",
+                                  self.wheels())
 
 
 class ConstraintsTests(unittest.TestCase):
@@ -1015,8 +1498,7 @@ class PrepareImageTests(ImageCase):
         def constraints(python, dest):
             write(Path(dest), b"alpha==1.0\n")
             return Path(dest)
-        with mock.patch.object(container, "write_constraints", constraints), \
-                mock.patch.object(container, "host_trust_bundle", return_value=""):
+        with mock.patch.object(container, "write_constraints", constraints):
             return container.prepare_image(self.root, "py", work, **kwargs), work
 
     def test_rejection_a_dry_run_with_docker_stopped_reports_unknown(self):
@@ -1039,21 +1521,39 @@ class PrepareImageTests(ImageCase):
                 # this constraints file (TagTests prove the hash itself).
                 self.assertEqual(result["tag"], container.image_tag(
                     self.root, container.requirements_files(self.root),
-                    work / "constraints.txt", ""))
+                    work / "constraints.txt"))
                 self.assertEqual(fake.calls, [["desktop", "status"],
                                               ["image", "inspect", result["tag"]]])
 
     def test_positive_a_real_start_builds_from_the_folder_it_was_given(self):
-        seen = []
+        seen, filled = [], []
 
-        def build(root, constraints, context):
+        def build(root, constraints, context, wheels):
             seen.append((Path(constraints), Path(context)))
+            wheels()
             return "bookdragon-checks:abc", True
-        with mock.patch.object(container, "build_image", build):
+
+        def fill(constraints, store, python, tags):
+            filled.append((Path(constraints), Path(store), python, tags))
+            return [], []
+        with mock.patch.object(container, "build_image", build), \
+                mock.patch.object(container, "fill_wheel_store", fill), \
+                mock.patch.object(container, "image_tags", return_value=["py3-none-any"]):
             result, work = self.prepare()
         self.assertEqual(result, {"tag": "bookdragon-checks:abc", "built": True,
                                   "constraints": work / "constraints.txt"})
         self.assertEqual(seen, [(work / "constraints.txt", work / "context")])
+        # The store is filled from the same constraints, by the run's own Python, with
+        # the tags the image itself gave.
+        self.assertEqual(filled, [(work / "constraints.txt", container.wheel_store(), "py",
+                                   ["py3-none-any"])])
+
+    def test_negative_control_a_dry_run_does_not_ask_the_image_for_its_tags(self):
+        fake = self.fake((["desktop", "status"], self.STATUS_RUNNING),
+                         (["image", "inspect"], done(1)))
+        with mock.patch.object(container, "image_tags", side_effect=AssertionError):
+            self.prepare(dry_run=True)
+        self.assertFalse([c for c in fake.calls if c[0] == "run"])
 
 
 # ---------------------------------------------------------------------------
