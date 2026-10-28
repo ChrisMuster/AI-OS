@@ -18,8 +18,10 @@ Two modes:
     WARN  an encoding= or newline= that is present but is not a value the rule
           allows (encoding=None, encoding="cp1252", newline=None, or a newline
           spelled as a carriage return and a line feed)
-    INFO  an open()/.open()/read_text()/write_text() call with no explicit
-          encoding=
+    WARN  a text-mode codecs.open() write with no explicit encoding= (it then
+          falls back to a builtin text open, which no newline= can pin)
+    INFO  an open()/.open()/io.open()/gzip.open()/codecs.open()/read_text()/
+          write_text() call with no explicit encoding=
     DEGRADED  a .py file the code checks could not be read (it does not parse
           as Python, or does not tokenise). Non-blocking: it says the check did
           not run on that file, not that the file is wrong.
@@ -45,6 +47,15 @@ silent rather than guessed at.
 Both the builtin open() and the Path.open() form are covered on both clauses.
 They differ in where the mode sits (see _OPEN_CALLS): missing the dotted form is
 how a CRLF-writing test fixture survived the 2026-08-04 clearance pass.
+
+io.open(), codecs.open() and gzip.open() are covered too, each by its own rule
+(see _open_text_state): io.open is the builtin under another name; gzip.open is
+binary unless its mode carries 't'; codecs.open has no newline= parameter, so it
+never gets a newline finding, and a text write with no encoding= is a WARN,
+because it then falls back to a builtin text open with the platform encoding. A
+known-binary call to any of the three gets no encoding finding at all. They are
+recognised by module name and through import aliases of those three modules
+(see _import_aliases).
 
 The encoding and newline clauses are checked independently. Pinning one must
 never suppress the other: until 2026-08-04 the code check returned early on
@@ -250,7 +261,17 @@ _SUBPROCESS_ATTRS = {"run", "Popen", "check_output", "check_call"}
 # argument list. Builtin open(path, mode) takes it second; Path.open(mode) takes
 # it first, because the path is the receiver rather than an argument. Reading the
 # wrong position reads the path as the mode, which reports nothing at all.
-_OPEN_CALLS = {"open": 1, ".open": 0}
+_OPEN_CALLS = {"open": 1, ".open": 0, "io.open": 1, "codecs.open": 1,
+               "gzip.open": 1}
+
+# The modules whose own `open` is a file open taking (file, mode) like the
+# builtin, so a direct `<module>.open(...)` on one of them is read as that
+# function rather than dropped. Each has its own rule (see _open_text_state),
+# because they differ in what "text" means: io.open *is* the builtin, gzip.open
+# defaults to binary, and codecs.open has no newline= at all. Every other module
+# on _NON_PATH_OPEN_ROOTS stays a namesake and is still dropped.
+_MODULE_OPENS = {"io", "codecs", "gzip"}
+_MODULE_OPEN_NAMES = {m + ".open" for m in _MODULE_OPENS}
 
 # `.open` is not owned by pathlib, and the sibling functions sharing the name do
 # not take a mode first: io/gzip/codecs take (file, mode) like the builtin, and
@@ -260,10 +281,38 @@ _OPEN_CALLS = {"open": 1, ".open": 0}
 # `zipfile.ZipFile(...).open(...)`; a receiver with no plain name at its root
 # (`(base / name).open("w")`) is left checked, because that shape is a real
 # Path.open and dropping it would delete the coverage this check exists for.
+# io, codecs and gzip stay on this list on purpose: _call_name reads a *direct*
+# `io.open(...)` as io.open before this list is consulted, so what the list
+# still drops for them is a chained receiver such as `gzip.GzipFile(f).open()`.
 _NON_PATH_OPEN_ROOTS = {
     "os", "io", "bz2", "dbm", "gzip", "lzma", "wave", "codecs", "shelve",
     "shutil", "socket", "sqlite3", "tarfile", "zipfile", "webbrowser",
 }
+
+
+def _import_aliases(tree):
+    """``(modules, functions)``: the local names bound to io, codecs or gzip.
+
+    ``modules`` maps a local name to the module it was imported as
+    (``import gzip as gz`` gives ``{"gz": "gzip"}``); ``functions`` maps a local
+    name to the open function it was imported as (``from codecs import open as
+    copen`` gives ``{"copen": "codecs.open"}``). Only absolute ``import`` and
+    ``from ... import`` statements are read, across the whole file and without
+    regard to scope; rebinding, assignment aliases, star imports and relative
+    imports are not followed. That is a deliberate limit, recorded in Known
+    Issues, not a resolver."""
+    modules, functions = {}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in _MODULE_OPENS:
+                    modules[alias.asname or alias.name] = alias.name
+        elif (isinstance(node, ast.ImportFrom) and node.level == 0
+              and node.module in _MODULE_OPENS):
+            for alias in node.names:
+                if alias.name == "open":
+                    functions[alias.asname or "open"] = node.module + ".open"
+    return modules, functions
 
 
 def _receiver_root(node):
@@ -284,14 +333,23 @@ def _receiver_root(node):
             return None
 
 
-def _call_name(func):
+def _call_name(func, aliases=None):
     """The guard's name for a call, from its callee node, or None to ignore it.
 
     Names match the ones used in findings: bare `open`, the dotted `.open` /
-    `.read_text` / `.write_text` forms, and `subprocess.<entry point>`. Returning
-    None is how a call leaves the check entirely, which is the right answer for
-    a `.open` on a receiver that is not a path."""
+    `.read_text` / `.write_text` forms, `io.open` / `codecs.open` /
+    `gzip.open`, and `subprocess.<entry point>`. Returning None is how a call
+    leaves the check entirely, which is the right answer for a `.open` on a
+    receiver that is not a path.
+
+    ``aliases`` is the ``(modules, functions)`` pair from _import_aliases. A
+    module open is recognised by the receiver's own name as well as through an
+    alias, which keeps the guard's existing name-based convention: `gzip.open`
+    is read as gzip.open whether or not the import is visible."""
+    modules, functions = aliases if aliases is not None else ({}, {})
     if isinstance(func, ast.Name):
+        if func.id in functions:
+            return functions[func.id]
         return "open" if func.id == "open" else None
     if not isinstance(func, ast.Attribute):
         return None
@@ -302,7 +360,12 @@ def _call_name(func):
     if attr in ("read_text", "write_text"):
         return "." + attr
     if attr == "open":
-        if _receiver_root(func.value) in _NON_PATH_OPEN_ROOTS:
+        if isinstance(func.value, ast.Name):
+            module = modules.get(func.value.id, func.value.id)
+            if module in _MODULE_OPENS:
+                return module + ".open"
+        root = _receiver_root(func.value)
+        if modules.get(root, root) in _NON_PATH_OPEN_ROOTS:
             return None
         return ".open"
     return None
@@ -348,10 +411,11 @@ def _call_sites(text, code, tree):
         line_starts.append(pos)
         pos += len(line)
     sites = []
+    aliases = _import_aliases(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        name = _call_name(node.func)
+        name = _call_name(node.func, aliases)
         if name is None:
             continue
         end = _node_end_index(node.func, line_starts, lines)
@@ -644,17 +708,63 @@ def _open_mode(parsed, mode_index=1):
     return ""
 
 
+def _encoding_arg(name, parsed):
+    """The source text of a call's encoding argument, or None if it has none.
+
+    ``encoding=`` everywhere; for codecs.open also its third positional
+    argument, since ``codecs.open(file, mode, encoding)`` is how that function
+    is commonly called. io.open and gzip.open also accept a positional encoding
+    (at index 3), but that is not read: such a call is reported as missing it,
+    a stated limit rather than a silent pass."""
+    if "encoding" in parsed.kwargs:
+        return parsed.kwargs["encoding"]
+    if name == "codecs.open" and len(parsed.positional) > 2:
+        return parsed.positional[2]
+    return None
+
+
+def _open_text_state(name, parsed):
+    """``"text"``, ``"binary"``, or None when an open-style call's mode cannot
+    be read.
+
+    Each open function defines binary its own way, which is why this is one
+    function with a branch per name rather than one test on the mode string:
+
+    * builtin open, ``.open`` and io.open: binary when the mode carries 'b'.
+    * gzip.open: its mode defaults to ``"rb"``, and it wraps the stream in a
+      text layer only when the mode carries 't'. So no mode, or a mode without
+      't', is binary; only a 't' mode is text.
+    * codecs.open: with an encoding it forces the file open in binary and
+      layers its own codec on top, whatever the mode says; with no encoding it
+      is a plain ``builtins.open(file, mode)``. So it is binary only when the
+      mode carries 'b' *and* no encoding (or a literal None) is passed."""
+    mode = _open_mode(parsed, _OPEN_CALLS[name])
+    if mode is None:
+        return None
+    if name == "gzip.open":
+        return "text" if "t" in mode else "binary"
+    if name == "codecs.open":
+        enc = _encoding_arg(name, parsed)
+        no_encoding = enc is None or _literal_or_none(enc)[0] == "none"
+        return "binary" if "b" in mode and no_encoding else "text"
+    return "binary" if "b" in mode else "text"
+
+
 def _is_text_mode_write(name, parsed):
     """True for a call that writes text, where Windows translates LF to CRLF on
     the way out unless ``newline=`` is passed. Reads and binary writes are
-    excluded: the newline rule governs what gets written, not what is read."""
+    excluded: the newline rule governs what gets written, not what is read.
+
+    codecs.open is never one: it has no ``newline=`` parameter, so the clause
+    cannot be satisfied there and is not asked. Its unpinned-encoding fallback
+    to a translating builtin open is reported by the encoding clause instead."""
     if name == ".write_text":
         return True
-    if name not in _OPEN_CALLS:
+    if name == "codecs.open" or name not in _OPEN_CALLS:
+        return False
+    if _open_text_state(name, parsed) != "text":
         return False
     mode = _open_mode(parsed, _OPEN_CALLS[name])
-    if mode is None or "b" in mode:
-        return False
     return any(c in mode for c in "wax+")
 
 
@@ -701,7 +811,17 @@ def check_python_code(rel, text):
         # claiming a call is clean that was never actually checked.
         if parsed.star or parsed.double_star:
             continue
-        if "encoding" not in parsed.kwargs:
+        encoding = _encoding_arg(name, parsed)
+        if (name in _MODULE_OPEN_NAMES
+                and _open_text_state(name, parsed) == "binary"):
+            # A known-binary io/codecs/gzip open has no text layer, so neither a
+            # missing nor a wrong encoding is a finding: io.open and gzip.open
+            # raise ValueError for an encoding in binary mode, and a binary
+            # codecs.open is by definition one with no encoding. Gated on these
+            # three names only; builtin open and `.open` keep their branches
+            # below unchanged, so `open(p, "wb", encoding="cp1252")` still WARNs.
+            pass
+        elif encoding is None:
             if name.startswith("subprocess"):
                 if (parsed.kwargs.get("text") == "True"
                         or parsed.kwargs.get("universal_newlines") == "True"):
@@ -709,6 +829,35 @@ def check_python_code(rel, text):
                         "WARN", "encoding",
                         f"{rel}: text-mode {name}(...) with no explicit encoding= "
                         f"(decodes as cp1252 on Windows)",
+                    ))
+            elif name == "codecs.open":
+                # With no encoding, codecs.open is builtins.open(file, mode):
+                # a text open in the platform encoding *and* with newline
+                # translation, and it offers no newline= to pin. A write is
+                # therefore a WARN, stricter than builtin open's INFO, because
+                # nothing short of passing an encoding can make it compliant.
+                # A read is the ordinary INFO. An unreadable mode is silent.
+                mode = _open_mode(parsed, _OPEN_CALLS[name])
+                if mode is not None and any(c in mode for c in "wax+"):
+                    findings.append((
+                        "WARN", "encoding",
+                        f"{rel}: text-mode {name}(...) with no explicit "
+                        f"encoding= (falls back to builtin open: platform "
+                        f"encoding and newline translation)",
+                    ))
+                elif mode is not None:
+                    findings.append((
+                        "INFO", "encoding",
+                        f"{rel}: {name}(...) with no explicit encoding=",
+                    ))
+            elif name == "gzip.open":
+                # Binary was handled above, so what is left is a 't' mode
+                # (text) or an unreadable one, which is silent: gzip.open
+                # defaults to binary, so an unknown mode is not presumed text.
+                if _open_text_state(name, parsed) == "text":
+                    findings.append((
+                        "INFO", "encoding",
+                        f"{rel}: {name}(...) with no explicit encoding=",
                     ))
             elif name in _OPEN_CALLS:
                 mode = _open_mode(parsed, _OPEN_CALLS[name])
@@ -718,9 +867,9 @@ def check_python_code(rel, text):
                 # (see _MODE_CHARS and _NON_PATH_OPEN_ROOTS - the receiver rule
                 # catches the modules, not a local of any other type), so that
                 # stays silent too; builtin open() is unambiguous and is still
-                # reported.
+                # reported, and so is io.open(), which is the same function.
                 binary = mode is not None and "b" in mode
-                ambiguous = mode is None and name != "open"
+                ambiguous = mode is None and name not in ("open", "io.open")
                 if not binary and not ambiguous:
                     findings.append((
                         "INFO", "encoding",
@@ -731,15 +880,17 @@ def check_python_code(rel, text):
                     "INFO", "encoding",
                     f"{rel}:{name}(...) with no explicit encoding=",
                 ))
-        elif _encoding_verdict(parsed.kwargs["encoding"]) == "bad":
+        elif _encoding_verdict(encoding) == "bad":
             # Present but wrong. Until 2026-08-05 the clause above was the whole
             # check, so encoding=None and encoding="cp1252" were read as
             # compliant while AGENTS.md states the rule as a value. An
-            # unreadable value stays silent rather than guessed at.
+            # unreadable value stays silent rather than guessed at. The value
+            # comes from _encoding_arg, so a positional codecs.open encoding is
+            # judged the same way as a keyword one.
             findings.append((
                 "WARN", "encoding",
                 f"{rel}: {name}(...) with encoding="
-                f"{parsed.kwargs['encoding']}, not utf-8",
+                f"{encoding}, not utf-8",
             ))
         # The newline rule is a second, independent clause of the same project
         # rule, so it is checked separately. Folding it into the encoding branch

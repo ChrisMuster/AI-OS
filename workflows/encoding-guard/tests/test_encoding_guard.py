@@ -6,10 +6,15 @@ never itself flagged by the guard.
 """
 
 import ast
+import builtins
+import codecs
+import gzip
+import io
 import os
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
@@ -780,16 +785,22 @@ class TestCallDiscovery(unittest.TestCase):
             "zipfile")
         self.assertEqual(run._receiver_root(ast.parse("Path(p)").body[0].value), "Path")
 
-    def test_open_style_modules_with_the_builtin_signature_stay_silent(self):
+    def test_open_style_modules_with_the_builtin_signature_are_checked(self):
         """`io`, `codecs` and `gzip` take (file, mode) rather than (mode), so
-        argument 0 is a filename. They are excluded by name rather than left to
-        the mode shape, and this is a documented false negative: a real text
-        write through one of them is not checked."""
-        for src in ('import io\nio.open(f, "w")\n',
-                    'import codecs\ncodecs.open(f, "w", "utf-8")\n',
-                    'import gzip\ngzip.open(f, "wt")\n'):
+        argument 0 is a filename. Until 2026-10-28 they were dropped by name,
+        a documented false negative: a real text write through one of them was
+        not checked. They are now read as their own functions, mode second,
+        each by its own rule (TestModuleOpenCalls holds the full controls). The
+        compliant codecs case that used to be in this list stays silent."""
+        cases = {
+            'import io\nio.open(f, "w")\n': ["INFO", "WARN"],
+            'import codecs\ncodecs.open(f, "w")\n': ["WARN"],
+            'import gzip\ngzip.open(f, "wt")\n': ["INFO", "WARN"],
+            'import codecs\ncodecs.open(f, "w", "utf-8")\n': [],
+        }
+        for src, severities in cases.items():
             with self.subTest(src=src):
-                self.assertEqual(self._findings(src), [])
+                self.assertEqual([f[0] for f in self._findings(src)], severities)
 
     # -- the receiver rule must not delete real coverage -----------------------
     def test_real_path_open_writes_still_fire_on_every_receiver_shape(self):
@@ -866,6 +877,302 @@ class TestCallDiscovery(unittest.TestCase):
     def test_a_parenthesis_in_a_trailing_comment_is_not_the_call(self):
         src = 'open  # see (note)\nif False:\n    pass\n'
         self.assertEqual(self._findings(src), [])
+
+
+class TestModuleOpenCalls(unittest.TestCase):
+    """io.open, codecs.open and gzip.open, each judged by what it really does.
+
+    The three share builtin open's (file, mode) signature but not its meaning
+    of "text", so each has its own rule and each rule has all three controls:
+    a compliant call that must stay silent, a non-compliant one that must be
+    reported naming its reason, and a lookalike that must not be reported.
+
+    * io.open is builtins.open, so it is judged as open, mode second, newline
+      rule included. One deliberate departure: a known-binary io.open gets no
+      encoding finding at all, where builtin open still reports a wrong one.
+    * gzip.open defaults to "rb" and is text only with 't' in the mode.
+    * codecs.open has no newline= parameter, so it never gets a newline
+      finding; a write with no encoding falls back to a translating builtin
+      open in the platform encoding, which is a WARN; a read is INFO.
+    """
+
+    def _findings(self, src):
+        return run.check_python_code("x.py", src)
+
+    def _summary(self, src):
+        """``(severity, clause)`` per finding, in order."""
+        return [(sev, "newline" if "newline=" in msg else "encoding")
+                for sev, _label, msg in self._findings(src)]
+
+    def _assert_silent(self, *srcs):
+        for src in srcs:
+            with self.subTest(src=src):
+                self.assertEqual(self._findings(src), [])
+
+    def test_every_finding_carries_the_encoding_label(self):
+        for src in ('io.open(p, "w")\n', 'codecs.open(p, "w")\n',
+                    'gzip.open(p, "wt")\n'):
+            with self.subTest(src=src):
+                findings = self._findings(src)
+                self.assertTrue(findings)
+                self.assertEqual({f[1] for f in findings}, {"encoding"})
+
+    # -- io.open ---------------------------------------------------------------
+    def test_io_open_compliant_calls_are_silent(self):
+        self._assert_silent(
+            'io.open(p, "w", encoding="utf-8", newline="\\n")\n',
+            'io.open(p, mode="a", encoding="utf-8", newline="\\n")\n',
+            'io.open(p, encoding="utf-8")\n',
+        )
+
+    def test_io_open_text_write_with_nothing_pinned_reports_both_clauses(self):
+        findings = self._findings('io.open(p, "w")\n')
+        self.assertEqual(self._summary('io.open(p, "w")\n'),
+                         [("INFO", "encoding"), ("WARN", "newline")])
+        self.assertTrue(all("io.open(...)" in f[2] for f in findings))
+        self.assertIn("no explicit encoding=", findings[0][2])
+        self.assertIn("no explicit newline=", findings[1][2])
+
+    def test_io_open_wrong_codec_on_a_text_mode_is_a_warn(self):
+        src = 'io.open(p, "w", encoding="cp1252", newline="\\n")\n'
+        findings = self._findings(src)
+        self.assertEqual(self._summary(src), [("WARN", "encoding")])
+        self.assertIn("not utf-8", findings[0][2])
+
+    def test_io_open_binary_modes_are_silent(self):
+        """The departure from builtin open, pinned: io.open raises ValueError
+        for an encoding in binary mode, and the brief's binary rule applies to
+        the new functions, so even a wrong encoding there is not reported."""
+        self._assert_silent('io.open(p, "rb")\n', 'io.open(p, "wb")\n',
+                            'io.open(p, "wb", encoding="cp1252")\n')
+
+    def test_io_open_reads_the_mode_second(self):
+        """"wa" is mode-shaped: read at position 0 it would be a write."""
+        self._assert_silent('io.open("wa", encoding="utf-8")\n')
+        self.assertEqual(self._summary('io.open(p, "a", encoding="utf-8")\n'),
+                         [("WARN", "newline")])
+
+    def test_io_open_newline_none_fires(self):
+        self.assertEqual(
+            self._summary('io.open(p, "w", encoding="utf-8", newline=None)\n'),
+            [("WARN", "newline")])
+
+    def test_io_open_computed_mode_is_info_as_for_builtin_open(self):
+        self.assertEqual(self._summary("io.open(p, mode)\n"),
+                         [("INFO", "encoding")])
+
+    # -- gzip.open -------------------------------------------------------------
+    def test_gzip_open_compliant_text_writes_are_silent(self):
+        self._assert_silent(
+            'gzip.open(p, "wt", encoding="utf-8", newline="\\n")\n',
+            'gzip.open(p, "at", encoding="utf-8", newline="\\n")\n',
+            'gzip.open(p, "rt", encoding="utf-8")\n',
+        )
+
+    def test_gzip_open_text_write_with_nothing_pinned_reports_both_clauses(self):
+        findings = self._findings('gzip.open(p, "wt")\n')
+        self.assertEqual(self._summary('gzip.open(p, "wt")\n'),
+                         [("INFO", "encoding"), ("WARN", "newline")])
+        self.assertTrue(all("gzip.open(...)" in f[2] for f in findings))
+
+    def test_gzip_open_text_write_with_encoding_only_reports_newline(self):
+        src = 'gzip.open(p, "wt", encoding="utf-8")\n'
+        findings = self._findings(src)
+        self.assertEqual(self._summary(src), [("WARN", "newline")])
+        self.assertIn("Windows text mode writes CRLF", findings[0][2])
+
+    def test_gzip_open_text_read_is_info_only(self):
+        self.assertEqual(self._summary('gzip.open(p, "rt")\n'),
+                         [("INFO", "encoding")])
+
+    def test_gzip_open_wrong_codec_on_a_text_mode_is_a_warn(self):
+        src = 'gzip.open(p, "wt", encoding="cp1252", newline="\\n")\n'
+        self.assertEqual(self._summary(src), [("WARN", "encoding")])
+
+    def test_gzip_open_binary_by_default_is_silent(self):
+        """No mode, or a mode without 't', is binary for gzip: "w" and "a" are
+        binary writes there, not text ones. A computed mode is not presumed
+        text either, since the default is binary."""
+        self._assert_silent(
+            "gzip.open(p)\n", 'gzip.open(p, "w")\n', 'gzip.open(p, "wb")\n',
+            'gzip.open(p, "a")\n', 'gzip.open(p, mode="x")\n',
+            "gzip.open(p, mode)\n",
+            'gzip.open(p, "wb", encoding="cp1252")\n',
+            'gzip.open(p, "w", encoding="latin-1")\n',
+        )
+
+    # -- codecs.open -----------------------------------------------------------
+    def test_codecs_open_compliant_calls_are_silent(self):
+        self._assert_silent(
+            'codecs.open(p, "w", encoding="utf-8")\n',
+            'codecs.open(p, "w", "utf-8")\n',
+            'codecs.open(p, "r", "utf-8")\n',
+        )
+
+    def test_codecs_open_never_gets_a_newline_finding(self):
+        """codecs.open has no newline= parameter, so asking for one is a
+        demand nothing can satisfy."""
+        self._assert_silent(
+            'codecs.open(p, "w", encoding="utf-8")\n',
+            'codecs.open(p, "a", encoding="utf-8")\n',
+            'codecs.open(p, "r+", encoding="utf-8")\n',
+        )
+
+    def test_codecs_open_write_with_no_encoding_is_a_warn_naming_the_reason(self):
+        for src in ('codecs.open(p, "w")\n', 'codecs.open(p, "a")\n'):
+            with self.subTest(src=src):
+                findings = self._findings(src)
+                self.assertEqual(self._summary(src), [("WARN", "encoding")])
+                self.assertIn("codecs.open(...)", findings[0][2])
+                self.assertIn("falls back to builtin open", findings[0][2])
+
+    def test_codecs_open_read_with_no_encoding_is_info(self):
+        for src in ('codecs.open(p, "r")\n', "codecs.open(p)\n"):
+            with self.subTest(src=src):
+                self.assertEqual(self._summary(src), [("INFO", "encoding")])
+
+    def test_codecs_open_binary_with_no_encoding_is_silent(self):
+        self._assert_silent('codecs.open(p, "rb")\n', 'codecs.open(p, "wb")\n',
+                            "codecs.open(p, mode)\n")
+
+    def test_codecs_open_wrong_codec_keyword_or_positional_is_a_warn(self):
+        for src in ('codecs.open(p, "w", encoding="cp1252")\n',
+                    'codecs.open(p, "w", "cp1252")\n',
+                    'codecs.open(p, "r", "latin-1")\n'):
+            with self.subTest(src=src):
+                findings = self._findings(src)
+                self.assertEqual(self._summary(src), [("WARN", "encoding")])
+                self.assertIn("not utf-8", findings[0][2])
+
+    def test_codecs_open_binary_mode_with_an_encoding_is_text_in_effect(self):
+        """With an encoding, codecs.open layers its codec over a binary file
+        whatever the mode says, so a 'b' mode does not make it binary."""
+        self.assertEqual(self._summary('codecs.open(p, "wb", "cp1252")\n'),
+                         [("WARN", "encoding")])
+
+    # -- builtin open is unchanged ---------------------------------------------
+    def test_builtin_open_still_reports_a_wrong_codec_on_a_binary_mode(self):
+        """The binary skip is gated on the three new names only."""
+        self.assertEqual(self._summary('open(p, "wb", encoding="cp1252")\n'),
+                         [("WARN", "encoding")])
+
+    # -- lookalikes ------------------------------------------------------------
+    def test_other_excluded_modules_stay_excluded(self):
+        self._assert_silent(
+            'import os\nos.open(p, "w")\n',
+            'import tarfile\ntarfile.open(p, "w")\n',
+            'import zipfile\nzipfile.ZipFile(p).open("w")\n',
+            'import bz2\nbz2.open(p, "wt")\n',
+            'import lzma\nlzma.open(p, "wt")\n',
+            'import shelve\nshelve.open(p)\n',
+            'import dbm\ndbm.open(p, "c")\n',
+            'import webbrowser\nwebbrowser.open("w")\n',
+        )
+
+    def test_a_chained_receiver_on_the_three_is_still_excluded(self):
+        """Only a direct `<module>.open` is the module's open function."""
+        self._assert_silent(
+            'gzip.GzipFile(p).open("w")\n',
+            'io.BytesIO().open("w")\n',
+            'codecs.getwriter("x").open("w")\n',
+        )
+
+    def test_the_names_inside_strings_docstrings_and_comments_are_not_calls(self):
+        self._assert_silent(
+            's = \'io.open(p, "w")\'\nt = "gzip.open(p, \\"wt\\")"\n',
+            'def f():\n    """codecs.open(p, "w") and gzip.open(p, "wt")."""\n',
+            '# io.open(p, "w"); codecs.open(p, "w"); gzip.open(p, "wt")\n',
+        )
+
+    # -- import aliases --------------------------------------------------------
+    def test_import_module_as_alias(self):
+        src = 'import gzip as gz\ngz.open(p, "wt")\n'
+        findings = self._findings(src)
+        self.assertEqual(self._summary(src),
+                         [("INFO", "encoding"), ("WARN", "newline")])
+        self.assertTrue(all("gzip.open(...)" in f[2] for f in findings))
+        src = 'import io as _io\n_io.open(p, "w", encoding="utf-8")\n'
+        findings = self._findings(src)
+        self.assertEqual(self._summary(src), [("WARN", "newline")])
+        self.assertIn("io.open(...)", findings[0][2])
+
+    def test_from_io_import_open(self):
+        src = 'from io import open\nopen(p, "w", encoding="utf-8")\n'
+        findings = self._findings(src)
+        self.assertEqual(self._summary(src), [("WARN", "newline")])
+        self.assertIn("io.open(...)", findings[0][2])
+
+    def test_from_codecs_import_open_as_alias(self):
+        src = 'from codecs import open as copen\ncopen(p, "w")\n'
+        findings = self._findings(src)
+        self.assertEqual(self._summary(src), [("WARN", "encoding")])
+        self.assertIn("falls back to builtin open", findings[0][2])
+
+    def test_from_codecs_import_open_shadows_builtin_open(self):
+        """Without the alias this would be builtin open and a newline WARN."""
+        self._assert_silent(
+            'from codecs import open\nopen(p, "w", encoding="utf-8")\n')
+
+    def test_from_gzip_import_open_as_alias(self):
+        self._assert_silent('from gzip import open as gopen\ngopen(p, "w")\n')
+        self.assertEqual(
+            self._summary('from gzip import open as gopen\ngopen(p, "wt")\n'),
+            [("INFO", "encoding"), ("WARN", "newline")])
+
+    def test_an_alias_name_with_no_import_is_still_path_open(self):
+        src = 'gz.open("w", encoding="utf-8")\n'
+        findings = self._findings(src)
+        self.assertEqual(self._summary(src), [("WARN", "newline")])
+        self.assertIn(".open(...)", findings[0][2])
+        self.assertNotIn("gzip.open", findings[0][2])
+
+    def test_a_chained_receiver_through_an_alias_is_excluded(self):
+        self._assert_silent('import gzip as gz\ngz.GzipFile(p).open("w")\n')
+
+
+class TestModuleOpenPremises(unittest.TestCase):
+    """The standard-library facts the rules in TestModuleOpenCalls rest on.
+
+    Each rule is only right if the function behaves as the rule assumes, so the
+    assumptions are checked against the running interpreter rather than taken
+    on trust. The functions are called through local names so this file's own
+    source never presents the guard with a real io/codecs/gzip open call.
+    """
+
+    def test_io_open_is_the_builtin_open(self):
+        self.assertIs(io.open, builtins.open)
+
+    def test_codecs_open_without_an_encoding_is_a_builtin_text_open(self):
+        opener, mode = codecs.open, "r"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.txt"
+            path.write_bytes(b"x\n")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                fh = opener(str(path), mode)
+                try:
+                    self.assertIsInstance(fh, io.TextIOWrapper)
+                finally:
+                    fh.close()
+                fh = opener(str(path), mode, "utf-8")
+                try:
+                    self.assertIsInstance(fh, codecs.StreamReaderWriter)
+                    self.assertIn("b", fh.stream.mode)
+                finally:
+                    fh.close()
+
+    def test_gzip_open_defaults_to_binary_and_refuses_an_encoding_there(self):
+        gz_open, io_open = gzip.open, io.open
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.gz"
+            path.write_bytes(gzip.compress(b"x\n"))
+            with gz_open(str(path)) as fh:
+                self.assertIsInstance(fh, gzip.GzipFile)
+                self.assertEqual(fh.read(), b"x\n")
+            with self.assertRaises(ValueError):
+                gz_open(str(path), "rb", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                io_open(str(path), "rb", encoding="utf-8")
 
 
 class TestHiddenDirWalk(unittest.TestCase):
