@@ -1403,7 +1403,10 @@ class Run:
                           + (f"\nRe-raises: {f['reraises']}" if f.get("reraises") else ""))
         # A Claude builder's fix prompt is as it was; a Codex builder is reminded of
         # its tool rules, which differ from what its own instructions assume.
-        rules = ("" if builder.provider != limits.CODEX else
+        # A Claude builder keeps its first turn's tool rules in its session, but the one
+        # it was seen breaking is repeated, for a fix turn after context compaction
+        # (code review R54-2), as the brief is.
+        rules = (render("fix-tools-claude") if builder.provider != limits.CODEX else
                  "The rules for your tools are as before:\n" + self._tool_rules(builder)
                  + "\n")
         prompt = render("fix", round=round_no, findings="\n\n".join(blocks),
@@ -1841,7 +1844,14 @@ def render_record_packet(run):
     return path
 
 
+PAUSE_READ = {sr.AWAITING_PLAN_APPROVAL: "plan-report.md", sr.AWAITING_USER: "questions.md"}
+
+
 def write_report(run):
+    """``report.md`` and ``report.json``, written at every end and at every pause, so a
+    run resumed after a stop and then paused never shows the old stop as its state (the
+    A3 proof run, run 2). A paused run's report names the pause, what to read and how
+    to continue, with its earlier stops listed after."""
     state = run.state
     if before_approval(state):
         # The report names the run record's packet before approval, so it is written
@@ -1849,14 +1859,28 @@ def write_report(run):
         # identity refusal, a synthesis error) still names a file that exists (code
         # review R3-1).
         render_record_packet(run)
-    last = state["stop_reasons"][-1]
-    evidence = last.get("evidence") or {}
+    paused = state.get("status") == sr.PAUSED
+    # A failed approval leaves the run paused for approval, but --approve and --amend
+    # refuse it from then on (code review R54-1), so the report says so instead.
+    failure = state.get("approval_failure") if paused else None
+    last = None if paused else state["stop_reasons"][-1]
+    evidence = {} if paused else last.get("evidence") or {}
     findings = list(run.ledger.findings.values())
+    if failure:
+        advice = (f"End it with {STARTER} --stop {state['run_id']} and start a new run: "
+                  "an earlier approval failed, so it cannot be approved or amended.")
+    elif paused:
+        advice = pause_commands(state["run_id"], state.get("pause"))
+    else:
+        advice = recommendation(last["reason"], state["run_id"],
+                                paid=bool(evidence.get("paid_usage")))
     report = {
-        "run_id": state["run_id"], "item": state["item"], "stop_reason": last["reason"],
+        "run_id": state["run_id"], "item": state["item"],
+        "status": state.get("status"), "pause": state.get("pause"),
+        "approval_failure": failure,
+        "stop_reason": None if paused else last["reason"],
         "evidence": evidence,
-        "recommendation": recommendation(last["reason"], state["run_id"],
-                                         paid=bool(evidence.get("paid_usage"))),
+        "recommendation": advice,
         "stop_reasons": state["stop_reasons"], "last_step": state["step"],
         "rounds": state.get("rounds", []),
         "open": [f["label"] for f in findings if not packet_mod.is_addressed(f)],
@@ -1894,17 +1918,33 @@ def write_report(run):
         lines += ["Codex usage not reported: "
                   + " ".join(str(report["usage_source"].get("codex_reason")).split())
                   + ". The ceiling was not applied to Codex for this run.", ""]
-    lines += [f"**Stop reason:** `{last['reason']}`", "",
-             f"**Recommended:** {report['recommendation']}", ""]
-    if last["reason"] == sr.USAGE_LIMIT:
-        resets = evidence.get("resets_at")
-        lines += [f"**Provider:** {evidence.get('provider')}. {evidence.get('detail')}",
-                  "", f"**Reset time:** {resets if resets is not None else 'not reported'}"
+    if failure:
+        lines += [f"**Status:** paused, `{state.get('pause')}`, but an earlier approval "
+                  f"failed at {' '.join(str(failure.get('reason')).split())}.", "",
+                  f"**Recommended:** {report['recommendation']}", ""]
+    elif paused:
+        read = PAUSE_READ.get(state.get("pause"))
+        lines += [f"**Status:** paused, `{state.get('pause')}`"
+                  + (f": read `{_record_path(run, read)}`." if read else "."), "",
+                  f"**Recommended:** {report['recommendation']}", ""]
+    if paused:
+        if state["stop_reasons"]:
+            lines += ["**Earlier stops, each since resumed:** "
+                      + ", ".join(f"`{s['reason']}` at {s['at']}"
+                                  for s in state["stop_reasons"]) + ".", ""]
+    else:
+        lines += [f"**Stop reason:** `{last['reason']}`", "",
+                  f"**Recommended:** {report['recommendation']}", ""]
+        if last["reason"] == sr.USAGE_LIMIT:
+            resets = evidence.get("resets_at")
+            lines += [f"**Provider:** {evidence.get('provider')}. "
+                      f"{evidence.get('detail')}", "",
+                      f"**Reset time:** {resets if resets is not None else 'not reported'}"
                       + ("" if resets is not None else "; --wait does nothing, so check "
                          "the allowance has reset and resume by hand."), ""]
-    elif evidence:
-        lines += ["**Evidence:** `" + json.dumps(evidence, ensure_ascii=False)[:1500]
-                  .replace("`", "'") + "`", ""]
+        elif evidence:
+            lines += ["**Evidence:** `" + json.dumps(evidence, ensure_ascii=False)[:1500]
+                      .replace("`", "'") + "`", ""]
     lines += [f"**Findings:** {len(report['open'])} open, {len(report['addressed'])} "
               f"addressed, in `{report['packet']}`.", "", "## Steps", ""]
     for step in report["steps"]:
@@ -2779,12 +2819,23 @@ def _approval_writes(run, folder, brief, image, started, note, reading, credits,
         except Exception as gone:  # noqa: BLE001 - the refusal says so
             notes.append(f"the failure could not be recorded in state.json either "
                          f"({type(gone).__name__}: {gone})")
+        _report_failed_approval(run, notes)
         if logged:
             _log("failed", f"Run {run_id} approval failed at step {step}; the run cannot "
                            "be approved again.", run.log_path)
         raise RunRefused([f"the approval failed at {reason}. Its own writes may be in the "
                           "project, so this run cannot be approved again: end it with "
                           f"{STARTER} --stop {run_id} and start a new run", *notes]) from exc
+
+
+def _report_failed_approval(run, notes):
+    """Rewrite the report once ``approval_failure`` is recorded (code review R54-1), so
+    it no longer recommends the approval and amendment the run now refuses. A report
+    that cannot be written is added to the refusal's notes, never raised over it."""
+    try:
+        write_report(run)
+    except Exception as exc:  # noqa: BLE001 - the refusal says so
+        notes.append(f"the report could not be rewritten ({type(exc).__name__}: {exc})")
 
 
 def amend(run, brief_arg, dry_run=False):
@@ -2866,6 +2917,7 @@ def amend(run, brief_arg, dry_run=False):
                     runrecord.write_state(run.run_dir, state)
                 except Exception:  # noqa: BLE001 - nothing more can be written
                     pass
+                _report_failed_approval(run, problems)
         else:
             problems.append("nothing was changed")
         raise RunRefused(problems) from exc

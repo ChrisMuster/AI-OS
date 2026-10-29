@@ -101,6 +101,17 @@ def project_root(script_dir=SCRIPT_DIR):
 PROJECT_ROOT = project_root()
 sys.path.insert(0, str(SCRIPT_DIR))
 
+# BOOK_DRAGON_CLEAN_COPY=1 is set only inside the review orchestrator's offline
+# container, over a copy of the project that holds no gitignored file. There a
+# missing LOG.md is expected, and is reported as INFO "checked on the host": the
+# orchestrator runs this check on the host after every builder turn. Only `1`
+# counts, as in the audit and the link check.
+CLEAN_COPY_ENV = "BOOK_DRAGON_CLEAN_COPY"
+
+
+def clean_copy() -> bool:
+    return os.environ.get(CLEAN_COPY_ENV) == "1"
+
 import context_parse  # noqa: E402
 import logtime  # noqa: E402
 
@@ -462,6 +473,12 @@ def _check_log(root, owner, changed_here, label_dir, severity=WARN):
     reference = max(mtimes)
 
     log_path = root / (f"{owner}/{LOG_NAME}" if owner else LOG_NAME)
+    if not log_path.exists() and clean_copy():
+        # The review orchestrator's clean copy holds no gitignored file, so every
+        # LOG.md is missing there; the orchestrator runs this check on the host after
+        # every builder turn, against the real LOG.md files.
+        return [(INFO, LABEL,
+                 f"{label_dir}: LOG.md is not in the clean copy; checked on the host")]
     if not log_path.exists():
         return [(severity, LABEL,
                  f"{label_dir}: no LOG.md for a directory whose content changed")]

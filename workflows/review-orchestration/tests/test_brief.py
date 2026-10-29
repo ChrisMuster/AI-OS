@@ -29,6 +29,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 WORKFLOW = Path(__file__).resolve().parent.parent
 SCRIPTS = WORKFLOW / "scripts"
@@ -46,6 +47,8 @@ def _load(name):
 
 brief = _load("brief")
 run = _load("run")
+# The module the checker imports for the verification lists (the one in sys.modules).
+approver_mod = _load("approver")
 
 VALID = {
     "Goal": "The checker refuses an unready brief.",
@@ -271,10 +274,55 @@ class EmptyTests(BriefCase):
 class AcceptanceTests(BriefCase):
     def test_positive_control_several_checks(self):
         self.assertPasses(compose({"Acceptance checks":
-                                   "- python a.py\n- git diff --exit-code\n### More\n- ls"}))
+                                   "- python workflows/x/tests/test_x.py\n"
+                                   "- python workflows/encoding-guard/scripts/run.py --check\n"
+                                   "### More\n- python -m py_compile workflows/x/scripts/a.py"}))
 
     def test_positive_control_indented_bullet(self):
-        self.assertPasses(compose({"Acceptance checks": "- python a.py\n  - python b.py"}))
+        self.assertPasses(compose({"Acceptance checks":
+                                   "- python workflows/x/tests/test_a.py\n"
+                                   "  - python workflows/x/tests/test_b.py"}))
+
+    # Both builders' verification lists (A3 proof run follow-up, the user's option A):
+    # run 1's builder could not run its brief's `python -c` acceptance check.
+
+    def test_rejection_control_a_check_on_neither_list_names_both(self):
+        command = ("python -c \"import unittest; raise SystemExit(0)\"")
+        lines, code = self.check(compose({"Acceptance checks": f"- {command}"}))
+        self.assertEqual(code, 1)
+        failed = [line for line in lines if line.startswith("FAIL: Acceptance checks:")]
+        self.assertEqual(len(failed), 2, lines)
+        self.assertIn("the Claude builder could not run this check", failed[0])
+        self.assertIn("`config/verify-commands.txt`", failed[0])
+        self.assertIn("the Codex builder could not run this check", failed[1])
+        self.assertIn("`config/codex-verify-commands.txt`", failed[1])
+
+    def test_rejection_control_a_check_on_one_list_names_the_other(self):
+        # Claude's list takes any workflow's `run.py --check`; Codex's names its
+        # checks one by one, and the web-research check is not among them.
+        command = "python workflows/web-research/scripts/run.py --check"
+        lines, code = self.check(compose({"Acceptance checks": f"- {command}"}))
+        self.assertEqual(code, 1)
+        failed = [line for line in lines if line.startswith("FAIL: Acceptance checks:")]
+        self.assertEqual(len(failed), 1, lines)
+        self.assertIn("the Codex builder could not run this check", failed[0])
+
+    def test_rejection_control_the_lists_own_refusals_apply(self):
+        # The test is the check helper's own (approver.verify_refusal), so a listed
+        # shape naming a `..` component is refused as the helper would refuse it.
+        self.assertRefused(compose({"Acceptance checks":
+                                    "- python workflows/x/tests/../tests/test_x.py"}),
+                           "Acceptance checks", "the Claude builder could not run")
+
+    def test_rejection_control_unreadable_lists_refuse(self):
+        with mock.patch.object(approver_mod, "load_verify_commands",
+                               side_effect=approver_mod.ApproverError("cannot read it")):
+            self.assertRefused(compose({}), "Acceptance checks",
+                               "the builders' verification lists cannot be read")
+
+    def test_negative_control_a_malformed_command_is_not_also_list_checked(self):
+        lines, _ = self.check(compose({"Acceptance checks": "- python a.py && echo ok"}))
+        self.assertFalse(any("could not run this check" in line for line in lines), lines)
 
     def test_rejection_control_wrapped_continuation_line(self):
         self.assertRefused(compose({"Acceptance checks": "- python a.py\n  --flag"}),

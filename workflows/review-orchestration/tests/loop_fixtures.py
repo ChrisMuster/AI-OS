@@ -82,7 +82,7 @@ BRIEF = """\
 - None.
 
 ## Acceptance checks
-- python -c "print(1)"
+- python workflows/demo/tests/test_demo.py
 
 ## Edit paths
 - work/ | Measure: git ls-files work

@@ -806,6 +806,75 @@ class IntegrationTest(unittest.TestCase):
         self.assertIn("Revision History gained no entry", msgs)
 
 
+class CleanCopyLogTest(unittest.TestCase):
+    """BOOK_DRAGON_CLEAN_COPY=1, set only in the review orchestrator's offline
+    container, makes a missing LOG.md an INFO "checked on the host" (an A3 proof run
+    follow-up: inside the clean copy every LOG.md is missing, so a builder running this
+    guard there saw a WARN for each changed folder). Only a missing LOG.md is affected,
+    and only under the value `1`, as in the audit and the link check."""
+
+    def setUp(self):
+        self.repo = RepoFixture()
+        self.now = time.time()
+
+    def tearDown(self):
+        self.repo.cleanup()
+
+    def _changed_without_log(self):
+        r = self.repo
+        os.remove(r.dir / "workflows/foo/LOG.md")
+        r.write("workflows/foo/run.py", "print('v2')\n")
+        r.write("workflows/foo/CONTEXT.md",
+                make_context(last_modified="2026-07-06",
+                             entries=("2026-07-01", "2026-07-06"), purpose="v2"))
+        r.set_mtime("workflows/foo/run.py", self.now)
+        r.set_mtime("workflows/foo/CONTEXT.md", self.now)
+
+    def _check(self, marker):
+        env = {} if marker is None else {run.CLEAN_COPY_ENV: marker}
+        with mock.patch.dict(os.environ, env):
+            if marker is None:
+                os.environ.pop(run.CLEAN_COPY_ENV, None)
+            return self.repo.check()
+
+    def test_positive_a_missing_log_is_info_checked_on_the_host(self):
+        self._changed_without_log()
+        findings = self._check("1")
+        self.assertEqual(findings, [(run.INFO, run.LABEL, "workflows/foo: LOG.md is not "
+                                     "in the clean copy; checked on the host")])
+        self.assertFalse(run.strict_failed(findings))
+
+    def test_rejection_any_other_value_still_warns(self):
+        self._changed_without_log()
+        for marker in (None, "", "0", "true", "yes"):
+            with self.subTest(marker=marker):
+                findings = self._check(marker)
+                self.assertIn((run.WARN, run.LABEL, "workflows/foo: no LOG.md for a "
+                               "directory whose content changed"), findings)
+                self.assertTrue(run.strict_failed(findings))
+
+    def test_negative_a_log_that_exists_is_judged_as_before(self):
+        # The marker excuses a missing file, never a LOG.md that is behind.
+        r = self.repo
+        r.write("workflows/foo/run.py", "print('v2')\n")
+        r.write("workflows/foo/CONTEXT.md",
+                make_context(last_modified="2026-07-06",
+                             entries=("2026-07-01", "2026-07-06"), purpose="v2"))
+        r.set_mtime("workflows/foo/run.py", self.now)
+        r.set_mtime("workflows/foo/CONTEXT.md", self.now)
+        r.append_log("workflows/foo/LOG.md", self.now - 3600)
+        msgs = " || ".join(m for s, _, m in self._check("1") if s == run.WARN)
+        self.assertIn("LOG.md has no entry for this change", msgs)
+
+    def test_negative_the_context_half_keeps_its_teeth(self):
+        r = self.repo
+        os.remove(r.dir / "workflows/foo/LOG.md")
+        r.write("workflows/foo/run.py", "print('v2')\n")
+        r.set_mtime("workflows/foo/run.py", self.now)
+        msgs = " || ".join(m for s, _, m in self._check("1") if s == run.WARN)
+        self.assertIn("CONTEXT.md not updated", msgs)
+
+
 class ContextOnlyOwnerTest(unittest.TestCase):
     """A directory whose only changed file is its own CONTEXT.md (stage 14).
 

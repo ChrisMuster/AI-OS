@@ -57,7 +57,9 @@ check_server = suite._load("check_server")
 SCRIPTS, CONFIG = suite.SCRIPTS, suite.WORKFLOW / "config"
 
 REVISED = suite.BRIEF.replace("- work/a.txt says done.", "- work/a.txt says done twice.") \
-    .replace('- python -c "print(1)"', '- python -c "print(2)"\n- python -c "print(3)"') \
+    .replace("- python workflows/demo/tests/test_demo.py",
+             "- python workflows/demo/tests/test_two.py\n"
+             "- python workflows/demo/tests/test_three.py") \
     .replace("- work/ | Measure: git ls-files work", "- work/a.txt | Measure: git ls-files work/a.txt")
 
 
@@ -130,6 +132,21 @@ class ApprovalCase(suite.LoopCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(loop.RunRefused) as caught:
             call()
         return " ".join(caught.exception.args[0])
+
+    def assert_failure_reported(self, run, reason):
+        """Code review R54-1: once an approval or amendment failure is recorded, the
+        report says so and recommends only --stop and a new run, never the --approve
+        and --amend the run now refuses."""
+        run_id = run.state["run_id"]
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("but an earlier approval failed at", report)
+        self.assertIn(reason, report)
+        self.assertIn(f"--stop {run_id} and start a new run", report)
+        self.assertNotIn("--approve", report)
+        self.assertNotIn("--amend", report)
+        data = json.loads((run.run_dir / "report.json").read_text(encoding="utf-8"))
+        self.assertIn(reason, data["approval_failure"]["reason"])
+        self.assertNotIn("--approve", data["recommendation"])
 
     def unchanged(self, run, before_record, before_frozen):
         """Nothing in the run record, the frozen folder or the project's log changed,
@@ -488,8 +505,9 @@ class ApprovalOrderTests(ApprovalCase):
         self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
         loop.approve(run)
         self.assertEqual(run.state["edit_paths"], ["work/a.txt"])
-        self.assertEqual(run.state["acceptance"], ['python -c "print(2)"',
-                                                   'python -c "print(3)"'])
+        self.assertEqual(run.state["acceptance"],
+                         ["python workflows/demo/tests/test_two.py",
+                          "python workflows/demo/tests/test_three.py"])
         self.assertEqual({k: run.state["start"][k] for k in ("public_head", "personal_head")},
                          {k: recorded[k] for k in ("public_head", "personal_head")})
         self.assertEqual(set(run.state["start"]["snapshot"]), {"work/a.txt"})
@@ -546,6 +564,7 @@ class ApprovalOrderTests(ApprovalCase):
         self.assertFalse(self.approval_file(run).exists())
         self.assertEqual(self.log_actions(), ["started", "failed"])
         self.assertEqual(self.h.docker_calls[-1], "stop", "the approval's Docker stopped")
+        self.assert_failure_reported(run, "step 3: OSError: disk full")
         # Nothing is excepted to let a retry through: approve and amend both refuse,
         # and stop still ends the run.
         again = self.load(run)
@@ -568,7 +587,18 @@ class ApprovalOrderTests(ApprovalCase):
         saved = runrecord.read_state(run.run_dir)
         self.assertEqual(saved["approval_failure"]["step"], 5)
         self.assertEqual(saved["status"], sr.PAUSED)
+        self.assert_failure_reported(run, "step 5: FrozenError")
         self.assertIn("cannot be approved", self.refused(lambda: loop.approve(self.load(run))))
+
+    def test_negative_a_pause_with_no_failed_approval_still_recommends_approval(self):
+        # The control for R54-1's report: the report at an ordinary pause names approval.
+        # The fixture pauses the run directly, so the report is written here as
+        # planning.pause writes it.
+        run = self.paused()
+        loop.write_report(run)
+        report = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn(f"--approve {run.state['run_id']}", report)
+        self.assertNotIn("earlier approval failed", report)
 
     def test_rejection_an_approval_json_that_exists_refuses(self):
         run = self.paused()
@@ -833,6 +863,7 @@ class AmendTests(ApprovalCase):
             text = self.refused(lambda: loop.amend(run, "revised.md"))
         self.assertIn("could not be put back", text)
         self.assertIn("--stop", text)
+        self.assert_failure_reported(run, "an amendment saved its ledger")
         self.assertIn("cannot be approved", self.refused(lambda: loop.approve(self.load(run))))
 
     def test_rejection_an_approved_run_cannot_be_amended(self):

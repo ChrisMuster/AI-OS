@@ -245,6 +245,11 @@ class ReversePairingTests(SwappedCase):
         self.h.reviews = [[finding()], []]
         self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
         build, fix = (prompt for _, prompt in self.h.builders[0].prompts)
+        # Code review R54-2: a fix turn repeats the log actor; a Codex builder has no
+        # Grep, so its fix prompt names none.
+        flat_fix = " ".join(fix.split())
+        self.assertIn("Write every LOG.md entry with `Actor: Biblio`", flat_fix)
+        self.assertNotIn("Grep", fix)
         for text in (build, fix):
             self.assertIn("apply_patch", text)
             self.assertIn('Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"', text)
@@ -262,7 +267,7 @@ class ReversePairingTests(SwappedCase):
             self.assertNotIn("$", text.replace("`$`", ""))
         review = self.h.review_calls[0][0]
         self.assertIn("you cannot run anything", review)
-        self.assertIn("A file wildcard in a search is refused", review)
+        self.assertIn("A Grep call carrying the `glob` option is refused", review)
         self.assertNotIn("You may run read-only commands", review)
 
     def test_positive_the_lists_printed_are_the_frozen_folders(self):
@@ -336,6 +341,12 @@ class TodaysPairingTests(LoopCase):
         self.h.reviews = [[finding()], []]
         self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
         build, fix = (prompt for _, prompt in self.h.builders[0].prompts)
+        # Code review R54-2: a Claude builder's fix turn repeats the log actor and the
+        # Grep `glob` refusal, for a fix after context compaction.
+        flat_fix = " ".join(fix.split())
+        self.assertIn("Write every LOG.md entry with `Actor: Biblio`", flat_fix)
+        self.assertIn("A Grep call carrying the `glob` option is refused whatever the "
+                      "pattern", flat_fix)
         # Since S7 (plan 7.4): checks through the helper, its clock for LOG.md, and no
         # shell or Biblio Tools.
         self.assertIn("Run checks only with the check helper's `run_check` tool", build)

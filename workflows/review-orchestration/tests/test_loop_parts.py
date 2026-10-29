@@ -304,7 +304,7 @@ class BriefReaderTests(unittest.TestCase):
         (root / "b.md").write_bytes(BRIEF.encode("utf-8"))
         read = brief.read_brief("b.md", root)
         self.assertEqual(read["edit_paths"], ["work/"])
-        self.assertEqual(read["acceptance"], ['python -c "print(1)"'])
+        self.assertEqual(read["acceptance"], ["python workflows/demo/tests/test_demo.py"])
         self.assertEqual(read["sections"]["Goal"], ["- work/a.txt says done."])
 
     def test_rejection_a_failing_brief_is_never_read(self):
@@ -624,6 +624,47 @@ class PromptTests(unittest.TestCase):
         self.assertIn("No git commands", text)
         self.assertNotIn("$", text.split("THE BRIEF")[0].replace("(?!-)", ""),
                          "no field is left unfilled")
+
+    # A3 proof run follow-ups: Claude sessions passed a `glob` to Grep nine times
+    # across the two runs, in four roles, and a Codex builder logged as "Codex".
+
+    GLOB_CLAUDE = "A Grep call carrying the `glob` option is refused whatever the pattern"
+    GLOB_NEUTRAL = "(a `glob` option, such as `*.py`) is refused whatever the pattern"
+
+    def test_positive_every_claude_role_is_told_a_glob_is_refused(self):
+        rules = loop.tool_rules(limits.CLAUDE, approver.load_verify_commands())
+        builder = loop.render("builder", edit_paths="a/", tool_rules=rules, brief="B",
+                              plan="PL")
+        self.assertIn(self.GLOB_CLAUDE, " ".join(builder.split()))
+        self.assertIn(self.GLOB_CLAUDE, loop.reviewer_tools(limits.CLAUDE))
+
+    def test_positive_the_shared_planning_prompts_say_it_without_naming_a_tool(self):
+        # Given to both providers, so they name no tool: the identity check refuses a
+        # plan naming one in backticks, and a prompt naming one invites the plan to.
+        texts = {
+            "planner": loop.render("planner", brief="B", public_head="P",
+                                   personal_head="Q"),
+            "plan-reviewer": loop.render("plan-reviewer", round=1, brief="B", plan="PL",
+                                         prior="None."),
+            "synthesiser": loop.render("synthesiser", brief="B", plan_1="P1",
+                                       plan_2="P2"),
+            "revision": loop.render("revision", round=1, brief="B", plan_1="P1",
+                                    plan_2="P2", synthesis="S", findings="F"),
+        }
+        for name, text in texts.items():
+            with self.subTest(prompt=name):
+                self.assertIn(self.GLOB_NEUTRAL, " ".join(text.split()))
+                self.assertNotIn("Grep", text)
+                self.assertNotIn("`Glob`", text)
+
+    def test_positive_the_builder_prompt_names_the_log_actor_for_both_builders(self):
+        for provider, patterns in ((limits.CLAUDE, approver.load_verify_commands()),
+                                   (limits.CODEX, None)):
+            with self.subTest(builder=provider):
+                text = loop.render("builder", edit_paths="a/", brief="B", plan="PL",
+                                   tool_rules=loop.tool_rules(provider, patterns))
+                self.assertIn("writing every entry with `Actor: Biblio`",
+                              " ".join(text.split()))
 
 
 if __name__ == "__main__":

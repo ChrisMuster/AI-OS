@@ -6,7 +6,8 @@ A run starts from a brief: a markdown file with seven required H2 sections, writ
 with the user before the run. This script refuses a brief that is not ready: a
 missing, repeated, misspelt, extra or out-of-order heading, an empty section, an
 unmeasured edit path, an unanswered open question, an acceptance check that is not a
-single command, or a Source path that does not exist. It is the run's first
+single command or that either builder's verification list would refuse, or a Source
+path that does not exist. It is the run's first
 preflight step. It never runs a command from the brief.
 
 Every problem is reported, one line each, as ``FAIL: <heading>: <reason>``, with
@@ -501,6 +502,23 @@ def check_source_line(content, root):
 # ------------------------------------------------------------------ sections
 
 
+def _verification_lists():
+    """Both builders' verification lists, as (builder, file name, patterns), or the
+    reason they cannot be read. An acceptance check must be on both, since the builder
+    is named only at ``--run`` and a brief serves either pairing (A3 proof run follow-up:
+    run 1's builder could not run a `python -c` acceptance check). Imported here, not at
+    the top, because ``approver`` imports this module."""
+    import approver
+    import codex_rules
+    try:
+        return [("Claude", approver.VERIFY_COMMANDS_PATH.name,
+                 approver.load_verify_commands()),
+                ("Codex", codex_rules.VERIFY_COMMANDS_PATH.name,
+                 codex_rules.load_verify_commands())]
+    except approver.ApproverError as exc:
+        return f"the builders' verification lists cannot be read ({exc})"
+
+
 def _is_placeholder(text):
     if _PLACEHOLDER.match(text):
         return True
@@ -544,9 +562,24 @@ def _check_section(name, heading_no, body, root, problems, seen_paths):
         return
 
     if name == _ACCEPTANCE:
+        lists = None
         for no, command in _bullets(content, problems, "- <command>"):
-            for reason in check_command(command):
+            reasons = check_command(command)
+            for reason in reasons:
                 problems.append((no, f"line {no}: {reason}"))
+            if reasons:
+                continue
+            if lists is None:
+                lists = _verification_lists()
+            if isinstance(lists, str):
+                problems.append((no, f"line {no}: {lists}"))
+                continue
+            import approver  # here, not at the top: approver imports this module
+            for builder, file_name, patterns in lists:
+                if approver.verify_refusal(command, patterns) is not None:
+                    problems.append((no, f"line {no}: the {builder} builder could not run "
+                                         f"this check: it is not on its verification list "
+                                         f"(`config/{file_name}`)"))
     elif name == _EDIT:
         for no, item in _bullets(content, problems, "- <path> | Measure: <command>"):
             parts = _MEASURE_SPLIT.split(item, maxsplit=1)

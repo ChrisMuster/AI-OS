@@ -165,6 +165,40 @@ class PlanReviewLoopTests(PlanCase):
         self.assertEqual(planning.planning_state(again)["completed"][-2:],
                          ["plan-revise-R2", "plan-review-R3"])
 
+    def test_positive_the_report_follows_a_cap_stop_resumed_into_the_pause(self):
+        # A3 proof run follow-up (run 2): resumed with --rounds into the approval
+        # pause, the report still showed `max-rounds` with the finding open.
+        self.h.plan_reviews = [[finding("one")], [finding("two")], []]
+        run = self.plan(self.started(plan_cap=2))
+        stopped = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("**Stop reason:** `max-rounds`", stopped)
+        again = self.load(run)
+        planning.resume(again, rounds=1)
+        self.plan(again)
+        self.assertEqual(again.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+        text = (again.run_dir / "report.md").read_text(encoding="utf-8")
+        run_id = again.state["run_id"]
+        self.assertIn("**Status:** paused, `awaiting-plan-approval`: read "
+                      f"`runs/{run_id}/plan-report.md`.", text)
+        self.assertIn(f"--approve {run_id}", text)
+        self.assertNotIn("**Stop reason:**", text)
+        self.assertIn("**Earlier stops, each since resumed:** `max-rounds` at ", text)
+        self.assertIn("**Findings:** 0 open, 2 addressed", text)
+        report = json.loads((again.run_dir / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual((report["status"], report["pause"], report["stop_reason"]),
+                         (sr.PAUSED, sr.AWAITING_PLAN_APPROVAL, None))
+        self.assertEqual((report["open"], report["addressed"]), ([], ["R1-1", "R2-1"]))
+        self.assertEqual(report["recommendation"],
+                         loop.pause_commands(run_id, sr.AWAITING_PLAN_APPROVAL))
+
+    def test_positive_a_clean_pause_writes_the_report_with_no_earlier_stop(self):
+        run = self.plan(self.started())
+        text = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("**Status:** paused, `awaiting-plan-approval`", text)
+        self.assertNotIn("Earlier stops", text)
+        self.assertFalse(self.log.exists(), "the report is in the run record only")
+        self.assertFalse(packet.packet_path(self.root, "demo").exists())
+
     def test_rejection_a_plain_resume_after_the_cap_is_refused(self):
         # Code review R1-1: more plan-review rounds are authorised only by --rounds N,
         # so a plain resume after a cap stop is refused, starting no session and

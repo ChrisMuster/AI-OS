@@ -610,6 +610,7 @@ async def _planners(run):
                                                   encoding="utf-8", newline="\n")
         sr.enter_pause(state, sr.AWAITING_USER)
         run.save()
+        loop.write_report(run)
         return
     planning.pop("questions", None)
     planning["plans"] = plans
@@ -927,10 +928,12 @@ async def _revise(run, label, step):
 async def pause(run):
     """Every planning step done and the last plan review clean: write
     ``plan-report.md`` (again, for a run interrupted after its last step, code review
-    R1-2) and pause ``awaiting-plan-approval`` (step 6)."""
+    R1-2) and pause ``awaiting-plan-approval`` (step 6). ``report.md`` is written too,
+    so a run resumed from a stop shows the pause rather than the stop (A3 proof run)."""
     write_plan_report(run)
     sr.enter_pause(run.state, sr.AWAITING_PLAN_APPROVAL)
     run.save()
+    loop.write_report(run)
 
 
 # -------------------------------------------------------------- the plan report

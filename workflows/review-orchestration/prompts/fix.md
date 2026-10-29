@@ -11,6 +11,8 @@ For each finding, do exactly one of these:
     reason in the note. If the reviewer raises it again, the run ends for the user
     to rule.
 
+Write every LOG.md entry with `Actor: Biblio`, the project's actor whichever AI writes
+it.
 $tool_rules
 THE BRIEF (the same brief as your first turn, repeated so a long fix loop keeps it)
 $brief

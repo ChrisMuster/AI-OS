@@ -1,4 +1,5 @@
 You can read and
 search files, but you cannot run anything: the mechanical results below are the tests'
-results. A file wildcard in a search is refused, so search by folder, by file or by
-file type.
+results. A Grep call carrying the `glob` option is refused whatever the pattern, so
+leave that option out and narrow a search with `path` (a folder or a file) or `type`
+instead.

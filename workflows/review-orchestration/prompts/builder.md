@@ -9,7 +9,8 @@ Rules for this run:
     run does not need. A refusal tells you what is allowed.
   - Follow the AGENTS.md maintenance rules for every directory whose content you
     change: update its CONTEXT.md (Last modified, a Revision History entry, and any
-    section that describes what you changed) and append its LOG.md. A Revision History
+    section that describes what you changed) and append its LOG.md, writing every entry
+    with `Actor: Biblio`, the project's actor whichever AI writes it. A Revision History
     holds at most 15 lines counting the "Earlier history archived" line; archive the
     oldest entry to LOG.md when adding one would go over.
 $tool_rules

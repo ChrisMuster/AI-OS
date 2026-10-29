@@ -21,7 +21,9 @@ TBD counts as empty. No fenced code blocks anywhere in a section.
 <!-- One bullet per check, written "- <command>". Each is a single command that
 exits 0 when the work is done: no shell operators outside quotes, no command
 substitution, no shell wrapper such as "bash -c", and no launcher such as "env" or
-"sudo" in front of the program. -->
+"sudo" in front of the program. Each must also be on both builders' verification lists
+(config/verify-commands.txt and config/codex-verify-commands.txt), so whichever AI
+builds can run it: put a one-off check such as a test count in a test file. -->
 
 ## Edit paths
 <!-- One bullet per path a builder may change, written

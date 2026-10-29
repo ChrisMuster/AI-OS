@@ -363,6 +363,20 @@ class QuestionTests(PlanningCase):
                 self.assertFalse([c for c in self.calls if c["role"] == "synthesiser"])
                 self.assertFalse(self.log.exists(), "a pause writes nothing to LOG.md")
 
+    def test_positive_the_report_shows_the_question_pause(self):
+        # A3 proof run follow-up: the report is written at a pause too, so it never
+        # shows an earlier state as the run's.
+        run = self.paused()
+        text = (run.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("**Status:** paused, `awaiting-user`: read `", text)
+        self.assertIn(f"runs/{run.state['run_id']}/questions.md`.", text)
+        self.assertIn(f"--resume {run.state['run_id']}", text)
+        self.assertNotIn("**Stop reason:**", text)
+        self.assertNotIn("Earlier stops", text)
+        report = json.loads((run.run_dir / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual((report["status"], report["pause"], report["stop_reason"]),
+                         (sr.PAUSED, sr.AWAITING_USER, None))
+
     def test_negative_a_question_the_brief_answers_still_pauses(self):
         # The script does no matching of its own (simulation gap 11).
         run = self.planning_run()
