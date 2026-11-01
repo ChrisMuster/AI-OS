@@ -97,7 +97,7 @@ class PlanReviewLoopTests(PlanCase):
         self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
         self.assertEqual(planning.planning_state(run)["completed"],
                          ["planners", "identity", "synthesis", "plan-review-R1",
-                          "plan-revise-R1", "plan-review-R2"])
+                          "plan-revise-R1", "plan-review-R2", "intent-plan"])
         ledger = {f["label"]: f for f in run.state["ledger"]}
         self.assertEqual(list(ledger), ["R1-1"])
         self.assertEqual((ledger["R1-1"]["action"], ledger["R1-1"]["source"]),
@@ -162,8 +162,9 @@ class PlanReviewLoopTests(PlanCase):
                          ["synthesiser", "plan_reviewer"])
         self.assertIn("R2-1", self.revisions()[0]["prompt"])
         self.assertEqual(planning.planning_state(again)["plans"], plans)
-        self.assertEqual(planning.planning_state(again)["completed"][-2:],
-                         ["plan-revise-R2", "plan-review-R3"])
+        # The clean round is followed by the first intent check (A4).
+        self.assertEqual(planning.planning_state(again)["completed"][-3:],
+                         ["plan-revise-R2", "plan-review-R3", "intent-plan"])
 
     def test_positive_the_report_follows_a_cap_stop_resumed_into_the_pause(self):
         # A3 proof run follow-up (run 2): resumed with --rounds into the approval
@@ -361,7 +362,7 @@ class LabelTests(PlanCase):
         loop.resume(again, rounds=1)
         self.assertEqual(again.state["round_cap"], 2, "one build round so far, plus one")
         asyncio.run(again.advance())
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual([s["step"] for s in again.state["steps"]
                           if s["role"] in ("builder", "reviewer")],
                          ["build", "review-R3", "fix-R3", "review-R4"])
@@ -390,7 +391,8 @@ class LabelTests(PlanCase):
         self.h.planning_calls.clear()
         self.plan(again)
         self.assertEqual(again.state["pause"], sr.AWAITING_PLAN_APPROVAL)
-        self.assertEqual(planning.planning_state(again)["completed"][-1], "plan-review-R4")
+        self.assertEqual(planning.planning_state(again)["completed"][-2:],
+                         ["plan-review-R4", "intent-plan"])
         self.assertEqual(planning.planning_state(again)["review_rounds"], 1)
         self.assertIn("work/a.txt says done twice.",
                       self.reviews_of()[0]["prompt"], "reviewed against the revised brief")
@@ -403,7 +405,8 @@ class LabelTests(PlanCase):
         self.h.reviews = [[]]
         run = self.start()
         self.assertEqual(run.label_offset(), 0)
-        self.assertEqual([s["step"] for s in run.state["steps"]], ["build", "review-R1"])
+        self.assertEqual([s["step"] for s in run.state["steps"]],
+                         ["build", "review-R1", "intent-final"])
 
 
 class PacketTests(PlanCase):
@@ -423,7 +426,9 @@ class PacketTests(PlanCase):
         self.assertIn("R1-1 (addressed, major) plan gap", report)
         self.assertIn("Synthesiser: fixed.", report)
         self.assertIn("Plan-review rounds for this plan: 2 of 2", report)
-        self.assertIn("No intent check has run", report)
+        # A4: the first intent check's section replaces the old sentence.
+        self.assertIn("## Intent check", report)
+        self.assertNotIn("No intent check has run", report)
         self.assertFalse(packet.packet_path(self.root, "demo").exists())
 
     def test_positive_approval_writes_the_packet_and_later_renders_hold_both_halves(self):
@@ -465,7 +470,7 @@ class ApprovedPlanPromptTests(PlanCase):
         self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R2-1", "fixed")))]
         self.h.reviews = [[finding()], []]
         asyncio.run(approved.advance())
-        self.assertEqual(self.reason(approved), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(approved), sr.CLEAN)
         builder_prompts = [p for _, p in self.h.builders[0].prompts]
         self.assertEqual(len(builder_prompts), 2)
         for prompt in builder_prompts + [c[0] for c in self.h.review_calls]:

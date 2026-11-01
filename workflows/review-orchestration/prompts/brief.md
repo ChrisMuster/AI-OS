@@ -15,7 +15,11 @@ TBD counts as empty. No fenced code blocks anywhere in a section.
 <!-- Musts and must-nots the run obeys. -->
 
 ## Out of scope
-<!-- Named things the run must not do. Write None if nothing is excluded. -->
+<!-- Named things the run must not do. Write None if nothing is excluded. A path
+written in backticks here is checked by the script at both intent checks, the one on
+the merged plan and the one on the final diff, provided it names a file or folder that
+exists when the run starts; one that names nothing is listed in the plan report as not
+checked. The rest of the section is read by the intent checker only. -->
 
 ## Acceptance checks
 <!-- One bullet per check, written "- <command>". Each is a single command that

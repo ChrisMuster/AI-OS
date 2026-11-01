@@ -18,6 +18,11 @@ git commands here all read; none writes to either repository.
   record_round         ``runs/<run-id>/rounds/R<n>/``: every file under the edit paths
                        as that reviewer received it, in ``files.zip``, and the diff it
                        saw.
+  start_snapshot /     the intent check's (plan 10.6, A4): a hash of every file of the
+  changed_paths        inventory's selection with an existence listing of the whole
+                       tree, taken when the run is created, and the paths changed
+                       since, the run's own writes left out and an appended LOG.md
+                       listed as information.
 
 Three things are never part of the work and are skipped everywhere, in snapshots,
 diffs and round archives alike:
@@ -346,19 +351,122 @@ def inventory(root, git_dir, category_a):
     scope, as the plan states.
     """
     root = Path(root)
-    # -z: names come back whole, never quoted, whatever characters they hold.
-    paths = set(git(root, "ls-files", "-z").split("\0"))
-    paths |= set(git(root, "ls-files", "-z", "--others", "--exclude-standard").split("\0"))
-    paths |= set(category_a)
-    paths.discard("")
     files = {}
-    for relative in sorted(paths):
+    for relative in sorted(_selection(root, category_a)):
         target = root / relative
         if target.is_file():
             files[relative] = hashlib.sha256(target.read_bytes()).hexdigest()
     return {"files": files,
             "git": {"public": _git_state(root),
                     "personal": _git_state(root, git_dir=git_dir)}}
+
+
+def _selection(root, category_a):
+    """The files a run's work is measured over (plan 10.4 chunk (d) and 10.6, "What a
+    changed path is"): every file the public repository tracks, every new file it does
+    not ignore, and the whole Category A selection, as a set of project-relative
+    paths. The inventory and the intent check's start snapshot share it."""
+    # -z: names come back whole, never quoted, whatever characters they hold.
+    paths = set(git(root, "ls-files", "-z").split("\0"))
+    paths |= set(git(root, "ls-files", "-z", "--others", "--exclude-standard").split("\0"))
+    paths |= set(category_a)
+    paths.discard("")
+    return paths
+
+
+# ------------------------------------------------ the intent check (plan 10.6)
+
+# What a link's hash is taken over: this prefix and the link's own text, so a link is
+# compared by where it points, never by what it points at (the builder's choice).
+LINK_PREFIX = b"link:"
+SNAPSHOT_VERSION = 1
+
+
+def file_hashes(root, category_a):
+    """``{path: {"sha256", "size"}}`` for every file of ``_selection`` that exists. A
+    regular file is hashed over its bytes; a symbolic link over ``LINK_PREFIX`` and its
+    link text, never followed, ``size`` then being that text's length. A path that is
+    neither (gone, or a folder) is left out, and so is everything under ``RUNS_PREFIX``,
+    which is never a changed path and would only make the snapshot larger. An
+    unreadable file raises ``OSError``."""
+    root = Path(root)
+    found = {}
+    for relative in sorted(_selection(root, category_a)):
+        if (relative + "/").lower().startswith(RUNS_PREFIX):
+            continue
+        target = root / relative
+        if target.is_symlink():
+            data = LINK_PREFIX + os.fsencode(os.readlink(target))
+        elif target.is_file():
+            data = target.read_bytes()
+        else:
+            continue
+        found[relative] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    return found
+
+
+def existence_listing(root):
+    """Every file and folder path in the project tree on disk, project-relative with
+    forward slashes and sorted, ignored ones included and only ``.git`` left out (plan
+    10.6 item 1: whether an Out of scope item names a path that exists when the run
+    starts). Walked without following links and without reading or running any file:
+    a link is listed by its own name."""
+    root = Path(root)
+    found = []
+    for folder, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = [name for name in dirs if name != ".git"]
+        base = Path(folder).relative_to(root).as_posix()
+        prefix = "" if base == "." else base + "/"
+        found += [prefix + name for name in dirs]
+        found += [prefix + name for name in files if name != ".git"]
+    return sorted(found)
+
+
+def start_snapshot(root, category_a):
+    """``runs/<run-id>/start-snapshot.json``'s content (plan 10.6, "What a changed path
+    is"), taken when the run is created: ``files``, the hash selection
+    (``file_hashes``), and separately ``existence``, the creation-time listing of the
+    whole tree (``existence_listing``)."""
+    return {"version": SNAPSHOT_VERSION, "files": file_hashes(root, category_a),
+            "existence": existence_listing(root)}
+
+
+def _appended_only(root, relative, old):
+    """Whether an existing file's only change is bytes added at its end: it is larger
+    now and its first ``old["size"]`` bytes still hash to ``old["sha256"]``."""
+    target = Path(root) / relative
+    if target.is_symlink() or not target.is_file():
+        return False
+    data = target.read_bytes()
+    return (len(data) > old["size"]
+            and hashlib.sha256(data[:old["size"]]).hexdigest() == old["sha256"])
+
+
+def changed_paths(before, after, root, excluded=()):
+    """The run's changed paths (plan 10.6, "What a changed path is"), from two
+    ``file_hashes`` readings: ``{"changed": [{"path", "what"}], "information": [...]}``,
+    each sorted. ``what`` is ``added``, ``changed`` or ``removed``.
+
+    Never a changed path: anything under ``RUNS_PREFIX`` or under one of ``excluded``
+    (the caller names the run's own record folder, the workflow's LOG.md and the item's
+    review packet), compared without case. An existing ``LOG.md`` anywhere else whose
+    only change is bytes appended at its end is listed under ``information``, not as a
+    change; an inserted, rewritten or removed line is a change."""
+    skip = [RUNS_PREFIX.rstrip("/")] + [str(path).replace("\\", "/").rstrip("/")
+                                        for path in excluded if path]
+    changed, information = [], []
+    for relative in sorted(set(before) | set(after)):
+        old, new = before.get(relative), after.get(relative)
+        if old == new or under_edit_paths(relative, skip):
+            continue
+        what = "added" if old is None else "removed" if new is None else "changed"
+        if (what == "changed" and relative.rsplit("/", 1)[-1].lower() == "log.md"
+                and _appended_only(root, relative, old)):
+            information.append({"path": relative, "what": "lines appended to an "
+                                "existing LOG.md"})
+            continue
+        changed.append({"path": relative, "what": what})
+    return {"changed": changed, "information": information}
 
 
 def _inside(relative, prefixes):

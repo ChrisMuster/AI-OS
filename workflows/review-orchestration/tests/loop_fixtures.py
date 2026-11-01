@@ -271,6 +271,70 @@ class FakePlanningSession:
             model=self.model, callbacks=self.callbacks)
 
 
+_NUMBERED = re.compile(r"^([0-9]+)\. \((Goal|Constraints)\) (.*)$")
+
+
+def intent_lines_in(prompt):
+    """The Goal and Constraint line texts an intent prompt numbers, in order."""
+    section = prompt.split("\nTHE LINES TO JUDGE (", 1)[1].split("\n\nTHE ", 1)[0]
+    return [m.group(3) for m in (_NUMBERED.match(line) for line in section.splitlines())
+            if m]
+
+
+def changed_paths_in(prompt):
+    """The changed paths a final intent prompt lists, in order."""
+    if "\nTHE CHANGED PATHS (" not in prompt:
+        return []
+    section = prompt.split("\nTHE CHANGED PATHS (", 1)[1].split("\n\nTHE DIFF", 1)[0]
+    return [line[2:] for line in section.splitlines() if line.startswith("- ")]
+
+
+def intent_reply(prompt, status="met", unasked=(), undelivered=(), statuses=None):
+    """A compliant intent checker's reply to ``prompt``: every numbered line repeated
+    with ``status`` (or ``statuses[i]``) and evidence, the two lists, and for a final
+    check every changed path the prompt lists in ``files_reviewed``."""
+    lines = intent_lines_in(prompt)
+    reply = {"lines": [{"line": text, "status": (statuses[i] if statuses else status),
+                        "evidence": "seen in the change"}
+                       for i, text in enumerate(lines)],
+             "unasked_changes": [{"item": item, "evidence": "e"} for item in unasked],
+             "undelivered": [{"item": item, "evidence": "e"} for item in undelivered]}
+    if "THE CHANGED PATHS" in prompt:
+        reply["files_reviewed"] = changed_paths_in(prompt)
+    return reply
+
+
+class FakeIntentChecker:
+    """The intent checker (plan 10.6, A4): a fresh read-only session per intent step,
+    on the provider the loop asks for. It records each call in
+    ``harness.intent_calls``, kept apart from ``planning_calls`` so the planning suites'
+    counts are as they were, and answers ``harness.intent_replies`` in turn: a reply, a
+    function of the prompt, or an exception raised. With the script spent it answers
+    every line ``met`` with nothing in either list (``intent_reply``)."""
+
+    def __init__(self, harness, provider):
+        self.harness, self.provider = harness, provider
+        self.model = f"{provider}-intent-model"
+        self.refusals = list(harness.intent_refusals)
+
+    def review(self, prompt, schema):
+        h = self.harness
+        h.intent_calls.append({"provider": self.provider, "prompt": prompt,
+                               "schema": schema})
+        script = h.intent_replies.pop(0) if h.intent_replies else None
+        if isinstance(script, BaseException):
+            raise script
+        answer = (intent_reply(prompt) if script is None
+                  else script(prompt) if callable(script) else script)
+        usage = ({"input_tokens": 10, "output_tokens": 5} if self.provider == "claude"
+                 else {"total": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}})
+        return providers.ReviewRecord(
+            reply=json.loads(json.dumps(answer)),
+            thread_id=f"intent-session-{self.provider}-0001", status="completed",
+            usage=usage, wall_seconds=0.1, raw={"r": self.provider}, tokens=15,
+            model=self.model, refusals=list(h.intent_refusals), launch=h.intent_launch)
+
+
 class FakeUsage:
     """Stands in for the run's one limits.ClaudeUsage: its reading is whatever the
     harness holds at that moment, so a session can set it mid-run as an event would."""
@@ -374,6 +438,17 @@ class Harness:
         self.plan_reviews = []
         self.revisions = []
         self.uncaptured = set()
+        # A4: the intent checker's fake (``FakeIntentChecker``), its calls, its scripted
+        # replies taken in turn, and what it reports refused. ``acceptance_exits`` maps
+        # an acceptance command to the exit the fake checks report for it (0 if not
+        # named); ``acceptance_lines`` false leaves the acceptance lines out of the
+        # fake checks' text altogether.
+        self.intent_calls = []
+        self.intent_replies = []
+        self.intent_refusals = []
+        self.intent_launch = None  # a Codex intent checker's launch readings, if set
+        self.acceptance_exits = {}
+        self.acceptance_lines = True
 
     def start_check(self, root, python, read_only=False):
         """The start-of-run close-out check: clean unless a test says otherwise."""
@@ -456,6 +531,8 @@ class Harness:
                          make_plan_reviewer=lambda settings, cwd, usage, frozen_dir:
                          FakePlanningSession(self, settings["roles"]["reviewer"],
                                              "plan_reviewer"),
+                         make_intent_checker=lambda settings, cwd, usage, frozen_dir:
+                         FakeIntentChecker(self, settings["roles"]["reviewer"]),
                          choose_order=lambda items: list(items),
                          uncaptured_category_a=lambda root, git_dir: set(self.uncaptured),
                          sleep=self.slept.append, now=lambda: self.clock)
@@ -522,7 +599,15 @@ class Harness:
         if self.check_writes:
             self.check_writes()  # a check that writes a file, as close-out writes its log
         found = self.mechanical.pop(0) if self.mechanical else []
-        return found, f"checked {', '.join(directories) or 'nothing'}"
+        text = f"checked {', '.join(directories) or 'nothing'}"
+        if self.acceptance_lines:
+            # The lines the real acceptance check writes, which the final intent check
+            # carries forward (plan 10.6).
+            for command in commands:
+                code = self.acceptance_exits.get(command, 0)
+                text += (f"\nacceptance check {'PASS' if code == 0 else 'FAIL'} "
+                         f"(exit {code}): {command}")
+        return found, text
 
 
 class FakeBuilder:

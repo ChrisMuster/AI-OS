@@ -244,12 +244,14 @@ class UsageGuardTests(LoopCase):
         self.h.readings = [reading(20),
                            reading(20, credits=dict(CREDITS, balance="4.50")),
                            reading(20, credits=dict(CREDITS, balance="4.25")),
+                           reading(20, credits=dict(CREDITS, balance="4.25")),
+                           # Before the final intent check (A4), still the baseline.
                            reading(20, credits=dict(CREDITS, balance="4.25"))]
         run = start_built("brief.md", "demo", str(self.personal), root=self.root,
                           deps=self.h.deps(), log_path=self.log, runs_dir=self.runs,
                           settings=self.settings, builder="claude", allow_paid=True)
         asyncio.run(run.advance())
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(run.state["credits"]["balance"], "4.25")
         self.assertEqual([entry["step"] for entry in run.state["paid_usage"]], ["build"])
 

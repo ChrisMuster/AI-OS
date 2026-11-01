@@ -1563,13 +1563,14 @@ def make_builder(settings, approver, *, cwd, resume=None, run_dir=None, usage=No
 
 
 def make_read_only(settings, provider, role, *, cwd, usage=None, frozen_dir=None,
-                   **kwargs):
+                   effort=None, **kwargs):
     """A read-only session of the planning half on ``provider``, taking its model and
     effort from that provider's ``role`` entry in the run's resolved settings (plan
     10.3 step 7): it is the reviewer session of that provider, so it is started with
     the reviewers' lockdown exactly as the reviewer is (process table rows 16 and 17).
     A Claude session's turn cap is the run's ``max_turns.reviewer``, the read-only
-    sessions' one limit."""
+    sessions' one limit. ``effort`` given replaces the entry's effort, the model kept
+    (the synthesiser's, plan 10.6)."""
     cls = REVIEWERS.get(provider)
     if cls is None:
         raise ProviderError(f"no read-only session exists for {provider}; only "
@@ -1578,8 +1579,8 @@ def make_read_only(settings, provider, role, *, cwd, usage=None, frozen_dir=None
     offered = {"usage": usage, "frozen_dir": frozen_dir}
     extra = ({"max_turns": settings.get("max_turns", {}).get(
         "reviewer", DEFAULT_MAX_TURNS["reviewer"])} if provider == limits.CLAUDE else {})
-    return cls(entry["model"], entry["effort"], cwd=cwd, **_wanted(cls, offered),
-               **extra, **kwargs)
+    return cls(entry["model"], effort or entry["effort"], cwd=cwd,
+               **_wanted(cls, offered), **extra, **kwargs)
 
 
 def make_planner(settings, provider, *, cwd, usage=None, frozen_dir=None, **kwargs):
@@ -1588,12 +1589,29 @@ def make_planner(settings, provider, *, cwd, usage=None, frozen_dir=None, **kwar
                           frozen_dir=frozen_dir, **kwargs)
 
 
+# Section 11 gives the synthesiser the builder's model at medium effort; corrected in
+# A4 (plan 10.6, "The synthesiser's effort, corrected in A4"), whatever effort the
+# builder's own entry names.
+SYNTHESISER_EFFORT = "medium"
+
+
 def make_synthesiser(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
     """The synthesiser session (plan 10.3 step 3): on the builder's provider and the
-    builder's model, section 11 having given the synthesiser no entry of its own, so it
-    takes the provider's ``builder`` entry, effort included."""
+    builder's model, section 11 having given the synthesiser no entry of its own, at
+    ``SYNTHESISER_EFFORT`` rather than the builder entry's effort (plan 10.6)."""
     return make_read_only(settings, settings["roles"]["builder"], "builder", cwd=cwd,
-                          usage=usage, frozen_dir=frozen_dir, **kwargs)
+                          usage=usage, frozen_dir=frozen_dir, effort=SYNTHESISER_EFFORT,
+                          **kwargs)
+
+
+def make_intent_checker(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):
+    """The intent checker (plan 10.6 item 2, process table row 19): a fresh read-only
+    session on the provider that did not build, the run's reviewer provider, taking its
+    model and effort from that provider's ``intent_checker`` entry. It is that
+    provider's reviewer session class, so it is started with the reviewers' lockdown of
+    plan 10.3 step 7, as the plan reviewer is."""
+    return make_read_only(settings, settings["roles"]["reviewer"], "intent_checker",
+                          cwd=cwd, usage=usage, frozen_dir=frozen_dir, **kwargs)
 
 
 def make_plan_reviewer(settings, *, cwd, usage=None, frozen_dir=None, **kwargs):

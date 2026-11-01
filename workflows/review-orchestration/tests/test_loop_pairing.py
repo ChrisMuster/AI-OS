@@ -29,8 +29,11 @@ class ReversePairingTests(SwappedCase):
         self.h.builder_script = [edit(self.root, "done\n")]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
-        steps = run.state["steps"]
+        self.assertEqual(self.reason(run), sr.CLEAN)
+        # The final intent check (A4) is on the provider that did not build.
+        self.assertEqual([(s["role"], s["provider"]) for s in run.state["steps"]][-1],
+                         ("intent_checker", "claude"))
+        steps = run.state["steps"][:-1]
         self.assertEqual([(s["role"], s["provider"]) for s in steps],
                          [("builder", "codex"), ("reviewer", "claude")])
         # Tokens come from the session that knows its own usage shape.
@@ -60,7 +63,7 @@ class ReversePairingTests(SwappedCase):
                                  reply(actions(("R2-1", "fixed")))]
         self.h.reviews = [[finding()], [finding(title="Another defect")], []]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         steps = self.builder_steps(run)
         self.assertEqual([s["step"] for s in steps], ["build", "fix-R1", "fix-R2"])
         self.assertEqual([s["tokens"] for s in steps], [1000, 600, 900])
@@ -113,7 +116,7 @@ class ReversePairingTests(SwappedCase):
         self.assertEqual([s["step"] for s in self.builder_steps(run)], ["build"])
         self.assertTrue(self.h.builders[0].closed)
         again = self.resume(run)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(self.h.builders[1].resume, "s-1")
         launches = again.state["live"]["codex_builder_launches"]
         self.assertEqual([(entry["step"], entry["thread"]["method"]) for entry in launches],
@@ -172,7 +175,7 @@ class ReversePairingTests(SwappedCase):
         self.h.readings = [reading(), reading(), reading(credits=changed)]
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
 
     def test_positive_refusals_from_each_kind_of_session_reach_the_report(self):
         self.h.builder_refusals = [{"tool": "Bash", "detail": "curl example.com",
@@ -217,7 +220,7 @@ class ReversePairingTests(SwappedCase):
         self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
         self.h.reviews = [[finding()], []]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(run.state["live"]["claude_reviewer_callbacks"],
                          [{"step": "review-R1", **callback_stub("reviewer")},
                           {"step": "review-R2", **callback_stub("reviewer")}])
@@ -243,7 +246,7 @@ class ReversePairingTests(SwappedCase):
         self.h.builder_script = [edit(self.root, "x\n"),
                                  reply(actions(("R1-1", "fixed")))]
         self.h.reviews = [[finding()], []]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
         build, fix = (prompt for _, prompt in self.h.builders[0].prompts)
         # Code review R54-2: a fix turn repeats the log actor; a Codex builder has no
         # Grep, so its fix prompt names none.
@@ -291,7 +294,7 @@ class ReversePairingTests(SwappedCase):
         run = self.start(inject="build")
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
         self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["provider"], "codex")
-        self.assertEqual(self.reason(self.resume(run)), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.resume(run)), sr.CLEAN)
 
     def test_positive_an_injected_limit_at_a_claude_review_step(self):
         self.h.builder_script = [edit(self.root, "x\n")]
@@ -300,7 +303,7 @@ class ReversePairingTests(SwappedCase):
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
         self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["provider"], "claude")
         self.assertEqual(self.h.review_calls, [])
-        self.assertEqual(self.reason(self.resume(run)), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.resume(run)), sr.CLEAN)
 
 
 class TodaysPairingTests(LoopCase):
@@ -310,14 +313,18 @@ class TodaysPairingTests(LoopCase):
         self.h.builder_script = [edit(self.root, "done\n")]
         self.h.reviews = [[]]
         run = self.start()
-        steps = run.state["steps"]
+        self.assertEqual([(s["role"], s["provider"]) for s in run.state["steps"]][-1],
+                         ("intent_checker", "codex"))
+        steps = run.state["steps"][:-1]
         self.assertEqual([(s["role"], s["provider"]) for s in steps],
                          [("builder", "claude"), ("reviewer", "codex")])
         self.assertEqual([s["tokens"] for s in steps], [110, 1000])
         self.assertEqual(steps[0]["cost_usd_equivalent"], 0.01)
         self.assertEqual(steps[1]["thread_id"], "t")
         self.assertEqual(run.state["live"]["claude_init_model"], MODEL)
-        self.assertNotIn("codex_model", run.state["live"])
+        # The Codex reviewer's fake reports no model; the first Codex model reported is
+        # the final intent checker's (A4).
+        self.assertEqual(run.state["live"]["codex_model"], "codex-intent-model")
         self.assertEqual(run.state["live"]["title_pattern"], "accepted")
         self.assertEqual(self.h.given[0], ("builder", run.run_dir, self.h.usage))
         self.assertEqual(self.h.given[1], ("reviewer", None, self.h.usage))
@@ -329,7 +336,11 @@ class TodaysPairingTests(LoopCase):
         self.h.builder_script = [stray]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        # No check after the turn, so the stray file reaches the end of the run, where
+        # the final intent check (A4) names it as a changed path outside the edit paths.
+        self.assertEqual(self.reason(run), sr.INTENT_FAILED)
+        self.assertIn("other.txt: outside the edit paths",
+                      run.state["stop_reasons"][-1]["evidence"]["causes"])
         self.assertEqual(self.h.inventories, 0)
         self.assertNotIn("turn_checks", run.state)
         report = (run.run_dir / "report.md").read_text(encoding="utf-8")
@@ -339,7 +350,7 @@ class TodaysPairingTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n"),
                                  reply(actions(("R1-1", "fixed")))]
         self.h.reviews = [[finding()], []]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
         build, fix = (prompt for _, prompt in self.h.builders[0].prompts)
         # Code review R54-2: a Claude builder's fix turn repeats the log actor and the
         # Grep `glob` refusal, for a fix after context compaction.
@@ -377,7 +388,7 @@ class TodaysPairingTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R1-1", "fixed")))]
         self.h.reviews = [[finding()], []]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(run.state["live"]["claude_builder_callbacks"],
                          [{"step": "build", **self.BUILD_RECORD},
                           {"step": "fix-R1", **self.FIX_RECORD}])
@@ -440,7 +451,7 @@ class TurnCheckTests(SwappedCase):
 
     def test_positive_a_turn_inside_the_edit_paths_passes(self):
         run = self.planted(lambda: None)
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         check, = run.state["turn_checks"]
         self.assertEqual((check["step"], check["changes"]), ("build", []))
         self.assertIsInstance(check["seconds"], float)
@@ -496,7 +507,7 @@ class TurnCheckTests(SwappedCase):
             (folder / "hook-decisions.jsonl").write_bytes(b"{}\n")
             self.h.cat_a.add(f"runs/{folder.name}/hook-decisions.jsonl")
         run = self.planted(record)
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(run.state["turn_checks"][0]["changes"], [])
 
     def test_rejection_any_other_change_inside_the_run_record(self):
@@ -562,13 +573,13 @@ class TurnCheckTests(SwappedCase):
     def test_negative_the_decisions_file_is_meant_to_change(self):
         decisions = self.h.frozen / "hook-decisions.jsonl"
         run = self.planted(lambda: decisions.write_bytes(b'{"decision": "allow"}\n'))
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
 
     def test_negative_the_check_calls_file_is_meant_to_change(self):
         # The check helper writes it during a turn (isolation plan 6, item 5).
         calls = self.h.frozen / "check-calls.jsonl"
         run = self.planted(lambda: calls.write_bytes(b'{"allowed": true}\n'))
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
 
     def test_rejection_another_frozen_file_changing_beside_the_calls_file(self):
         # Control for the test above: the calls file's exemption is that file only.
@@ -652,7 +663,7 @@ class EnvPreflightTests(LoopCase):
             handle.write(b".env\n.env.*\n")
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
 
     def test_negative_a_tracked_env_named_file_does_not_refuse_the_run(self):
         # A tracked file is already published, so it is not a secret; the read rules
@@ -662,7 +673,7 @@ class EnvPreflightTests(LoopCase):
         git(self.root, "commit", "-qm", "example")
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
 
 
 if __name__ == "__main__":

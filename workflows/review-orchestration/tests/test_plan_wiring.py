@@ -113,7 +113,10 @@ class StartWiringTests(WiringCase):
         self.assertEqual(sorted({c["role"] for c in self.h.planning_calls}),
                          ["plan_reviewer", "planner", "synthesiser"])
         report = (run_dir / planning.PLAN_REPORT).read_text(encoding="utf-8")
-        self.assertIn("No intent check has run", report)
+        # A4: the first intent check has run, on the other provider, before the pause.
+        self.assertIn("## Intent check", report)
+        self.assertNotIn("No intent check has run", report)
+        self.assertEqual([c["provider"] for c in self.h.intent_calls], ["codex"])
         self.assertEqual(self.h.builders, [])
 
     def test_positive_approve_continues_the_same_run_into_the_build(self):
@@ -124,7 +127,7 @@ class StartWiringTests(WiringCase):
         self.h.reviews = [[]]
         code, out = self.call("--approve", run_id)
         self.assertEqual(code, 0, out)
-        self.assertIn("ended reviewed-clean", out)
+        self.assertIn("ended clean", out)
         state = runrecord.read_state(self.runs / run_id)
         self.assertEqual([s["step"] for s in state["steps"]
                           if s["role"] in ("builder", "reviewer")], ["build", "review-R2"])
@@ -339,7 +342,7 @@ class WaitTests(WiringCase):
                               deps=self.waking_deps())
         self.assertEqual(code, 0, out + self.err)
         self.assertEqual(self.h.slept, [600 + loop.WAIT_MARGIN_SECONDS])
-        self.assertIn("ended reviewed-clean", out)
+        self.assertIn("ended clean", out)
 
     def test_positive_build_half_waits_through_known_paid_overage(self):
         run = self.built(inject="build")
@@ -448,7 +451,7 @@ class WaitTests(WiringCase):
         self.h.reviews = [[finding()], []]
         self.h.builder_script = [reply(actions(("R1-1", "fixed")))]
         asyncio.run(again.advance())
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN,
+        self.assertEqual(self.reason(again), sr.CLEAN,
                          again.state["stop_reasons"][-1])
         self.assertEqual(len(self.h.probe_calls), 1, "the Claude fix's probe, sent")
         self.assertFalse(again.state["claude_unknown_reset_resume"])

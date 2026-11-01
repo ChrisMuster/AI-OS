@@ -13,9 +13,19 @@ creates its record, ``runs/<run-id>/``, and then takes steps in this order:
   fix-R<n>     the builder's session is resumed with the open findings and answers
                each with an action.
 
+  intent-final the final intent check (plan 10.6, A4), after a review round with no
+               reviewer or mechanical finding open. Its mechanical layer judges every
+               path changed since ``runs/<run-id>/start-snapshot.json`` and the last
+               clean round's acceptance exits against the current ``brief.md``; its
+               model layer is one fresh read-only session on the provider that did not
+               build. It ends the run ``clean``, or ``intent-failed`` naming each cause.
+
 After every step the stop-reason rules of ``stopreasons.py`` decide whether the run
-goes on. A review round with no findings at all ends the run ``reviewed-clean``: the
-intent check that would let it end ``clean`` is a later sub-stage (plan 10.6).
+goes on. A review round with no findings at all goes on to ``intent-final``; a run
+started from this code never ends ``reviewed-clean``, which only a run started before
+A4, on its own frozen copy, can still give. ``start-snapshot.json`` is written once
+when the run is created, before the first planner, never rewritten, and removed at a
+stop reason a resume cannot continue.
 
 Before every step Codex's usage is read, and before a Claude step Claude's. Since A3
 chunk 3 (plan 10.10 items 1, 3 and 8) a step is stopped only by the readings of the
@@ -55,8 +65,8 @@ status query; Docker, the image and ``approval.json`` wait for ``approve``. Labe
 on across both halves: the build's review rounds carry on from the last plan-review
 label (``label_offset``), while the round cap counts the build's own rounds.
 
-Every resume and approval claims the run with an exclusive ``runs/<run-id>/resume.lock``
-before its first change, and ``resume_waiting`` is a user-started ``--resume --wait``
+Every resume, approval and real stop claims the run with an exclusive
+``runs/<run-id>/resume.lock`` before its first change, and ``resume_waiting`` is a user-started ``--resume --wait``
 that sleeps through a preflight refused on the ceiling or on paid usage with a known
 reset (plan 10.10 item 5).
 
@@ -101,7 +111,11 @@ PROJECT_ROOT = brief_mod.PROJECT_ROOT
 LOG_PATH = brief_mod.LOG_PATH
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 ITEM = re.compile(r"^[a-z0-9][a-z0-9_]*$")
-STEP = re.compile(r"^(build|review-R[1-9][0-9]*|fix-R[1-9][0-9]*)$")
+STEP = re.compile(r"^(build|review-R[1-9][0-9]*|fix-R[1-9][0-9]*|intent-final)$")
+# The intent check's two steps (plan 10.6), each on the provider that did not build.
+INTENT_PLAN = "intent-plan"
+INTENT_FINAL = "intent-final"
+INTENT_STEPS = (INTENT_PLAN, INTENT_FINAL)
 SDK_PACKAGES = ("claude-agent-sdk", "openai-codex")
 DIFF_LIMIT = 300_000
 WAIT_MARGIN_SECONDS = 60
@@ -306,10 +320,17 @@ class Deps:
     # The plan reviewer (plan 10.3 step 4, A3 chunk 3): the reviewer provider's
     # read-only session on its ``plan_reviewer`` entry.
     make_plan_reviewer: Callable = None
+    # The intent checker (plan 10.6 item 2, A4): the reviewer provider's read-only
+    # session on its ``intent_checker`` entry, fresh for each intent step.
+    make_intent_checker: Callable = None
     sleep: Callable = time.sleep
     now: Callable = time.time
 
     def __post_init__(self):
+        if self.make_intent_checker is None:
+            self.make_intent_checker = lambda settings, cwd, usage, frozen_dir: \
+                providers.make_intent_checker(settings, cwd=cwd, usage=usage,
+                                              frozen_dir=frozen_dir)
         if self.make_plan_reviewer is None:
             self.make_plan_reviewer = lambda settings, cwd, usage, frozen_dir: \
                 providers.make_plan_reviewer(settings, cwd=cwd, usage=usage,
@@ -463,8 +484,10 @@ def _effective_last(state, now, *, user_resume=False):
 
 
 def step_provider(settings, step):
-    """The provider a build step uses: the reviewer's for a review, else the builder's."""
-    return (settings["roles"]["reviewer"] if step.startswith("review")
+    """The provider a build step uses: the reviewer's for a review and for an intent
+    step (plan 10.6, the provider that did not build), else the builder's."""
+    return (settings["roles"]["reviewer"]
+            if step.startswith("review") or step in INTENT_STEPS
             else settings["roles"]["builder"])
 
 
@@ -560,7 +583,7 @@ def _claim_mark(state):
 
 
 def claim(run, seen=None):
-    """Claim a run for one resume or approval (plan 10.10 item 5, R43-1): create
+    """Claim a run for one resume, approval or stop (plan 10.10 item 5, R43-1): create
     ``runs/<run-id>/resume.lock`` exclusively, then re-read ``state.json`` under it and
     make the status and stop checks again against what the command checked (``seen``,
     ``_claim_mark`` of the state it read). Returns the lock's path; the caller removes
@@ -572,8 +595,8 @@ def claim(run, seen=None):
         with open(lock, "x", encoding="utf-8", newline="\n") as handle:
             handle.write(f"{os.getpid()} {_now_text()}\n")
     except FileExistsError as exc:
-        raise RunRefused([f"{lock.as_posix()} exists: another resume or approval is "
-                          "claiming this run. Nothing was changed. If no other command "
+        raise RunRefused([f"{lock.as_posix()} exists: another resume, approval or stop "
+                          "is claiming this run. Nothing was changed. If no other command "
                           "is running (one was interrupted), delete that file and run "
                           "the command again"]) from exc
     except OSError as exc:
@@ -587,8 +610,8 @@ def claim(run, seen=None):
                           "nothing was changed"]) from exc
     if _claim_mark(fresh) != (seen if seen is not None else _claim_mark(run.state)):
         release(lock)
-        raise RunRefused(["the run changed after this command read it (another resume "
-                          "or approval acted on it); nothing was changed"])
+        raise RunRefused(["the run changed after this command read it (another resume, "
+                          "approval or stop acted on it); nothing was changed"])
     return lock
 
 
@@ -607,8 +630,8 @@ def _refuse_if_claimed(run):
     """A resume that finds the lock refuses at once, naming it, changing nothing."""
     lock = run.run_dir / LOCK_FILE
     if lock.exists():
-        raise RunRefused([f"{lock.as_posix()} exists: another resume or approval is "
-                          "claiming this run. Nothing was changed. If no other command "
+        raise RunRefused([f"{lock.as_posix()} exists: another resume, approval or stop "
+                          "is claiming this run. Nothing was changed. If no other command "
                           "is running (one was interrupted), delete that file and run "
                           "the command again"])
 
@@ -787,6 +810,150 @@ def review_schema(with_pattern=True):
     return schema
 
 
+# ------------------------------------------- the intent check's mechanical layer
+
+
+def normal_path(text):
+    """A path as the intent check matches it (the builder's choice, plan 10.6): every
+    backslash a forward slash, surrounding space, any leading ``./`` and any trailing
+    ``/`` removed. Case is left as written; ``worktree.under_edit_paths`` ignores it."""
+    path = str(text).strip().replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    return path.rstrip("/")
+
+
+def out_of_scope_paths(items, existence, tree_files):
+    """Split the brief's backticked Out of scope items (``brief.out_of_scope_items``)
+    into the paths the script checks and the items it does not (plan 10.6 item 1).
+
+    An item is checked when, spelled as ``normal_path`` spells it and without case, it
+    names an entry in the start snapshot's creation-time ``existence`` listing (ignored
+    files and folders included), or a file in either tree at the run's starting
+    commits (``tree_files``), or a folder with any such entry beneath it. Existence is
+    never read from the live tree at check time, so a path made after the run started
+    is still not one. Returns ``(checked paths, unchecked items)``, each without
+    repeats; an unchecked item is listed "not checked by the script: no such path"."""
+    known = {str(path).lower() for path in existence} | {str(path).lower()
+                                                         for path in tree_files}
+    folders = {"/".join(path.split("/")[:n]) for path in known
+               for n in range(1, path.count("/") + 1)}
+    checked, unchecked = [], []
+    for item in items:
+        path = normal_path(item["path"])
+        key = path.lower()
+        if path and (key in known or key in folders):
+            if key not in {p.lower() for p in checked}:
+                checked.append(path)
+        elif item not in unchecked:
+            unchecked.append(item)
+    return checked, unchecked
+
+
+def path_problems(paths, edit_paths, checked_out_of_scope):
+    """Every path that breaks the intent check's path rules (plan 10.6 item 1), each
+    ``{"path", "reasons"}``: outside every edit path, or inside a checked Out of scope
+    path, both matched by ``worktree.under_edit_paths``. A path failing both rules is
+    reported once with both reasons (the builder's choice); repeats are judged once."""
+    problems, seen = [], set()
+    for raw in paths:
+        path = normal_path(raw)
+        if not path or path.lower() in seen:
+            continue
+        seen.add(path.lower())
+        reasons = []
+        if not worktree.under_edit_paths(path, edit_paths):
+            reasons.append("outside the edit paths")
+        hits = [entry for entry in checked_out_of_scope
+                if worktree.under_edit_paths(path, [entry])]
+        if hits:
+            reasons.append("inside the Out of scope path " + ", ".join(
+                f"`{entry}`" for entry in hits))
+        if reasons:
+            problems.append({"path": path, "reasons": reasons})
+    return problems
+
+
+_ACCEPTANCE_LINE = re.compile(r"^acceptance check (?:PASS|FAIL) \(exit (-?[0-9]+)\): (.+)$")
+
+
+def acceptance_exits(mechanical_text):
+    """The acceptance results of one review round, read from the lines ``checks.
+    acceptance`` writes into the round's mechanical text, as ordered ``{"command",
+    "exit"}`` records (the builder's choice: carried forward in ``state.json``). A line
+    that cannot be parsed gives no record, so its command counts as having no result."""
+    found = []
+    for line in (mechanical_text or "").splitlines():
+        match = _ACCEPTANCE_LINE.match(line.strip())
+        if match:
+            found.append({"command": match.group(2), "exit": int(match.group(1))})
+    return found
+
+
+def acceptance_failures(commands, results):
+    """Every acceptance check of the current brief that did not exit 0 in the last clean
+    review round (plan 10.6 item 1), each ``{"command", "problem"}``. Results are matched
+    to commands by text, in order, so a command written twice needs two results; a
+    command with none is a failure named ``no result recorded`` (the builder's
+    choice). Nothing is run."""
+    pool = {}
+    for result in results or ():
+        pool.setdefault(result.get("command"), []).append(result.get("exit"))
+    failures = []
+    for command in commands:
+        exits = pool.get(command) or []
+        if not exits:
+            failures.append({"command": command, "problem": "no result recorded"})
+            continue
+        code = exits.pop(0)
+        if code != 0:
+            failures.append({"command": command, "problem": f"exited {code}"})
+    return failures
+
+
+INTENT_CALLBACKS = "claude_intent_checker_callbacks"
+
+
+def intent_causes(mechanical, result, lines):
+    """Every failure the intent check found (plan 10.6), named one per line: a path
+    breaking the path rules, an acceptance check that did not exit 0 or has no result,
+    a Goal or Constraint line not met, an item not delivered and a change not asked
+    for. Empty when the check passes; a ``cannot tell`` is never a failure."""
+    causes = [f"{p['path']}: {'; '.join(p['reasons'])}"
+              for p in mechanical.get("path_problems", [])]
+    causes += [f"acceptance check `{a['command']}`: {a['problem']}"
+               for a in mechanical.get("acceptance", [])]
+    causes += [f"{line['section']} line not met: {entry['line']} ({entry['evidence']})"
+               for line, entry in zip(lines, result["lines"])
+               if entry["status"] == sr.NOT_MET]
+    causes += [f"not delivered: {item['item']} ({item['evidence']})"
+               for item in result["undelivered"]]
+    causes += [f"not asked for: {item['item']} ({item['evidence']})"
+               for item in result["unasked_changes"]]
+    return causes
+
+
+def numbered_lines(lines):
+    """The Goal and Constraint lines as the intent prompts number them: ``N. (Section)
+    text``, one per line, in the brief's order."""
+    return "\n".join(f"{number}. ({line['section']}) {line['text']}"
+                     for number, line in enumerate(lines, 1)) or "None."
+
+
+def shown_diff(diff, saved):
+    """A diff for a prompt as the reviewer's is shown (plan 10.4 and 10.6): whole up to
+    ``DIFF_LIMIT``, otherwise a pointer to ``saved``, where it is kept whole, with the
+    read-in-parts instruction. Never a cut-down diff."""
+    if not diff:
+        return "(empty)"
+    if len(diff) <= DIFF_LIMIT:
+        return diff
+    return (f"(The diff is {len(diff):,} characters, too large for this prompt. It is "
+            f"saved whole at `{saved}`: read it there, in parts, and also read each "
+            "changed path listed above. Every one of them must be in your "
+            "files_reviewed list.)")
+
+
 def _write_json(path, data):
     """A JSON file of the run record, with every non-ASCII character escaped: a tool's
     output kept verbatim can hold garbled text, which the encoding guard (and so the
@@ -892,6 +1059,13 @@ class Run:
             # Labels run on across both halves (plan 10.3 step 4): the build's first
             # review round takes the next label after the planning half's last.
             return f"review-R{self.label_offset() + 1}"
+        # A clean review round goes on to the final intent check (plan 10.6), and a stop
+        # there resumes there, with no further review round: the round stays the last
+        # completed step until the check ends the run. Recognised before any round
+        # number is read from the step's name.
+        final = (self.state.get("intent") or {}).get("final_round")
+        if step == INTENT_FINAL or (final is not None and step == f"review-R{final}"):
+            return INTENT_FINAL
         kind, round_no = step.split("-R")
         return f"fix-R{round_no}" if kind == "review" else f"review-R{int(round_no) + 1}"
 
@@ -991,19 +1165,23 @@ class Run:
         try:
             if step == "build":
                 await self.build()
+            elif step == INTENT_FINAL:
+                await asyncio.to_thread(self.intent_final)
             elif step.startswith("review"):
                 await asyncio.to_thread(self.review, int(step.split("-R")[1]))
             else:
                 await self.fix(int(step.split("-R")[1]))
         except limits.UsageLimitError as exc:
-            self._interrupted(step)
+            if step != INTENT_FINAL:  # an intent step leaves no builder work behind
+                self._interrupted(step)
             self.state.pop("paid_usage_pending", None)
             self.claude_usage.paid_allowed = False
             self.end(sr.USAGE_LIMIT, {"step": step, "provider": exc.provider,
                                       "detail": exc.detail, "resets_at": exc.resets_at,
                                       "paid_usage": "paid overage" in exc.detail})
         except Exception as exc:  # a provider, a check or a reply failed
-            self._interrupted(step)
+            if step != INTENT_FINAL:
+                self._interrupted(step)
             self.state.pop("paid_usage_pending", None)
             self.claude_usage.paid_allowed = False
             self.end(sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
@@ -1267,17 +1445,18 @@ class Run:
             self.state.setdefault("live", {}).setdefault(
                 "claude_builder_callbacks", []).append({"step": step, **record()})
 
-    def _record_review_callbacks(self, step, record):
+    def _record_review_callbacks(self, step, record, key="claude_reviewer_callbacks"):
         """A Claude reviewer's callback record for this step's round (the A3 proof
         run's live checks, after decision 39), stored in
         ``live.claude_reviewer_callbacks`` whether the round completed or failed:
         the record a completed review returned, or the method a failed session
-        still holds. A Codex reviewer has none."""
+        still holds. A Codex reviewer has none. The intent checker's goes under its
+        own ``key``."""
         if callable(record):
             record = record()
         if record is not None:
-            self.state.setdefault("live", {}).setdefault(
-                "claude_reviewer_callbacks", []).append({"step": step, **record})
+            self.state.setdefault("live", {}).setdefault(key, []).append(
+                {"step": step, **record})
 
     async def _close_builder(self):
         if self.builder is not None:
@@ -1545,16 +1724,27 @@ class Run:
              "thread_id": record.thread_id, "summary": record.reply.get("summary"),
              "mechanical": mechanical_text})
         _write_json(self.run_dir / "transcripts" / f"{step}.json", record.raw)
+        # The round's acceptance exits, carried forward for the final intent check,
+        # which uses the last clean round's and never runs them again (plan 10.6).
+        self.state.setdefault("acceptance_exits", {})[f"R{round_no}"] = \
+            acceptance_exits(mechanical_text)
         self.write_packet()
-        self.complete(step)
         stop = sr.decide(self.ledger)
-        if stop is None and not new:
+        clean_round = stop is None and not new
+        if clean_round:
             still_open = [f["label"] for f in self.ledger.findings.values()
                           if not packet_mod.is_addressed(f)]
-            if still_open:  # cannot happen by the rules above; never end clean on it
+            if still_open:  # cannot happen by the rules above; never go on clean on it
                 raise RuntimeError("no new findings, yet findings are still open: "
                                    + ", ".join(still_open))
-            stop = (sr.REVIEWED_CLEAN, {"round": round_no})
+            # No reviewer or mechanical finding open: the run goes on to the final
+            # intent check rather than ending (plan 10.5 and 10.6), at the cap too.
+            self.state.setdefault("intent", {}).update(
+                final_round=round_no,
+                diff=_record_path(self, f"rounds/R{round_no}/diff.patch"))
+        self.complete(step)
+        if clean_round:
+            return
         if stop is None:
             # The cap counts the build's own rounds, not the label number, which carries
             # on from the planning half (plan 10.3 step 4, section 11 item 5).
@@ -1609,6 +1799,115 @@ class Run:
                     and not f.get("decline_accepted") and f["label"] not in raised):
                 f["decline_accepted"] = round_no
 
+    # ------------------------------------------------------ the final intent check
+
+    def run_written_paths(self):
+        """The files the run writes itself, which are never changed paths (plan 10.6):
+        its own record folder (and the folder of run records), the workflow's LOG.md and
+        the item's review packet, each project-relative where it is in the project."""
+        root = self.root.resolve()
+        found = []
+        for path in (self.run_dir.parent, Path(self.log_path),
+                     packet_mod.packet_path(self.root, self.state["item"])):
+            try:
+                found.append(Path(path).resolve().relative_to(root).as_posix())
+            except ValueError:  # outside the project: in no selection anyway
+                pass
+        return found
+
+    def _start_trees(self):
+        start = self.state.get("start") or {}
+        return self.deps.tree_paths(self.root, start.get("public_head"),
+                                    start.get("personal_head"), self.state.get("git_dir"))
+
+    def intent_final(self):
+        """The final intent check (plan 10.6), after a clean review round. In order:
+        the start snapshot, the run's current ``brief.md``, the selection hashed again
+        with the running trusted copy's code, the changed paths, the mechanical check
+        against that brief's edit paths and Out of scope items (existence from the
+        snapshot), the diff saved under ``runs/<run-id>/intent/``, then the session and
+        its reply. Any failure in either layer ends the run ``intent-failed`` naming each
+        cause; otherwise it ends ``clean``. A snapshot, a session or a reply that cannot
+        be used raises, and the run ends ``error``, resumable at this step. Nothing is
+        imported from the live tree and no acceptance check is run."""
+        step = INTENT_FINAL
+        intent = self.state.setdefault("intent", {})
+        snapshot = runrecord.read_start_snapshot(self.run_dir)
+        text = self.brief_text()
+        edit_paths = brief_mod.brief_edit_paths(text)
+        lines = brief_mod.intent_lines(text)
+        acceptance = brief_mod.brief_acceptance(text)
+        category_a = self.deps.category_a(self.root)
+        after = worktree.file_hashes(self.root, category_a)
+        changes = worktree.changed_paths(snapshot["files"], after, self.root,
+                                         self.run_written_paths())
+        checked, unchecked = out_of_scope_paths(brief_mod.out_of_scope_items(text),
+                                                snapshot["existence"],
+                                                self._start_trees())
+        changed = [entry["path"] for entry in changes["changed"]]
+        problems = path_problems(changed, edit_paths, checked)
+        round_no = intent.get("final_round")
+        results = (self.state.get("acceptance_exits") or {}).get(f"R{round_no}")
+        failed_checks = acceptance_failures(acceptance, results)
+        diff = self.diff(category_a)
+        saved = self.run_dir / "intent" / "final-diff.patch"
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_text(diff, encoding="utf-8", newline="\n")
+        mechanical = {"changed": changes["changed"], "information": changes["information"],
+                      "outside_edit_paths": [p["path"] for p in problems
+                                             if "outside the edit paths" in p["reasons"]],
+                      "path_problems": problems, "acceptance": failed_checks,
+                      "out_of_scope_checked": checked, "not_checked": unchecked}
+        intent["final_mechanical"] = mechanical
+        checker = self.deps.make_intent_checker(self.settings, self.root, self.claude_usage,
+                                                self.state["frozen_dir"])
+        prompt = render("intent-final", brief=text, lines=numbered_lines(lines),
+                        changed_files="\n".join(f"- {path}" for path in changed)
+                        or "None.",
+                        diff=shown_diff(diff, _record_path(self, "intent/final-diff.patch")),
+                        checker_tools=reviewer_tools(checker.provider))
+        self._inject(step, checker.provider)
+        try:
+            record = checker.review(prompt, sr.intent_schema(final=True))
+        except Exception:
+            self._take_refusals(step, getattr(checker, "refusals", None))
+            self._record_review_callbacks(step, getattr(checker, "callback_record", None),
+                                          INTENT_CALLBACKS)
+            raise
+        # The transcript is kept whatever the reply holds, a refused one included (the
+        # builder's choice), before the reply is parsed.
+        _write_json(self.run_dir / "transcripts" / f"{step}.json",
+                    {"reply": record.reply, "raw": record.raw})
+        self._take_refusals(step, record.refusals)
+        self._record_review_callbacks(step, getattr(record, "callbacks", None),
+                                      INTENT_CALLBACKS)
+        self._record_model(checker.provider, record.model)
+        # A Codex checker's launch readings, under the key the first check's also use.
+        launch = getattr(record, "launch", None)
+        if launch is not None:
+            self.state.setdefault("live", {}).setdefault(
+                "codex_intent_checker_launches", []).append({"step": step, **launch})
+        self.state.setdefault("steps", []).append(
+            {"step": step, "role": "intent_checker", "provider": checker.provider,
+             "model": getattr(checker, "model", None), "tokens": record.tokens,
+             **({"usage_probe": self._probe_for_step} if self._probe_for_step else {}),
+             "uncached_tokens": providers.uncached_tokens(checker.provider, record.usage),
+             "usage": record.usage, "wall_seconds": record.wall_seconds,
+             "thread_id": record.thread_id})
+        result = sr.parse_intent_reply(record.reply, [line["text"] for line in lines],
+                                       changed_files=changed)
+        causes = intent_causes(mechanical, result, lines)
+        intent["final"] = {"at": _now_text(), "mechanical": mechanical, "model": result,
+                           "cannot_tell": [entry["line"] for entry in result["lines"]
+                                           if entry["status"] == sr.CANNOT_TELL],
+                           "causes": causes}
+        self.complete(step)
+        if causes:
+            self.end(sr.INTENT_FAILED, {"step": step, "causes": causes})
+        else:
+            self.end(sr.CLEAN, {"step": step, "round": round_no,
+                                "cannot_tell": len(intent["final"]["cannot_tell"])})
+
     # ---------------------------------------------------------------- ending
 
     def write_packet(self):
@@ -1661,8 +1960,10 @@ class Run:
         """Plan 7.3, after the report is written. If this run (or its resume) started
         Docker, stop it; a stop that fails is written into the report and the stop
         reason stands. At a stop reason a resume cannot continue, remove the run's
-        frozen folder and its clean copies, which a resume would need otherwise; a
-        removal that fails is written into the report too. The report is written again
+        frozen folder, its clean copies and its start snapshot, which a resume would
+        need otherwise; a removal that fails is written into the report too. The
+        snapshot's results are already in ``state.json`` and the report (plan 10.6).
+        The report is written again
         afterwards, so it records what happened here. Nothing here raises: the run
         has already ended and reported."""
         self._keep_fire_log()
@@ -1684,6 +1985,9 @@ class Run:
                         self.state["frozen_dir"]) if self.state.get("frozen_dir") else None),
                     ("the clean copies", lambda: self.deps.remove_copies(
                         self.state["run_id"])),
+                    ("the start snapshot", lambda: (
+                        self.run_dir / runrecord.START_SNAPSHOT_FILE).unlink(
+                            missing_ok=True)),
                     ("the rule-hook fire log", lambda: shutil.rmtree(
                         codex_rules.fire_log_path(self.state["run_id"]).parent)
                         if codex_rules.fire_log_path(self.state["run_id"]).parent.exists()
@@ -1847,6 +2151,55 @@ def render_record_packet(run):
 PAUSE_READ = {sr.AWAITING_PLAN_APPROVAL: "plan-report.md", sr.AWAITING_USER: "questions.md"}
 
 
+def _one_line(text, limit=600):
+    return packet_mod.clean(text, limit)
+
+
+def intent_report_lines(result, final=True):
+    """An intent check's section in ``report.md`` (``final``) or ``plan-report.md``:
+    both layers, every failure, every ``cannot tell``, every changed path outside the
+    edit paths and every append-only LOG.md line as information (the final check), and
+    every Out of scope item not checked by the script. Text from a session goes through
+    the packet's ``clean``."""
+    mechanical, model = result.get("mechanical") or {}, result.get("model") or {}
+    lines = ["## Intent check" + (" (final)" if final else ""), ""]
+    causes = result.get("causes") or []
+    if final:
+        lines += [("**Result:** failed, " + str(len(causes)) + " cause(s).") if causes
+                  else "**Result:** passed.", ""]
+    lines += ["Mechanical layer:", ""]
+    problems = mechanical.get("path_problems") or []
+    lines += [f"- `{p['path']}`: {'; '.join(p['reasons'])}" for p in problems]
+    lines += [f"- acceptance check `{a['command']}`: {a['problem']}"
+              for a in mechanical.get("acceptance") or []]
+    if not problems and not mechanical.get("acceptance"):
+        lines.append("- No path or acceptance failure.")
+    if final:
+        outside = mechanical.get("outside_edit_paths") or []
+        lines += ["", "Changed paths outside the edit paths: "
+                  + (", ".join(f"`{p}`" for p in outside) or "none") + "."]
+        info = mechanical.get("information") or []
+        lines += [f"- information: `{i['path']}`: {i['what']}" for i in info]
+    for item in mechanical.get("not_checked") or []:
+        lines.append(f"- `{_one_line(item.get('path'), 200)}` (Out of scope, line "
+                     f"{item.get('line')}): not checked by the script: no such path")
+    lines += ["", "Model layer:", ""]
+    lines += [f"- {entry.get('status')}: {_one_line(entry.get('line'), 300)} | Evidence: "
+              f"{_one_line(entry.get('evidence'))}" for entry in model.get("lines", [])]
+    for title, key in (("Changes the brief did not ask for", "unasked_changes"),
+                       ("Brief items not delivered", "undelivered")):
+        lines += ["", f"{title}:", ""]
+        lines += [f"- {_one_line(i.get('item'), 300)} | Evidence: "
+                  f"{_one_line(i.get('evidence'))}" for i in model.get(key, [])] \
+            or ["- None."]
+    cannot = result.get("cannot_tell") or []
+    lines += ["", "Cannot tell (not a failure): "
+              + (str(len(cannot)) + " line(s), each listed above." if cannot else "none.")]
+    if final and causes:
+        lines += ["", "Causes:", ""] + [f"- {_one_line(c)}" for c in causes]
+    return lines
+
+
 def write_report(run):
     """``report.md`` and ``report.json``, written at every end and at every pause, so a
     run resumed after a stop and then paused never shows the old stop as its state (the
@@ -1904,6 +2257,8 @@ def write_report(run):
                    else packet_mod.packet_path(".", state["item"]).as_posix()),
         "image": state.get("image"), "docker": state.get("docker"),
         "cleanup": state.get("cleanup", []),
+        # The final intent check (plan 10.6), kept apart from the reviewer findings.
+        "intent": (state.get("intent") or {}).get("final"),
     }
     if state.get("identity_refusal"):
         # Plan 10.3 step 3: a planner's plan refused for naming its provider.
@@ -1946,7 +2301,10 @@ def write_report(run):
             lines += ["**Evidence:** `" + json.dumps(evidence, ensure_ascii=False)[:1500]
                       .replace("`", "'") + "`", ""]
     lines += [f"**Findings:** {len(report['open'])} open, {len(report['addressed'])} "
-              f"addressed, in `{report['packet']}`.", "", "## Steps", ""]
+              f"addressed, in `{report['packet']}`.", ""]
+    if report["intent"]:
+        lines += intent_report_lines(report["intent"]) + [""]
+    lines += ["## Steps", ""]
     for step in report["steps"]:
         lines.append(f"- {step['step']} ({step['role']}, {step['provider']}, "
                      f"{step.get('model')}): {step.get('tokens')} tokens, "
@@ -2165,7 +2523,7 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
     deps = deps or Deps()
     if inject is not None and not STEP.match(inject):
         raise RunRefused([f"--inject-limit {inject!r} is not a step name (build, "
-                          "review-R<n>, fix-R<n>)"])
+                          "review-R<n>, fix-R<n>, intent-final)"])
     if allow_paid and wait:
         raise RunRefused(["--allow-paid cannot be used with --wait"])
     ready = preflight(brief_arg, item, git_dir, root=root, deps=deps, settings=settings,
@@ -2284,6 +2642,11 @@ def _fill(ready, brief_arg, item, git_dir, run_dir, frozen_dir, started_ns, *,
     settings, brief = ready["settings"], ready["brief"]
     shutil.copyfile(Path(root) / brief_arg, run_dir / "brief.md")
     _write_json(run_dir / "settings.json", {**settings, "sdk_versions": sdk_versions()})
+    # The intent check's start snapshot (plan 10.6, "What a changed path is"): written
+    # once here, before the first planner, and never rewritten. A failure takes
+    # ``_create``'s remove-and-refuse path, so no run starts without one.
+    runrecord.write_start_snapshot(run_dir, worktree.start_snapshot(
+        root, ready["category_a"]))
     heads = worktree.record_start(run_dir, root, brief["edit_paths"], git_dir)
     state = runrecord.read_state(run_dir)
     state.update({
@@ -2470,17 +2833,35 @@ def load(run_id, *, root=PROJECT_ROOT, deps=None, log_path=LOG_PATH,
 
 
 def stop(run, dry_run=False):
-    """End a paused run by the user's choice. A dry run checks and says what it would
-    do, changing nothing (review finding R3-3)."""
-    if run.state.get("status") != sr.PAUSED:
-        raise RunRefused([f"only a paused run can be stopped (this one is "
-                          f"{run.state.get('status')})"])
+    """End a paused run by the user's choice, or abandon one that ended resumably (code
+    review R58-1), so its frozen folder, clean copies and start snapshot are removed. A
+    dry run checks and says what it would do, changing nothing (review finding R3-3)."""
+    status = run.state.get("status")
+    stops = run.state.get("stop_reasons") or []
+    last = stops[-1]["reason"] if stops else None
+    if status == sr.PAUSED:
+        held, evidence = f"paused {run.state.get('pause')}", {"pause": run.state.get("pause")}
+    elif status == sr.ENDED and last in sr.RESUMABLE:
+        held, evidence = f"ended {last}", {"abandoned": last}
+    else:
+        raise RunRefused(["only a paused run, or one ended "
+                          f"{', '.join(sr.RESUMABLE)}, can be stopped (this one is "
+                          f"{status}{f' {last}' if last else ''})"])
     if dry_run:
-        print(f"[DRY RUN] would end run {run.state['run_id']}, paused "
-              f"{run.state.get('pause')}, as stopped-by-user, write its report and "
-              "append LOG.md. Nothing was changed.", file=sys.stderr)
+        print(f"[DRY RUN] would end run {run.state['run_id']}, {held}, as "
+              "stopped-by-user, which cannot be resumed, remove its frozen folder, clean "
+              "copies and start snapshot, write its report and append LOG.md. Nothing was "
+              "changed.", file=sys.stderr)
         return
-    run.end(sr.STOPPED_BY_USER, {"pause": run.state.get("pause")})
+    # Claimed as a resume is (code review R59-1), so a --resume --wait waking at its reset
+    # and this stop cannot both act on the state they read.
+    lock = claim(run)
+    try:
+        if status == sr.ENDED:  # reopened by the rule a resume uses, then ended for good
+            sr.continue_run(run.state)
+        run.end(sr.STOPPED_BY_USER, evidence)
+    finally:
+        release(lock)
 
 
 # ---------------------------------------------------------- approval and amendment

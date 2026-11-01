@@ -681,6 +681,21 @@ def read_brief(arg, root=PROJECT_ROOT):
     if code != 0:
         raise ValueError("the brief does not pass the check:\n" + "\n".join(lines))
     text, _problems = _read(arg, root)
+    sections = {title: [content for _no, content in found]
+                for title, found in section_lines(text).items()}
+    return {"text": text, "sections": sections, "edit_paths": brief_edit_paths(text),
+            "acceptance": brief_acceptance(text)}
+
+
+# ------------------------------------------------- reading a brief's text (A4)
+
+
+def section_lines(text):
+    """Every section's content lines as the checker reads them: ``{heading: [(line
+    number, content), ...]}`` for the seven headings, in document order, comments,
+    placeholders and blank lines dropped. A wrapped line is a line of its own. The one
+    reading ``read_brief`` and the intent checks (plan 10.6) share, so the two cannot
+    differ on which lines a section holds."""
     sections = {title: [] for title in HEADINGS}
     current = None
     for line in scan(text):
@@ -690,17 +705,59 @@ def read_brief(arg, root=PROJECT_ROOT):
         if current is not None and line.kind == "text":
             content = line.text.strip()
             if not _is_placeholder(content):
-                sections[current].append(content)
+                sections[current].append((line.no, content))
+    return sections
 
-    def bullet(content):
-        match = _BULLET.match(content)
-        return (match.group(1) or "").strip() if match else content
 
-    edit_paths = [_MEASURE_SPLIT.split(bullet(item), maxsplit=1)[0].strip()
-                  for item in sections[_EDIT]]
-    acceptance = [bullet(item) for item in sections[_ACCEPTANCE]]
-    return {"text": text, "sections": sections, "edit_paths": edit_paths,
-            "acceptance": acceptance}
+def _bullet_text(content):
+    match = _BULLET.match(content)
+    return (match.group(1) or "").strip() if match else content
+
+
+def brief_edit_paths(text):
+    """A brief text's edit paths, each the path before any ``| Measure:`` part, parsed
+    exactly as ``read_brief`` parses them (it calls this). The intent checks read the
+    run's current ``brief.md`` through it, never ``state.json``'s copy, which an
+    amendment leaves unchanged until approval."""
+    return [_MEASURE_SPLIT.split(_bullet_text(content), maxsplit=1)[0].strip()
+            for _no, content in section_lines(text)[_EDIT]]
+
+
+def brief_acceptance(text):
+    """A brief text's acceptance commands, as ``read_brief`` gives them."""
+    return [_bullet_text(content) for _no, content in section_lines(text)[_ACCEPTANCE]]
+
+
+INTENT_SECTIONS = (HEADINGS[0], HEADINGS[1])
+
+
+def intent_lines(text):
+    """The Goal and Constraint lines the intent checker judges (plan 10.6 item 2), as
+    the checker reads them: one entry per content line, in the brief's order, Goal
+    first, each ``{"section", "line", "text"}``. ``text`` is the line with a leading
+    ``- `` bullet marker removed; a wrapped line stands as a line of its own."""
+    found = []
+    sections = section_lines(text)
+    for title in INTENT_SECTIONS:
+        for no, content in sections[title]:
+            found.append({"section": title, "line": no, "text": _bullet_text(content)})
+    return found
+
+
+_BACKTICK_SPAN = re.compile(r"`([^`]+)`")
+
+
+def out_of_scope_items(text):
+    """Every backtick span under Out of scope (plan 10.2 and 10.6 item 1), each
+    ``{"line", "path"}``, in order: several on one line are all found, and ``None`` or a
+    section with no span gives none. Whether an item names an existing path is the
+    caller's to decide."""
+    found = []
+    for no, content in section_lines(text)[HEADINGS[2]]:
+        for match in _BACKTICK_SPAN.finditer(content):
+            if match.group(1).strip():
+                found.append({"line": no, "path": match.group(1).strip()})
+    return found
 
 
 def read_edit_paths(arg, root=PROJECT_ROOT):

@@ -223,9 +223,11 @@ class PlannerTests(PlanningCase):
         # The barrier proves the two ran at the same time: one after the other, the
         # first would have waited alone and failed.
         self.assertFalse(self.barrier.broken)
-        # Then one clean plan-review round (A3 chunk 3) before the pause.
+        # Then one clean plan-review round (A3 chunk 3) and the first intent check (A4)
+        # before the pause.
         self.assertEqual(planning.planning_state(run)["completed"],
-                         ["planners", "identity", "synthesis", "plan-review-R1"])
+                         ["planners", "identity", "synthesis", "plan-review-R1",
+                          "intent-plan"])
 
     def test_positive_each_planner_takes_its_providers_planner_entry(self):
         settings = json.loads(json.dumps(self.settings))
@@ -245,6 +247,7 @@ class PlannerTests(PlanningCase):
         self.assertEqual(options.max_turns, settings["max_turns"]["reviewer"])
 
     def test_positive_the_synthesiser_is_the_builders_provider_and_model(self):
+        # Since A4 (plan 10.6) at medium effort, whatever the builder entry's effort.
         for builder in ("claude", "codex"):
             settings = suite.settings_mod.assign_roles(
                 suite.settings_mod.load_settings(), builder)
@@ -252,8 +255,7 @@ class PlannerTests(PlanningCase):
                                                  frozen_dir=self.root)
             entry = settings["models"][builder]["builder"]
             self.assertIs(type(session), providers.REVIEWERS[builder])
-            self.assertEqual((session.model, session.effort),
-                             (entry["model"], entry["effort"]))
+            self.assertEqual((session.model, session.effort), (entry["model"], "medium"))
 
     def test_rejection_a_limit_at_the_first_check_stops_both_before_any_session(self):
         run = self.planning_run()
@@ -832,8 +834,11 @@ class PlanReportTests(PlanningCase):
                      "## Synthesis", "Both change work/a.txt.", "Wording.: Use done.",
                      "### The merged plan", "The merged plan.", "`work/a.txt`",
                      "## Plan review findings", "None: the plan review found nothing",
-                     "## Intent check", "No intent check has run"):
+                     "## Intent check", "Model layer:",
+                     "The first intent check never ends the run"):
             self.assertIn(part, text)
+        # A4: the first intent check has run, so the old sentence is gone.
+        self.assertNotIn("No intent check has run", text)
 
     def test_positive_nothing_is_written_outside_the_run_record(self):
         run = self.planning_run()
@@ -866,10 +871,11 @@ class PlanReportTests(PlanningCase):
         self.h.reviews = [[]]
         again = self.load(run.state["run_id"])
         loop.approve(again)
-        # The step it paused on is the clean plan review that follows the synthesis.
-        self.assertEqual(again.state["approval"]["planning_step"], "plan-review-R1")
+        # The step it paused on is the first intent check (A4), which follows the clean
+        # plan review that follows the synthesis.
+        self.assertEqual(again.state["approval"]["planning_step"], "plan-intent-plan")
         asyncio.run(again.advance())
-        self.assertEqual(again.state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
+        self.assertEqual(again.state["stop_reasons"][-1]["reason"], sr.CLEAN)
 
     def test_rejection_a_malformed_identifiers_file_ends_before_any_session(self):
         run = self.planning_run()

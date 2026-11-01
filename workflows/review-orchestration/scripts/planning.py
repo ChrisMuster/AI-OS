@@ -17,7 +17,8 @@ builds only after ``--approve``. Its steps, each recorded in ``state.json`` unde
              provider (step 3), with real project paths masked for the check only. A
              plan with any match is refused, never scrubbed: the run ends ``error`` with
              ``identity_refusal`` in the report.
-  synthesis  the synthesiser, on the builder's provider and model, receives the brief
+  synthesis  the synthesiser, on the builder's provider and model at medium effort
+             (corrected in A4, plan 10.6), receives the brief
              and both plans as Plan 1 and Plan 2, in an order drawn at random and
              recorded, with no provider names, and replies in ``SYNTHESIS_SCHEMA``.
 
@@ -29,14 +30,23 @@ builds only after ``--approve``. Its steps, each recorded in ``state.json`` unde
              the 10.5 action list, every open finding exactly once, each ``fixed`` or
              ``declined-merits`` with a note (``stopreasons.parse_plan_actions``).
 
+  intent-plan  the first intent check (step 5, A4, plan 10.6), once a plan-review round
+             finds nothing: the mechanical layer judges every path in each merged-plan
+             step's ``files`` list against the run's current ``brief.md`` (its edit
+             paths and backticked Out of scope paths, existence taken from
+             ``start-snapshot.json``), and one fresh read-only session on the provider
+             that did not build judges each Goal and Constraint line. Its result goes
+             into ``plan-report.md`` and never ends the run.
+
 The plan review loops, the 10.5 loop-exit rules applying with the synthesiser in the
-builder's place, until a round finds nothing, when the run writes ``plan-report.md``
-and pauses ``awaiting-plan-approval`` (step 6), or until the plan-review round cap
-(``round_caps.plan_review``), when it ends ``max-rounds``; ``--resume --rounds N`` then
-keeps both plans and the synthesis, the synthesiser acts on the open findings, and up
-to N more rounds follow. An amendment restarts at step 1 with the round count reset,
-its labels carrying on. The intent check (step 5) is A4's, so the report says no
-intent check has run.
+builder's place, until a round finds nothing, when the first intent check runs, the run
+writes ``plan-report.md`` and pauses ``awaiting-plan-approval`` (step 6), or until the
+plan-review round cap (``round_caps.plan_review``), when it ends ``max-rounds``;
+``--resume --rounds N`` then keeps both plans and the synthesis, the synthesiser acts
+on the open findings, and up to N more rounds follow. An amendment restarts at step 1
+with the round count reset, its labels carrying on, and the intent check runs again on
+the revised brief. A stop at ``intent-plan`` resumes there, with no new plan-review
+round.
 
 Nothing here writes outside the run's own record, ``runs/<run-id>/`` (step 6, "The run
 writes nothing in the project before approval"): no LOG.md entry at a pause, at an end
@@ -46,7 +56,7 @@ packet. A stop resumes from the last planning step completed, never mid-step, an
 two planners always run again together.
 
 Every session is a read-only session of ``providers.py`` started with the reviewers'
-lockdown (step 7; process table rows 16 to 18), reached through ``loop.Deps`` so the
+lockdown (step 7; process table rows 16 to 19), reached through ``loop.Deps`` so the
 tests drive the whole half with fakes and no model call.
 """
 
@@ -61,6 +71,7 @@ import brief as brief_mod
 import limits
 import loop
 import providers
+import runrecord
 import stopreasons as sr
 import worktree
 
@@ -72,8 +83,10 @@ SECTIONS = ("names", "distinctive", "common", "prefixes")
 PLANNERS, IDENTITY, SYNTHESIS = "planners", "identity", "synthesis"
 STEPS = (PLANNERS, IDENTITY, SYNTHESIS)
 # The plan review's two kinds of step (A3 chunk 3), and the run's next move once every
-# step above is done: a review round, the synthesiser's revision, or the pause.
+# step above is done: a review round, the synthesiser's revision, the first intent
+# check (A4, plan 10.6) or the pause.
 REVIEW, REVISE, PAUSE = "review", "revise", "pause"
+INTENT_PLAN = loop.INTENT_PLAN
 LABELS = ("Plan 1", "Plan 2")
 QUESTIONS_FILE = "questions.md"
 PLAN_REPORT = "plan-report.md"
@@ -479,7 +492,7 @@ def _group_providers(run, group):
     roles = run.settings["roles"]
     if group == PLANNERS:
         return PROVIDERS
-    if group.startswith("plan-review"):
+    if group.startswith("plan-review") or group == INTENT_PLAN:
         return (roles["reviewer"],)
     return (roles["builder"],)
 
@@ -925,6 +938,99 @@ async def _revise(run, label, step):
         end(run, *stop)
 
 
+# ------------------------------------------------------- the first intent check
+
+
+def intent_plan_prompt(run, text, lines):
+    """The first intent check's payload (plan 10.6 item 2): the run's current brief, its
+    numbered Goal and Constraint lines and the merged plan, nothing else: not the two
+    plans, the synthesis's notes, the reviewer's reasoning, findings or transcripts."""
+    merged = (planning_state(run).get("synthesis") or {}).get("merged_plan") or {}
+    # ``prompts/intent-first.md``: a name ending ``-plan.md`` would match the project's
+    # gitignored ``*-PLAN.md`` design-document pattern on a case-blind file system.
+    return loop.render("intent-first", brief=text, lines=loop.numbered_lines(lines),
+                       plan=loop.render_plan(merged),
+                       checker_tools=loop.reviewer_tools(
+                           run.settings["roles"]["reviewer"]))
+
+
+def planned_files(run):
+    """Every path in each merged-plan step's ``files`` list, in order: the only paths
+    the first check's mechanical layer judges (plan 10.6 item 1)."""
+    merged = (planning_state(run).get("synthesis") or {}).get("merged_plan") or {}
+    return [path for step in merged.get("steps", []) for path in step.get("files", [])
+            if isinstance(path, str)]
+
+
+async def intent_plan(run):
+    """The first intent check (plan 10.6, plan 10.3 step 5), between a clean plan
+    review and the approval pause, on the provider that did not build. Its result goes
+    into ``plan-report.md`` and never ends the run or starts a revision."""
+    permitted = _permitted(run, INTENT_PLAN)
+    try:
+        await _intent_plan(run)
+    finally:
+        _finish(run, INTENT_PLAN, permitted)
+
+
+async def _intent_plan(run):
+    step, state = INTENT_PLAN, run.state
+    provider = run.settings["roles"]["reviewer"]
+    if await _check_usage(run, step, provider):
+        return
+    # The run's brief as it stands now, an amended one included, with its own edit paths
+    # and Out of scope section: never state.json's edit paths, which an amendment leaves
+    # as they were until approval.
+    try:
+        text = run.brief_text()
+        edit_paths = brief_mod.brief_edit_paths(text)
+        lines = brief_mod.intent_lines(text)
+        snapshot = runrecord.read_start_snapshot(run.run_dir)
+        start = state.get("start") or {}
+        trees = run.deps.tree_paths(run.root, start.get("public_head"),
+                                    start.get("personal_head"), state.get("git_dir"))
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made
+        end(run, sr.ERROR, {"step": step, "error": "the intent check cannot be made: "
+                            f"{type(exc).__name__}: {exc}"})
+        return
+    checked, unchecked = loop.out_of_scope_paths(brief_mod.out_of_scope_items(text),
+                                                 snapshot["existence"], trees)
+    mechanical = {"path_problems": loop.path_problems(planned_files(run), edit_paths,
+                                                      checked),
+                  "out_of_scope_checked": checked, "not_checked": unchecked}
+    session = None
+    try:
+        session = run.deps.make_intent_checker(run.settings, run.root, run.claude_usage,
+                                               state["frozen_dir"])
+        record = await asyncio.to_thread(session.review,
+                                         intent_plan_prompt(run, text, lines),
+                                         sr.intent_schema())
+    except limits.UsageLimitError as exc:
+        _failed_callbacks(run, step, "intent_checker", session)
+        end(run, sr.USAGE_LIMIT, _usage_evidence(exc, step))
+        return
+    except Exception as exc:  # noqa: BLE001 - a provider failure
+        for refusal in getattr(session, "refusals", None) or ():
+            state.setdefault("refusals", []).append({"step": step, **refusal})
+        _failed_callbacks(run, step, "intent_checker", session)
+        end(run, sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
+        return
+    # The step record and transcript are written before the reply is parsed, so a
+    # refused reply's transcript is kept.
+    _record_session(run, step, "intent_checker", provider, session, record)
+    try:
+        result = sr.parse_intent_reply(record.reply, [line["text"] for line in lines])
+    except sr.ReplyError as exc:
+        end(run, sr.ERROR, {"step": step, "error": str(exc)})
+        return
+    planning_state(run)["intent"] = {
+        "at": _now(), "mechanical": mechanical, "model": result,
+        "cannot_tell": [entry["line"] for entry in result["lines"]
+                        if entry["status"] == sr.CANNOT_TELL],
+        "causes": loop.intent_causes(mechanical, result, lines)}
+    _complete(run, step)
+
+
 async def pause(run):
     """Every planning step done and the last plan review clean: write
     ``plan-report.md`` (again, for a run interrupted after its last step, code review
@@ -945,7 +1051,8 @@ render_plan = loop.render_plan
 def write_plan_report(run):
     """``plan-report.md`` in the run record (plan 10.3 step 6 and the paragraph after
     the chunk list): both plans, the synthesis, the plan-review findings from the run's
-    ledger, and an intent section saying no intent check has run (A4's)."""
+    ledger, and the first intent check's section (plan 10.6): both layers, every
+    ``cannot tell`` and every Out of scope item not checked by the script."""
     planning = planning_state(run)
     synthesis_reply = planning.get("synthesis") or {}
     lines = [f"# Plan report, run {run.state['run_id']}", ""]
@@ -967,8 +1074,13 @@ def write_plan_report(run):
     lines += ["", "### The merged plan", "",
               render_plan(synthesis_reply.get("merged_plan") or {}), ""]
     lines += ["## Plan review findings", ""] + review_lines(run) + [""]
-    lines += ["## Intent check", "",
-              "No intent check has run: it is built in sub-stage A4 (plan 10.6).", ""]
+    result = planning.get("intent")
+    if isinstance(result, dict):
+        lines += loop.intent_report_lines(result, final=False)
+        lines += ["", "The first intent check never ends the run: read it before "
+                  "approving, amending or stopping.", ""]
+    else:  # pragma: no cover - the pause follows the check, which records its result
+        lines += ["## Intent check", "", "The intent check has no recorded result.", ""]
     (run.run_dir / PLAN_REPORT).write_text("\n".join(lines), encoding="utf-8",
                                            newline="\n")
 
@@ -1015,7 +1127,9 @@ def next_step(run):
     if run.ledger.open_labels():
         return REVISE
     if planning.get("reviewed"):
-        return PAUSE
+        # The first intent check runs once the plan review is clean, then the pause
+        # (plan 10.3 step 5); an amendment clears both with the rest of planning.
+        return PAUSE if INTENT_PLAN in done else INTENT_PLAN
     return REVIEW
 
 
@@ -1043,7 +1157,7 @@ def next_providers(run):
     roles = run.settings["roles"]
     if step == PLANNERS:
         return PROVIDERS
-    if step == REVIEW:
+    if step in (REVIEW, INTENT_PLAN):
         return (roles["reviewer"],)
     if step == PAUSE:
         return ()
@@ -1081,6 +1195,8 @@ async def _advance(run):
             await revise(run)
         elif step == REVIEW:
             await review_round(run)
+        elif step == INTENT_PLAN:
+            await intent_plan(run)
         else:  # the last plan review found nothing: the run waits for the user
             await pause(run)
 

@@ -183,8 +183,11 @@ class PriceAlarmTests(LoopCase):
 
     def test_positive_each_step_records_its_uncached_tokens(self):
         _first, second = self.two_runs()
-        build, review = second.state["steps"]
+        build, review, intent = second.state["steps"]
         self.assertEqual((build["tokens"], build["uncached_tokens"]), (110, 110))
+        # The final intent check (A4) records its own figure, from its own usage.
+        self.assertEqual((intent["role"], intent["uncached_tokens"]),
+                         ("intent_checker", 15))
         self.assertIsNone(review["uncached_tokens"])
         self.assertEqual(review["tokens"], 1000)  # tokens stays in the record
         report = (second.run_dir / "report.md").read_text(encoding="utf-8")

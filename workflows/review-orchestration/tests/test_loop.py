@@ -43,13 +43,17 @@ from loop_fixtures import *  # noqa: E402,F401,F403 - the loop suites' shared fi
 
 class RunTests(LoopCase):
 
-    def test_positive_a_clean_review_ends_reviewed_clean_never_clean(self):
+    def test_positive_a_clean_review_goes_to_the_intent_check_and_ends_clean(self):
+        # A4 retires reviewed-clean (plan 10.5 and 10.6): a clean round goes on to the
+        # final intent check, which ends the run clean when both layers pass.
         self.h.builder_script = [edit(self.root, "done\n")]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
-        self.assertEqual(run.state["step"], "review-R1")
-        self.assertEqual([s["step"] for s in run.state["steps"]], ["build", "review-R1"])
+        self.assertEqual(self.reason(run), sr.CLEAN)
+        self.assertNotEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(run.state["step"], "intent-final")
+        self.assertEqual([s["step"] for s in run.state["steps"]],
+                         ["build", "review-R1", "intent-final"])
         self.assertEqual(self.log_actions(), ["started", "completed"])
         folder = run.run_dir
         for name in ("brief.md", "settings.json", "state.json", "report.md", "report.json",
@@ -72,7 +76,7 @@ class RunTests(LoopCase):
                                "fix": "f"}], []]
         self.h.reviews = [[finding()], []]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         ledger = run.ledger.findings
         self.assertEqual(ledger["R1-1"]["source"], "mechanical")  # checks first
         self.assertEqual(ledger["R1-2"]["source"], "reviewer")
@@ -125,7 +129,7 @@ class RunTests(LoopCase):
                                  reply(actions(("R1-1", "declined-merits")))]
         self.h.reviews = [[finding()], []]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(run.ledger.findings["R1-1"]["decline_accepted"], 2)
         text = (self.root / "memory" / "demo_review_packet.md").read_text(encoding="utf-8")
         self.assertIn("## Open\n\nNone.", text)  # the end reason and the packet agree
@@ -139,7 +143,7 @@ class RunTests(LoopCase):
                                  reply(actions(("R2-1", "fixed")))]
         self.h.reviews = [[finding()], [finding(title="Another defect")], []]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(run.ledger.findings["R1-1"]["decline_accepted"], 2)
 
     def test_negative_a_decline_raised_again_is_never_accepted(self):
@@ -170,13 +174,13 @@ class RunTests(LoopCase):
         run = self.start(cap=1)
         self.assertEqual(self.reason(run), sr.MAX_ROUNDS)
         again = self.resume(run, rounds=1)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(again.state["round_cap"], 2)
         self.assertEqual([s["reason"] for s in again.state["stop_reasons"]],
-                         [sr.MAX_ROUNDS, sr.REVIEWED_CLEAN])
+                         [sr.MAX_ROUNDS, sr.CLEAN])
         self.assertEqual(self.h.builders[-1].resume, "s-1")  # same builder session
 
-    def test_rejection_a_reviewed_clean_run_cannot_be_resumed(self):
+    def test_rejection_a_clean_run_cannot_be_resumed(self):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         run = self.start()
@@ -228,7 +232,7 @@ class RunTests(LoopCase):
             big.encode("utf-8")), "wrote a big file")[1]]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         prompt = self.h.review_calls[0][0]
         self.assertIn("too large for this prompt", prompt)
         self.assertNotIn("line of text", prompt)  # no part of it is passed off as whole
@@ -314,7 +318,7 @@ class RunTests(LoopCase):
                           log_path=self.log, runs_dir=self.runs)
         loop.resume(again)
         asyncio.run(again.advance())
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
 
     def test_rejection_two_distinct_failures_are_both_recorded(self):
         # The step fails for one reason (the reviewer) and the partial diff for another
@@ -351,14 +355,14 @@ class RunTests(LoopCase):
         self.assertEqual(self.reason(run), sr.ERROR)
         self.assertEqual(run.state["step"], "build")
         again = self.resume(run)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
 
     def test_rejection_codex_refusing_the_title_pattern_drops_it_and_goes_on(self):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [providers.ProviderError("invalid schema:\n  pattern not supported"),
                           []]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertTrue(run.state["live"]["title_pattern"].startswith("refused"))
         report = (run.run_dir / "report.md").read_text(encoding="utf-8")
         self.assertIn("- title_pattern: refused: invalid schema: pattern not supported\n",
@@ -419,14 +423,16 @@ class UsageTests(LoopCase):
 
     def test_rejection_a_top_up_also_stops_it_and_a_resume_rebaselines(self):
         topped = dict(CREDITS, balance="25.00")
+        # The last reading is the one before the final intent check (A4).
         self.h.readings = [reading(), reading(), reading(credits=topped),
-                           reading(credits=topped), reading(credits=topped)]
+                           reading(credits=topped), reading(credits=topped),
+                           reading(credits=topped)]
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         run = self.start()
         self.assertEqual(self.reason(run), sr.USAGE_LIMIT)
         again = self.resume(run)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(again.state["credits"]["balance"], "25.00")
 
     def test_rejection_a_missing_credit_snapshot_stops_the_codex_step(self):
@@ -441,7 +447,7 @@ class UsageTests(LoopCase):
         self.h.readings = [reading(), reading(credits=changed), reading()]
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
 
     def test_rejection_allowance_reached_with_credits_next_stops_the_codex_step(self):
         self.h.readings = [reading(), reading(), reading(reached="rate_limit_reached")]
@@ -548,10 +554,11 @@ class UsageTests(LoopCase):
             self.sandboxed_reading(), {loop.CODEX_SESSION_ENV: ""}))
 
     def test_negative_no_credits_and_not_unlimited_needs_no_balance(self):
-        self.h.readings = [reading(credits={"hasCredits": False, "unlimited": False})] * 3
+        # One reading more than before A4: the one before the final intent check.
+        self.h.readings = [reading(credits={"hasCredits": False, "unlimited": False})] * 4
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
 
     def test_rejection_a_failed_reading_before_a_step_ends_error_not_a_crash(self):
         self.h.builder_script = [edit(self.root, "x\n")]
@@ -583,7 +590,7 @@ class LimitStopTests(LoopCase):
         self.assertTrue(run.state["inject"]["fired"])
         self.assertIn("injected", run.state["stop_reasons"][-1]["evidence"]["detail"])
         again = self.resume(run)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(self.log_actions(), ["started", "completed", "started",
                                               "completed"])
 
@@ -595,7 +602,7 @@ class LimitStopTests(LoopCase):
         self.assertEqual(run.state["step"], "build")
         self.assertEqual(self.h.review_calls, [])
         again = self.resume(run)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(len(self.h.review_calls), 1)
 
     def test_positive_a_builder_cut_off_mid_edit_resumes_in_its_session(self):
@@ -610,7 +617,7 @@ class LimitStopTests(LoopCase):
         patch = (run.run_dir / "partial" / "build.patch").read_text(encoding="utf-8")
         self.assertIn("+half", patch)
         again = self.resume(run)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(self.h.builders[-1].resume, "s-1")
         self.assertIn("interrupted", self.h.builders[-1].prompts[0][1])
 
@@ -621,7 +628,7 @@ class LimitStopTests(LoopCase):
         self.h.builder_script = [limited, edit(self.root, "x\n")]
         self.h.reviews = [[]]
         run = self.start(wait=True)
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(self.h.slept, [600 + loop.WAIT_MARGIN_SECONDS])
 
     def test_wait_continues_through_two_codex_windows_above_the_ceiling(self):
@@ -652,7 +659,7 @@ class LimitStopTests(LoopCase):
         asyncio.run(run.advance())
         self.assertEqual(self.h.slept, [600 + loop.WAIT_MARGIN_SECONDS, 600])
         self.assertEqual([stop["reason"] for stop in run.state["stop_reasons"]],
-                         [sr.USAGE_LIMIT, sr.USAGE_LIMIT, sr.REVIEWED_CLEAN])
+                         [sr.USAGE_LIMIT, sr.USAGE_LIMIT, sr.CLEAN])
         self.assertEqual(len(self.h.builders), 1)
         self.assertFalse(run.state.get("paid_usage"))
 
@@ -714,7 +721,7 @@ class PreflightTests(LoopCase):
         (self.root / "brief.md").write_bytes(BRIEF.encode("utf-8") + b"\n")  # outside
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
-        self.assertEqual(self.reason(self.start()), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(self.start()), sr.CLEAN)
 
     def test_positive_the_clean_start_check_is_recorded(self):
         self.h.builder_script = [edit(self.root, "x\n")]
@@ -770,7 +777,7 @@ class PreflightTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         report = json.loads((run.run_dir / "report.json").read_text(encoding="utf-8"))
         source = report["usage_source"]
         self.assertEqual(source["codex"], "unavailable")
@@ -1293,7 +1300,7 @@ class EndOfRunTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(self.h.removed, [("frozen", run.state["frozen_dir"]),
                                           ("copies", run.state["run_id"])])
         report = (run.run_dir / "report.md").read_text(encoding="utf-8")
@@ -1344,10 +1351,10 @@ class EndOfRunTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         report = (run.run_dir / "report.md").read_text(encoding="utf-8")
         self.assertIn("could not be stopped: stop refused", report)
-        self.assertIn("`reviewed-clean`", report)
+        self.assertIn("**Stop reason:** `clean`", report)
 
     def test_rejection_a_failing_end_write_still_stops_docker_and_removes(self):
         # Code review R30-2: the report cannot be written at the end; Docker this run
@@ -1435,7 +1442,7 @@ class TrustedSessionsLoopTests(LoopCase):
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         run = self.start()
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         raw = (run.run_dir / "fire-log.jsonl").read_bytes()
         self.assertTrue(raw.isascii(), raw)
         lines = [json.loads(line) for line in raw.decode("ascii").splitlines()]
@@ -1553,7 +1560,7 @@ class ResumeDockerTests(LoopCase):
     def test_positive_a_resume_starts_docker_and_its_end_stops_it_again(self):
         run = self.ended_at_max_rounds()
         again = self.resume(run, rounds=1)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(self.h.docker_calls.count("start"), 2)
         self.assertEqual(self.h.docker_calls.count("stop"), 2)
         self.assertEqual(self.h.docker_calls[-1], "stop")
@@ -1564,7 +1571,7 @@ class ResumeDockerTests(LoopCase):
         run = self.ended_at_max_rounds()
         self.h.docker_up = True  # started by someone else since
         again = self.resume(run, rounds=1)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(again), sr.CLEAN)
         self.assertEqual(self.h.docker_calls.count("start"), 1)
         self.assertEqual(self.h.docker_calls.count("stop"), 1)
 

@@ -19,9 +19,9 @@ Modes:
                          and --git-dir, the personal repository the run's preflight
                          checks is captured. --wait sleeps through a usage limit that
                          reported its reset time and resumes by itself.
-                         --inject-limit <step> is test-only: that step raises a usage
-                         limit at its provider boundary, once, to prove a clean stop
-                         and resume.
+                         --inject-limit <step> is test-only: that step (build,
+                         review-R<n>, fix-R<n> or intent-final) raises a usage limit at
+                         its provider boundary, once, to prove a clean stop and resume.
   --resume <run-id>      Continue an ended run whose stop reason allows it
                          (max-rounds, usage-limit, error) from its last completed
                          step. --rounds N allows N more review rounds. The run keeps
@@ -33,7 +33,8 @@ Modes:
                          apply as they do to the build. With --wait a resume's
                          preflight refused on the ceiling or on paid usage with a
                          known reset sleeps until it and checks again, in both halves.
-  --stop <run-id>        End a paused run.
+  --stop <run-id>        End a paused run, or abandon one that ended max-rounds,
+                         usage-limit or error. It cannot be resumed afterwards.
   --approve <run-id>     Continue a run paused for plan approval into the build (plan
                          10.3 step 6): four read-only checks that the project has not
                          moved, then Docker and the image, the run's own writes, the
@@ -64,8 +65,8 @@ copy, before importing anything else, arms the tripwire and takes the project ro
 from its frozen folder's ``hook.json``, refusing a set ``BOOK_DRAGON_ROOT`` that
 disagrees with it.
 
-Exit codes: 0 when the check passes or a run ends reviewed-clean or clean; 1 when a
-check fails or a run ends any other way; 2 on a usage error, or a mode not entered
+Exit codes: 0 when the check passes or a run ends clean; 1 when a check fails or a run
+ends any other way, intent-failed included; 2 on a usage error, or a mode not entered
 through the starter; 3 when a run is refused before it starts or
 resumes, or the trusted copy cannot set itself up.
 
@@ -320,7 +321,10 @@ def _outcome(run):
     reason = state["stop_reasons"][-1]["reason"]
     print(f"Run {state['run_id']} ended {reason}. Report: "
           f"workflows/review-orchestration/runs/{state['run_id']}/report.md")
-    return 0 if reason in ("reviewed-clean", "clean") else 1
+    # Only ``clean`` exits 0 (A4, plan 10.5 and 10.6): ``intent-failed`` exits 1 like
+    # every other end. ``reviewed-clean`` is retired, and a run started earlier ends on
+    # its own frozen copy of this script.
+    return 0 if reason == "clean" else 1
 
 
 def _refused(exc):
@@ -343,7 +347,7 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
                        help="check a run brief (project-relative path)")
     modes.add_argument("--run", metavar="BRIEF", help="start a run from a brief")
     modes.add_argument("--resume", metavar="RUN_ID", help="continue an ended run")
-    modes.add_argument("--stop", metavar="RUN_ID", help="end a paused run")
+    modes.add_argument("--stop", metavar="RUN_ID", help="end a paused run or abandon a resumable one")
     modes.add_argument("--approve", metavar="RUN_ID",
                        help="approve a run paused for plan approval and start its build")
     modes.add_argument("--amend", nargs=2, metavar=("RUN_ID", "REVISED_BRIEF"),

@@ -92,3 +92,49 @@ def read_state(run_dir):
     """Read a run's ``state.json``."""
     with open(Path(run_dir) / STATE_FILE, encoding="utf-8") as handle:
         return json.load(handle)
+
+
+# The intent check's start snapshot (plan 10.6, "What a changed path is"): written once
+# when the run is created, before the first planner, and never rewritten. The run removes
+# it at a stop reason a resume cannot continue, and the personal repository never takes it.
+START_SNAPSHOT_FILE = "start-snapshot.json"
+
+
+class SnapshotError(Exception):
+    """``start-snapshot.json`` is missing, unreadable or not in its shape."""
+
+
+def write_start_snapshot(run_dir, snapshot):
+    """Write ``start-snapshot.json`` once. A file already there raises
+    ``FileExistsError``: the snapshot is never rewritten (an approval's scope rebuild and
+    an amendment leave it as the run's creation wrote it)."""
+    with open(Path(run_dir) / START_SNAPSHOT_FILE, "x", encoding="utf-8",
+              newline="\n") as handle:
+        json.dump(snapshot, handle)
+        handle.write("\n")
+
+
+def read_start_snapshot(run_dir):
+    """Read and check ``start-snapshot.json``: an object holding ``files``, each path
+    mapped to ``{"sha256": text, "size": int}``, and ``existence``, a list of paths.
+    Anything else raises ``SnapshotError``, so a check never reads a damaged snapshot as
+    a run that changed nothing."""
+    path = Path(run_dir) / START_SNAPSHOT_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SnapshotError(f"{START_SNAPSHOT_FILE} cannot be read: {exc}") from exc
+    files = data.get("files") if isinstance(data, dict) else None
+    existence = data.get("existence") if isinstance(data, dict) else None
+    if not isinstance(files, dict) or not isinstance(existence, list):
+        raise SnapshotError(f"{START_SNAPSHOT_FILE} does not hold files and existence")
+    for name, entry in files.items():
+        if (not isinstance(entry, dict) or not isinstance(entry.get("sha256"), str)
+                or not isinstance(entry.get("size"), int)
+                or isinstance(entry.get("size"), bool)):
+            raise SnapshotError(f"{START_SNAPSHOT_FILE}: the entry for {name!r} is not "
+                                "a hash and a size")
+    if not all(isinstance(name, str) for name in existence):
+        raise SnapshotError(f"{START_SNAPSHOT_FILE}: the existence listing holds a "
+                            "value that is not a path")
+    return data

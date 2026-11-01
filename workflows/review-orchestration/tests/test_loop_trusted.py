@@ -163,8 +163,9 @@ class TrustedCopyTests(LoopCase):
                                frozen=folder)
         self.assertEqual(code, 0)
         state = runrecord.read_state(self.runs / run.state["run_id"])
-        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
-        self.assertEqual([s["step"] for s in state["steps"]], ["build", "review-R1"])
+        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.CLEAN)
+        self.assertEqual([s["step"] for s in state["steps"]],
+                         ["build", "review-R1", "intent-final"])
         self.assertEqual((self.root / "work" / "a.txt").read_bytes(), b"done\n")
 
     def test_positive_advance_as_a_process_reaches_the_runs_steps(self):
@@ -178,18 +179,18 @@ class TrustedCopyTests(LoopCase):
             handle.write("\n\nasync def _stub_advance(self):\n"
                          f"    with open(r'{reached}', 'w', encoding='utf-8') as out:\n"
                          "        out.write(self.state['run_id'])\n"
-                         "    self.end(sr.REVIEWED_CLEAN, {'stub': True})\n\n\n"
+                         "    self.end(sr.CLEAN, {'stub': True})\n\n\n"
                          "Run.advance = _stub_advance\n")
         done = self.trusted(folder, "--advance", run.state["run_id"])
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(reached.read_text(encoding="utf-8"), run.state["run_id"])
         state = runrecord.read_state(self.runs / run.state["run_id"])
-        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
-        self.assertIn(f"Run {run.state['run_id']} ended reviewed-clean",
+        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.CLEAN)
+        self.assertIn(f"Run {run.state['run_id']} ended clean",
                       self.log.read_text(encoding="utf-8"))
         self.assertEqual(self.fired(), [], "nothing of the live tree ran")
 
-    def end_as_the_trusted_copy_would(self, run, reason=sr.REVIEWED_CLEAN):
+    def end_as_the_trusted_copy_would(self, run, reason=sr.CLEAN):
         again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
                           log_path=self.log, runs_dir=self.runs)
         again.end(reason, {"by": "the trusted copy"})
@@ -259,7 +260,7 @@ class TrustedCopyTests(LoopCase):
         self.assertNotIn(run_py.STARTER_MARKER, env)
         # The trusted copy ended the run, so the hand-over leaves it as it is.
         state = runrecord.read_state(self.runs / run.state["run_id"])
-        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.REVIEWED_CLEAN)
+        self.assertEqual(state["stop_reasons"][-1]["reason"], sr.CLEAN)
         self.assertEqual(len(state["stop_reasons"]), 1)
 
     def test_positive_the_trusted_copys_set_up_hands_the_tripwire_to_its_children(self):
@@ -411,9 +412,10 @@ class CommandLineTests(LoopCase):
                                deps=self.h.deps(), runs_dir=self.runs)
         return code, out.getvalue()
 
-    def test_positive_run_exits_0_on_reviewed_clean(self):
+    def test_positive_run_exits_0_on_clean(self):
         # Since A3 chunk 3 a run plans and pauses for approval (exit 1, as any pause),
-        # and the approval builds it; that run exits 0 on reviewed-clean.
+        # and the approval builds it; since A4 that run exits 0 on clean, after the
+        # final intent check (reviewed-clean is retired).
         self.h.builder_script = [edit(self.root, "x\n")]
         self.h.reviews = [[]]
         code, out = self.call(*self.RUN, "--item", "demo", "--git-dir",
@@ -424,7 +426,7 @@ class CommandLineTests(LoopCase):
         with redirect_stderr(io.StringIO()):
             code, out = self.call("--approve", run_id)
         self.assertEqual(code, 0, out)
-        self.assertIn("ended reviewed-clean", out)
+        self.assertIn("ended clean", out)
 
     def test_rejection_a_refused_run_exits_3_and_other_ends_exit_1(self):
         self.h.readings = [reading(95)]
@@ -437,7 +439,7 @@ class CommandLineTests(LoopCase):
                             str(self.personal))
         self.assertEqual(code, 1)
 
-    def test_rejection_stop_refuses_a_run_that_is_not_paused(self):
+    def test_rejection_stop_refuses_a_run_that_ended_for_good(self):
         self.h.builder_script = [reply("nothing")]
         self.call(*self.RUN, "--item", "demo", "--git-dir", str(self.personal))
         run_id = next(self.runs.iterdir()).name

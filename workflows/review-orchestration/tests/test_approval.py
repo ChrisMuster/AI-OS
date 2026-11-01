@@ -177,7 +177,7 @@ class ApprovalCheckTests(ApprovalCase):
         self.assertEqual(self.uncaptured_calls, [str(self.personal)])
         self.assertEqual(run.state["status"], sr.RUNNING)
         asyncio.run(run.advance())
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         self.assertEqual(self.log_actions(), ["started", "completed"])
 
     def test_rejection_the_public_head_moved(self):
@@ -421,7 +421,7 @@ class ApprovalOrderTests(ApprovalCase):
         self.assertIn("approved; its build starts.", written)
         self.assertIn("work/LOG.md", run.state["start"]["snapshot"])
         asyncio.run(run.advance())
-        self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+        self.assertEqual(self.reason(run), sr.CLEAN)
         prompt = self.h.review_calls[0][0]
         changed = prompt.split("THE CHANGED FILES", 1)[1].split("FILES THE ORCHESTRATOR")[0]
         self.assertIn("work/a.txt", changed)
@@ -472,9 +472,9 @@ class ApprovalOrderTests(ApprovalCase):
                 self.assertEqual(saved["approval"]["planning_step"], planning_step)
                 self.assertEqual(self.load(run).next_step(), "build")
                 asyncio.run(run.advance())
-                self.assertEqual(self.reason(run), sr.REVIEWED_CLEAN)
+                self.assertEqual(self.reason(run), sr.CLEAN)
                 self.assertEqual([s["step"] for s in run.state["steps"]],
-                                 ["build", "review-R1"])
+                                 ["build", "review-R1", "intent-final"])
                 self.assertEqual(len(self.h.builders), 1)
 
     def test_positive_a_build_cut_off_after_approval_resumes_at_the_build(self):
@@ -491,8 +491,9 @@ class ApprovalOrderTests(ApprovalCase):
         self.h.builder_script = [suite.edit(self.root, "done\n")]
         self.h.reviews = [[]]
         again = self.resume(run)
-        self.assertEqual(self.reason(again), sr.REVIEWED_CLEAN)
-        self.assertEqual([s["step"] for s in again.state["steps"]], ["build", "review-R1"])
+        self.assertEqual(self.reason(again), sr.CLEAN)
+        self.assertEqual([s["step"] for s in again.state["steps"]],
+                         ["build", "review-R1", "intent-final"])
 
     def test_positive_the_scope_is_rebuilt_from_the_approved_brief(self):
         run = self.paused()
@@ -935,7 +936,7 @@ class CommandLineTests(ApprovalCase):
         run = self.paused()
         code, out = self.call("--approve", run.state["run_id"])
         self.assertEqual(code, 0, out)
-        self.assertIn("ended reviewed-clean", out)
+        self.assertIn("ended clean", out)
 
     def test_positive_the_dry_runs_exit_0(self):
         run = self.paused()

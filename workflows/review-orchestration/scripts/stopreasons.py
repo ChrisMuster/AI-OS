@@ -48,8 +48,10 @@ AWAITING_USER = "awaiting-user"
 PAUSES = (AWAITING_PLAN_APPROVAL, AWAITING_USER)
 
 CLEAN = "clean"
-# A run made before the intent check exists (sub-stage A4) with nothing left to fix.
-# It never ends ``clean``, since nothing has checked it for intent; A4 retires this.
+# Retired by A4 (plan 10.5 and 10.6): a run started from this code with nothing left to
+# fix goes on to the final intent check and ends ``clean`` or ``intent-failed``, and
+# never produces this. It stays in the vocabulary only so that the record of a run
+# started earlier, which keeps its own frozen copy and is not migrated, still reads.
 REVIEWED_CLEAN = "reviewed-clean"
 INTENT_FAILED = "intent-failed"
 NO_CHANGE_MADE = "no-change-made"
@@ -304,6 +306,129 @@ def _check_actions(entries, open_labels, allowed, who):
     return actions
 
 
+# ------------------------------------------------------- the intent reply (A4)
+
+# The intent checker's reply (plan 10.6 item 2; the keys and the status wording are the
+# builder's choice). Every field required and nothing else allowed, as every reply
+# schema here is. ``lines`` holds one entry per Goal and Constraint line, in the
+# brief's order, the line repeated verbatim; ``unasked_changes`` and ``undelivered``
+# are the two lists, each item with its evidence. The final check's reply also lists
+# ``files_reviewed`` (``intent_schema(final=True)``).
+MET, NOT_MET, CANNOT_TELL = "met", "not met", "cannot tell"
+INTENT_STATUSES = (MET, NOT_MET, CANNOT_TELL)
+_INTENT_TEXT = {"type": "string"}
+_EVIDENCED = {"type": "object", "additionalProperties": False,
+              "required": ["item", "evidence"],
+              "properties": {"item": _INTENT_TEXT, "evidence": _INTENT_TEXT}}
+INTENT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["lines", "unasked_changes", "undelivered"],
+    "properties": {
+        "lines": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["line", "status", "evidence"],
+            "properties": {"line": _INTENT_TEXT, "evidence": _INTENT_TEXT,
+                           "status": {"type": "string",
+                                      "enum": list(INTENT_STATUSES)}}}},
+        "unasked_changes": {"type": "array", "items": _EVIDENCED},
+        "undelivered": {"type": "array", "items": _EVIDENCED}}}
+
+
+def intent_schema(final=False):
+    """The intent checker's reply schema: ``INTENT_SCHEMA``, plus a required
+    ``files_reviewed`` list for the final check, which must cover every changed path as
+    the build reviewer's must (``parse_intent_reply``)."""
+    schema = json.loads(json.dumps(INTENT_SCHEMA))
+    if final:
+        schema["required"].append("files_reviewed")
+        schema["properties"]["files_reviewed"] = {"type": "array",
+                                                  "items": {"type": "string"}}
+    return schema
+
+
+def _collapsed(text):
+    return " ".join(str(text).split())
+
+
+def _review_path(path):
+    """A path as the build reviewer's coverage check reads it (``loop.Run._covered``)."""
+    return path.strip().replace("\\", "/").removeprefix("./")
+
+
+def parse_intent_reply(reply, expected_lines, changed_files=None):
+    """Check an intent checker's reply against its schema and the brief's lines.
+
+    ``expected_lines`` are the Goal and Constraint line texts in the brief's order
+    (``brief.intent_lines``). Every one must have exactly one entry, in that order, its
+    ``line`` the same text once runs of whitespace are collapsed; nothing else may be
+    there. Every evidence and every list item must be non-blank text, and a status one
+    of ``INTENT_STATUSES``. With ``changed_files`` given (the final check), the reply
+    must hold ``files_reviewed`` naming every one, by the build reviewer's rule.
+
+    Returns the reply with ``files_reviewed`` left out. Anything else raises
+    ``ReplyError``: a refused reply is never a pass and never ``cannot tell``, and the
+    run goes down the error path (plan 10.6 item 2)."""
+    who = "the intent checker's reply"
+    if isinstance(reply, str):
+        try:
+            reply = json.loads(reply)
+        except ValueError as exc:
+            raise ReplyError(f"{who} is not JSON: {exc}") from exc
+    schema = intent_schema(final=changed_files is not None)
+    if not isinstance(reply, dict):
+        raise ReplyError(f"{who} is not a JSON object")
+    if set(reply) != set(schema["required"]):
+        raise ReplyError(f"{who} must hold exactly: {', '.join(schema['required'])}")
+    entries = reply["lines"]
+    if not isinstance(entries, list):
+        raise ReplyError(f"{who}: lines is not a list")
+    fields = ("line", "status", "evidence")
+    for number, entry in enumerate(entries, 1):
+        where = f"{who}: line entry {number}"
+        if not isinstance(entry, dict) or set(entry) != set(fields):
+            raise ReplyError(f"{where} must hold exactly: {', '.join(fields)}")
+        if not all(isinstance(entry[name], str) for name in fields):
+            raise ReplyError(f"{where}: every field must be text")
+        if entry["status"] not in INTENT_STATUSES:
+            raise ReplyError(f"{where}: status {entry['status']!r} is not one of "
+                             f"{', '.join(INTENT_STATUSES)}")
+        if not entry["evidence"].strip():
+            raise ReplyError(f"{where} gives no evidence")
+    expected = [_collapsed(text) for text in expected_lines]
+    given = [_collapsed(entry["line"]) for entry in entries]
+    if given != expected:
+        missing = [text for text in expected if text not in given]
+        extra = [text for text in given if text not in expected]
+        detail = ("leaves out: " + "; ".join(missing[:3]) if missing
+                  else "adds: " + "; ".join(extra[:3]) if extra
+                  else "does not give the lines once each in the brief's order")
+        raise ReplyError(f"{who} does not repeat the brief's {len(expected)} Goal and "
+                         f"Constraint lines one entry each, in order: it {detail}")
+    for key in ("unasked_changes", "undelivered"):
+        items = reply[key]
+        if not isinstance(items, list):
+            raise ReplyError(f"{who}: {key} is not a list")
+        for number, item in enumerate(items, 1):
+            where = f"{who}: {key} item {number}"
+            if not isinstance(item, dict) or set(item) != {"item", "evidence"}:
+                raise ReplyError(f"{where} must hold exactly: item, evidence")
+            if not all(isinstance(item[name], str) and item[name].strip()
+                       for name in ("item", "evidence")):
+                raise ReplyError(f"{where} must give the item and its evidence as text")
+    result = {key: reply[key] for key in INTENT_SCHEMA["required"]}
+    if changed_files is not None:
+        listed = reply["files_reviewed"]
+        if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):
+            raise ReplyError(f"{who}: files_reviewed is not a list of paths")
+        seen = {_review_path(path) for path in listed}
+        missing = [path for path in changed_files if path not in seen]
+        if missing:
+            raise ReplyError(f"{who} did not list these changed paths as reviewed: "
+                             + ", ".join(missing[:20]) + (" ..." if len(missing) > 20
+                                                          else ""))
+    return result
+
+
 # ----------------------------------------------------------------------- rules
 
 
@@ -345,9 +470,9 @@ def after_first_pass(diff_is_empty):
 
 def after_review(round_no, cap, new_findings):
     """After a review round: ``max-rounds`` when the cap is reached with findings
-    still coming, else None. No findings at all is not decided here: ``clean`` also
-    needs the final intent check (plan section 10.6), and until that exists the loop
-    ends such a run ``reviewed-clean``."""
+    still coming, else None. No findings at all is not decided here: the loop then goes
+    on to the final intent check (plan section 10.6), which ends the run ``clean`` or
+    ``intent-failed``."""
     if new_findings and round_no >= cap:
         return MAX_ROUNDS, {"round": round_no, "cap": cap,
                             "open": [f["label"] for f in new_findings]}
