@@ -111,9 +111,7 @@ def _record(folder, command, allowed, code, seconds):
     """Append the call's line. Non-ASCII is escaped, as every run record file is."""
     line = {"command": command if isinstance(command, str) else repr(command),
             "allowed": allowed, "exit": code, "seconds": round(seconds, 3)}
-    with open(Path(folder) / codex_rules.CHECK_CALLS_FILE, "a", encoding="utf-8",
-              newline="\n") as handle:
-        handle.write(json.dumps(line) + "\n")
+    codex_rules.append_line(Path(folder) / codex_rules.CHECK_CALLS_FILE, json.dumps(line))
 
 
 def run_check(command, folder=FOLDER, clock=time.monotonic):

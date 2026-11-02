@@ -51,9 +51,9 @@ def record(path, event, decision, reason, detail=""):
             "session_id": event.get("session_id"), "tool": event.get("tool_name"),
             "decision": decision, "reason": reason, "detail": detail}
     try:
-        with open(path, "a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(line) + "\n")
-    except OSError:
+        import codex_rules
+        codex_rules.append_line(path, json.dumps(line))
+    except Exception:  # noqa: BLE001 - no line is written, so an allow is refused
         return False
     return True
 

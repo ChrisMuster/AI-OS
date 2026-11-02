@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -865,6 +866,56 @@ class HookCase(unittest.TestCase):
         self.assertIn(reason, specific["permissionDecisionReason"])
 
 
+class AppendLineTests(unittest.TestCase):
+    """``codex_rules.append_line``, the writers' one append, across real processes."""
+
+    WRITER = ("import sys\nsys.path.insert(0, sys.argv[1])\nimport codex_rules\n"
+              "for number in range(int(sys.argv[4])):\n"
+              "    codex_rules.append_line(sys.argv[2], f'{sys.argv[3]}-{number}')\n")
+    # It holds the lock until its stdin closes: a kill would stop only the launcher a
+    # virtual environment's Python is on Windows, leaving the real process and its file.
+    HOLDER = ("import sys\nsys.path.insert(0, sys.argv[1])\nimport codex_rules\n"
+              "handle = open(sys.argv[2], 'ab')\ncodex_rules._lock_byte(handle, True)\n"
+              "print('held', flush=True)\nsys.stdin.read()\n")
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.path = Path(self.folder.name) / "lines.jsonl"
+        self.scripts = str(Path(codex_rules.__file__).resolve().parent)
+
+    def test_positive_parallel_writers_lose_and_join_no_line(self):
+        procs = [subprocess.Popen([sys.executable, "-c", self.WRITER, self.scripts,
+                                   str(self.path), f"w{writer}", "100"])
+                 for writer in range(6)]
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=120), 0)
+        lines = self.path.read_bytes().decode("utf-8").split("\n")
+        self.assertEqual(lines.pop(), "", "the file ends with a line feed")
+        self.assertEqual(sorted(lines), sorted(f"w{writer}-{number}" for writer in range(6)
+                                               for number in range(100)))
+
+    def test_positive_the_file_gets_only_its_lines_and_no_cr(self):
+        codex_rules.append_line(self.path, "one")
+        codex_rules.append_line(self.path, "two")
+        self.assertEqual(self.path.read_bytes(), b"one\ntwo\n")
+        self.assertEqual(self.path.stat().st_size, 8, "the lock byte adds no length")
+
+    def test_rejection_a_lock_never_freed_raises_and_writes_nothing(self):
+        holder = subprocess.Popen([sys.executable, "-c", self.HOLDER, self.scripts,
+                                   str(self.path)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, encoding="utf-8")
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.wait, timeout=60)
+        self.addCleanup(holder.stdin.close)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        started = time.monotonic()
+        with self.assertRaises(OSError):
+            codex_rules.append_line(self.path, "late", wait=0.2)
+        self.assertLess(time.monotonic() - started, 5, "it gives up at its limit")
+        self.assertEqual(self.path.read_bytes(), b"")
+
+
 class HookTests(HookCase):
 
     def test_positive_the_frozen_folder_holds_the_rules_and_the_check_helper(self):
@@ -1012,6 +1063,37 @@ class HookTests(HookCase):
         # cannot happen: where the file cannot be written, the call is refused.
         self.decisions.mkdir()
         self.denied(self.run_hook(self.event()), "could not record its decision")
+
+    def test_positive_parallel_hooks_each_keep_their_decision_line(self):
+        # The A4 proof run's four parallel reads lost a line to a plain append.
+        self.temp.mkdir(exist_ok=True)
+        procs = [subprocess.Popen(
+            [sys.executable, str(self.frozen / "codex_hook.py"), RUN_ID],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            encoding="utf-8", env=self.env(), cwd=str(self.temp)) for _ in range(8)]
+        for number, proc in enumerate(procs):
+            proc.stdin.write(json.dumps(self.event(call=f"exec-{number}")))
+            proc.stdin.close()
+        for proc in procs:
+            proc.stdout.read()
+            proc.stderr.read()
+            self.assertEqual(proc.wait(timeout=60), 0)
+            proc.stdout.close()
+            proc.stderr.close()
+        # The raw file, since the reader skips a garbled line, and each one an allow.
+        raw = [json.loads(line) for line in
+               self.decisions.read_bytes().decode("utf-8").splitlines()]
+        self.assertEqual(sorted((line["tool_use_id"], line["decision"]) for line in raw),
+                         sorted((f"exec-{number}", "allow") for number in range(8)))
+
+    def test_rejection_a_hook_records_only_through_the_locked_append(self):
+        # Timing cannot prove this, so the frozen copy's append is made to fail: a hook
+        # writing the file any other way would allow the call and keep the line.
+        rules = self.frozen / "codex_rules.py"
+        rules.write_bytes(rules.read_bytes() + b"\n\ndef append_line(*args, **kwargs):\n"
+                          b"    raise OSError('held')\n")
+        self.denied(self.run_hook(self.event()), "could not record its decision")
+        self.assertEqual(self.lines(), [])
 
     def test_rejection_any_exception_refuses(self):
         (self.frozen / "codex-read-commands.txt").write_bytes(b"rg (\n")

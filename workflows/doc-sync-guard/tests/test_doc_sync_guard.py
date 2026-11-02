@@ -731,7 +731,10 @@ class IntegrationTest(unittest.TestCase):
                              entries=("2026-07-01", "2026-07-06"), purpose="v2"))
         r.set_mtime("workflows/foo/run.py", self.now)
         r.set_mtime("workflows/foo/CONTEXT.md", self.now)
-        msgs = self._messages(r.check())
+        # Without the clean-copy marker, which the check container sets for every test.
+        with mock.patch.dict(os.environ):
+            os.environ.pop(run.CLEAN_COPY_ENV, None)
+            msgs = self._messages(r.check())
         self.assertIn("no LOG.md", msgs)
 
     # --- carve-out and contract ---

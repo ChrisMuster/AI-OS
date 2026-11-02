@@ -40,7 +40,9 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 import approver as approver_mod
@@ -69,6 +71,7 @@ DECISIONS_FILE = "hook-decisions.jsonl"
 # The check helper's one line per call, and the ignore floor it reads (plan 5.3, 6).
 CHECK_CALLS_FILE = "check-calls.jsonl"
 START_IGNORED = "start-ignored.txt"
+_LOCK_OFFSET = 2 ** 40
 
 # The form runrecord.py issues; a test checks the two agree.
 RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
@@ -411,6 +414,44 @@ def detail(tool_name, tool_input):
 
 
 # ------------------------------------------------------------ the decisions file
+
+
+def append_line(path, text, wait=10.0):
+    """Append one line for a writer that may run beside others. Codex can start several
+    tool calls at once, each with its own hook process, and on Windows a plain append
+    finds the end of the file and then writes, so two of them can overwrite each other
+    (the A4 proof run lost a decision line this way). Each write therefore holds a lock
+    on one byte far past the end of the file, which needs no second file in the frozen
+    folder and blocks no reader. Raises ``OSError`` if the lock is not free within
+    ``wait`` seconds or the write fails, so that a caller can fail closed."""
+    data = (text + "\n").encode("utf-8")
+    deadline = time.monotonic() + wait
+    with open(path, "ab") as handle:
+        while True:
+            try:
+                _lock_byte(handle, True)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        try:
+            handle.write(data)
+            handle.flush()
+        finally:
+            _lock_byte(handle, False)
+
+
+def _lock_byte(handle, lock):
+    """Take without waiting, or release, the lock byte of ``append_line``."""
+    if sys.platform == "win32":
+        import msvcrt
+        handle.seek(_LOCK_OFFSET)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.lockf(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB if lock else fcntl.LOCK_UN,
+                    1, _LOCK_OFFSET)
 
 
 def read_decisions(path):
