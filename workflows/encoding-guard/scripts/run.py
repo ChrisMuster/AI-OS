@@ -22,6 +22,8 @@ Two modes:
           falls back to a builtin text open, which no newline= can pin)
     INFO  an open()/.open()/io.open()/gzip.open()/codecs.open()/read_text()/
           write_text() call with no explicit encoding=
+    INFO  a .py that prints to stdout with no sys.stdout.reconfigure(
+          encoding="utf-8") call anywhere in the file (presence only, not order)
     DEGRADED  a .py file the code checks could not be read (it does not parse
           as Python, or does not tokenise). Non-blocking: it says the check did
           not run on that file, not that the file is wrong.
@@ -768,6 +770,123 @@ def _is_text_mode_write(name, parsed):
     return any(c in mode for c in "wax+")
 
 
+# ---------------------------------------------------------------------------
+# Report-script stdout check (advisory, INFO only)
+# ---------------------------------------------------------------------------
+# AGENTS.md: any script that prints a report to stdout must first call
+# sys.stdout.reconfigure(encoding="utf-8"). This check tests only that such a
+# call is present somewhere in the file, not that it runs first, and it reads
+# the parse tree alone: it never goes through _call_name, _call_sites or the
+# blanked-text views, so it cannot change what the encoding and newline checks
+# above report.
+_STDOUT_WRITE_ATTRS = {"write", "writelines"}
+
+
+def _sys_names(tree):
+    """``(sys_names, stdout_names)``: the local names bound to the sys module
+    and the local names bound directly to ``sys.stdout``.
+
+    ``sys`` itself is always included, keeping the guard's name-based
+    convention; ``import sys as X`` adds X, and ``from sys import stdout [as Y]``
+    adds ``stdout`` (or Y) to the second set. Read file-wide and without regard
+    to scope, like _import_aliases; rebinding is not followed."""
+    sys_names, stdout_names = {"sys"}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    sys_names.add(alias.asname or "sys")
+        elif (isinstance(node, ast.ImportFrom) and node.level == 0
+              and node.module == "sys"):
+            for alias in node.names:
+                if alias.name == "stdout":
+                    stdout_names.add(alias.asname or "stdout")
+    return sys_names, stdout_names
+
+
+def _is_sys_stdout(node, names):
+    """True when ``node`` is ``<sys>.stdout`` or a name bound to it."""
+    sys_names, stdout_names = names
+    if isinstance(node, ast.Attribute):
+        return (node.attr == "stdout" and isinstance(node.value, ast.Name)
+                and node.value.id in sys_names)
+    return isinstance(node, ast.Name) and node.id in stdout_names
+
+
+def _stdout_print_calls(tree, names):
+    """Every call in ``tree`` that writes to stdout.
+
+    That is ``print(...)`` whose ``file=`` is absent, ``None`` or sys.stdout,
+    and ``<sys.stdout>.write(...)`` / ``.writelines(...)``. A ``print`` with a
+    ``**`` splat is left unclassified, since the splat may carry ``file=``."""
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "print":
+            if any(kw.arg is None for kw in node.keywords):
+                continue
+            target = next((kw.value for kw in node.keywords
+                           if kw.arg == "file"), None)
+            if (target is None
+                    or (isinstance(target, ast.Constant) and target.value is None)
+                    or _is_sys_stdout(target, names)):
+                calls.append(node)
+        elif (isinstance(func, ast.Attribute)
+              and func.attr in _STDOUT_WRITE_ATTRS
+              and _is_sys_stdout(func.value, names)):
+            calls.append(node)
+    return calls
+
+
+def _stdout_reconfigure_verdicts(tree, names):
+    """A verdict for every ``<sys.stdout>.reconfigure(...)`` call in ``tree``.
+
+    ``missing`` when there is no ``encoding=`` and no ``**`` splat;
+    ``unreadable`` when only a splat could carry it, or when the value cannot
+    be read; otherwise _encoding_verdict's ``ok`` or ``bad``. reconfigure takes
+    its arguments by keyword only, so no positional encoding is possible."""
+    verdicts = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "reconfigure"
+                and _is_sys_stdout(node.func.value, names)):
+            continue
+        enc = next((kw for kw in node.keywords if kw.arg == "encoding"), None)
+        if enc is None:
+            splat = any(kw.arg is None for kw in node.keywords)
+            verdicts.append("unreadable" if splat else "missing")
+            continue
+        verdict = _encoding_verdict(ast.unparse(enc.value))
+        verdicts.append(verdict if verdict is not None else "unreadable")
+    return verdicts
+
+
+def _stdout_reconfigure_finding(rel, tree):
+    """One INFO finding for a file that prints to stdout with no qualifying
+    sys.stdout.reconfigure call anywhere in it, or None.
+
+    A call qualifies when its encoding names UTF-8, or when the value cannot be
+    read (the guard's silent-on-unreadable rule). Presence anywhere counts,
+    inside a helper or after the first print included; order is not checked.
+    Never WARN: the finding is advisory and cannot fail a gate."""
+    names = _sys_names(tree)
+    if not _stdout_print_calls(tree, names):
+        return None
+    verdicts = _stdout_reconfigure_verdicts(tree, names)
+    if any(v in ("ok", "unreadable") for v in verdicts):
+        return None
+    if not verdicts:
+        message = (f"{rel}: prints to stdout with no "
+                   f"sys.stdout.reconfigure(encoding=\"utf-8\") call")
+    else:
+        message = (f"{rel}: prints to stdout but its sys.stdout.reconfigure "
+                   f"call has no encoding= or does not name utf-8")
+    return ("INFO", "encoding", message)
+
+
 def check_python_code(rel, text):
     """Checks for missing or wrong explicit encodings in a .py source string.
 
@@ -783,7 +902,11 @@ def check_python_code(rel, text):
     finding and no code findings. Saying "this was not checked" is the honest
     answer and is non-blocking downstream; the previous behaviour was to scan the
     raw text with nothing blanked, which turned an unparseable file's prose into
-    WARNs."""
+    WARNs.
+
+    Last, and separately, an INFO is added for a file that prints to stdout
+    with no sys.stdout.reconfigure(encoding="utf-8") call anywhere in it
+    (presence only, not order; see _stdout_reconfigure_finding)."""
     try:
         tree = ast.parse(text)
     except SyntaxError as exc:
@@ -910,6 +1033,9 @@ def check_python_code(rel, text):
                     f"{rel}: text-mode {name}(...) with newline="
                     f"{parsed.kwargs['newline']}, not \"\\n\" (or \"\" for csv)",
                 ))
+    stdout_finding = _stdout_reconfigure_finding(rel, tree)
+    if stdout_finding is not None:
+        findings.append(stdout_finding)
     return findings
 
 

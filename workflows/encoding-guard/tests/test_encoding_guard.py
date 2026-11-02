@@ -1175,6 +1175,239 @@ class TestModuleOpenPremises(unittest.TestCase):
                 io_open(str(path), "rb", encoding="utf-8")
 
 
+class TestStdoutReconfigure(unittest.TestCase):
+    """The advisory report-script check: a .py that prints to stdout must call
+    sys.stdout.reconfigure(encoding="utf-8") somewhere in the file.
+
+    Three control groups, as elsewhere in this suite: compliant scripts that
+    must produce nothing, non-compliant scripts that must be reported once at
+    INFO naming the file and the reason, and lookalikes that must not be
+    reported. Every fixture is a string, so this file never presents the guard
+    with a real print call of its own."""
+
+    MARK = "sys.stdout.reconfigure"
+    NO_CALL = "prints to stdout with no"
+    BAD_CALL = "but its sys.stdout.reconfigure call"
+
+    def _stdout(self, src, rel="x.py"):
+        return [f for f in run.check_python_code(rel, src) if self.MARK in f[2]]
+
+    def _assert_silent(self, src):
+        self.assertEqual(self._stdout(src), [], src)
+
+    def _assert_reported(self, src, reason=NO_CALL, rel="x.py"):
+        found = self._stdout(src, rel)
+        self.assertEqual(len(found), 1, src)
+        sev, label, msg = found[0]
+        self.assertEqual((sev, label), ("INFO", "encoding"))
+        self.assertTrue(msg.startswith(rel + ":"), msg)
+        self.assertIn(self.MARK, msg)
+        self.assertIn(reason, msg)
+
+    # -- compliant: must produce nothing ------------------------------------
+    def test_top_level_try_reconfigure_then_print(self):
+        self._assert_silent(
+            'import sys\ntry:\n    sys.stdout.reconfigure(encoding="utf-8")\n'
+            'except Exception:\n    pass\nprint("report")\n')
+
+    def test_multiline_reconfigure_call(self):
+        self._assert_silent(
+            'import sys\nsys.stdout.reconfigure(\n    encoding="utf-8",\n)\n'
+            'print("report")\n')
+
+    def test_reconfigure_only_inside_main_or_a_helper(self):
+        self._assert_silent(
+            'import sys\ndef main():\n    sys.stdout.reconfigure(encoding="utf-8")\n'
+            '    print("report")\n')
+        self._assert_silent(
+            'import sys\ndef _setup():\n    sys.stdout.reconfigure(encoding="utf-8")\n'
+            'def main():\n    print("report")\n')
+
+    def test_reconfigure_after_the_print_counts(self):
+        self._assert_silent(
+            'import sys\nprint("early")\nsys.stdout.reconfigure(encoding="utf-8")\n')
+
+    def test_every_utf8_spelling_counts(self):
+        for enc in ("UTF-8", "utf8", "utf_8", "u8"):
+            with self.subTest(enc=enc):
+                self._assert_silent(
+                    f'import sys\nsys.stdout.reconfigure(encoding="{enc}")\n'
+                    f'print("x")\n')
+
+    def test_extra_errors_argument(self):
+        self._assert_silent(
+            'import sys\nsys.stdout.reconfigure(encoding="utf-8", errors="replace")\n'
+            'print("x")\n')
+
+    def test_sys_import_alias(self):
+        self._assert_silent(
+            'import sys as _sys\n_sys.stdout.reconfigure(encoding="utf-8")\n'
+            'print("x")\n')
+
+    def test_from_sys_import_stdout(self):
+        self._assert_silent(
+            'from sys import stdout\nstdout.reconfigure(encoding="utf-8")\n'
+            'print("x")\n')
+
+    def test_from_sys_import_stdout_as_an_alias(self):
+        self._assert_silent(
+            'from sys import stdout as output\n'
+            'output.reconfigure(encoding="utf-8")\nprint("x")\n')
+        # The same alias is also read as stdout on the printing side.
+        self._assert_reported(
+            'from sys import stdout as output\noutput.write("x")\n')
+
+    def test_unreadable_encoding_is_accepted_silently(self):
+        self._assert_silent(
+            'import sys\nENC = "utf-8"\nsys.stdout.reconfigure(encoding=ENC)\n'
+            'print("x")\n')
+
+    def test_splat_only_reconfigure_is_accepted_silently(self):
+        self._assert_silent(
+            'import sys\nkw = {}\nsys.stdout.reconfigure(**kw)\nprint("x")\n')
+
+    def test_a_file_with_no_print(self):
+        self._assert_silent('import sys\nx = 1\n')
+
+    def test_a_file_with_reconfigure_and_no_print(self):
+        self._assert_silent(
+            'import sys\nsys.stdout.reconfigure(encoding="utf-8")\n')
+
+    # -- non-compliant: one INFO naming the file and the reason -------------
+    def test_print_with_no_reconfigure(self):
+        self._assert_reported('print("report")\n')
+
+    def test_empty_print(self):
+        self._assert_reported('print()\n')
+
+    def test_print_inside_a_helper(self):
+        self._assert_reported('def show(x):\n    print(x)\n')
+
+    def test_print_to_sys_stdout_explicitly(self):
+        self._assert_reported('import sys\nprint("x", file=sys.stdout)\n')
+
+    def test_print_with_file_none(self):
+        self._assert_reported('print("x", file=None)\n')
+
+    def test_sys_stdout_write_and_writelines(self):
+        self._assert_reported('import sys\nsys.stdout.write("x")\n')
+        self._assert_reported('import sys\nsys.stdout.writelines(["x"])\n')
+
+    def test_print_with_positional_splat(self):
+        self._assert_reported('args = (1, 2)\nprint(*args)\n')
+
+    def test_many_prints_give_one_finding(self):
+        self._assert_reported('print(1)\nprint(2)\nprint(3)\n')
+
+    def test_reconfigure_with_no_encoding(self):
+        self._assert_reported(
+            'import sys\nsys.stdout.reconfigure()\nprint("x")\n',
+            reason="has no encoding=")
+
+    def test_reconfigure_with_a_wrong_or_none_encoding(self):
+        for enc in ('"cp1252"', "None"):
+            with self.subTest(enc=enc):
+                self._assert_reported(
+                    f'import sys\nsys.stdout.reconfigure(encoding={enc})\n'
+                    f'print("x")\n',
+                    reason="does not name utf-8")
+
+    def test_only_stderr_reconfigured(self):
+        self._assert_reported(
+            'import sys\nsys.stderr.reconfigure(encoding="utf-8")\nprint("x")\n')
+
+    def test_only_another_object_reconfigured(self):
+        self._assert_reported(
+            'some_obj.reconfigure(encoding="utf-8")\nprint("x")\n')
+
+    def test_loop_variable_receiver_is_a_pinned_false_positive(self):
+        self._assert_reported(
+            'import sys\nfor stream in (sys.stdout, sys.stderr):\n'
+            '    stream.reconfigure(encoding="utf-8")\nprint("x")\n')
+
+    def test_test_files_are_covered(self):
+        self._assert_reported('print("x")\n', rel="tests/test_x.py")
+
+    def test_reconfigure_only_in_a_comment_or_string(self):
+        self._assert_reported(
+            '# sys.stdout.reconfigure(encoding="utf-8")\n'
+            'NOTE = \'sys.stdout.reconfigure(encoding="utf-8")\'\nprint(NOTE)\n')
+
+    # -- lookalikes: must not be reported -----------------------------------
+    def test_names_only_in_strings_docstrings_and_comments(self):
+        self._assert_silent(
+            '"""Call print("x") after sys.stdout.reconfigure()."""\n'
+            '# print("x")\nTEXT = "print(1); sys.stdout.write(2)"\n')
+
+    def test_a_print_definition_is_not_a_call(self):
+        self._assert_silent('def print(*args, **kwargs):\n    return None\n')
+
+    def test_print_to_stderr(self):
+        self._assert_silent('import sys\nprint("x", file=sys.stderr)\n')
+
+    def test_print_to_a_file_handle(self):
+        self._assert_silent(
+            'fh = open("o.txt", "w", encoding="utf-8", newline="\\n")\n'
+            'print("x", file=fh)\nfh.write("y")\n')
+
+    def test_print_with_a_double_star_splat_is_unclassified(self):
+        self._assert_silent('kw = {}\nprint("x", **kw)\n')
+
+    # -- safety and pipeline ------------------------------------------------
+    def test_the_stdout_finding_is_never_a_warn(self):
+        samples = [
+            'print("x")\n',
+            'import sys\nsys.stdout.reconfigure()\nprint("x")\n',
+            'import sys\nsys.stdout.reconfigure(encoding="cp1252")\nprint("x")\n',
+            'import sys\nsys.stdout.reconfigure(encoding=None)\nprint("x")\n',
+            'import sys\nsys.stdout.write("x")\n',
+        ]
+        for src in samples:
+            with self.subTest(src=src):
+                for sev, _, _ in self._stdout(src):
+                    self.assertEqual(sev, "INFO")
+
+    def test_an_unparseable_stdout_file_gives_only_degraded(self):
+        findings = run.check_python_code("x.py", 'print("x"\n')
+        self.assertEqual([f[0] for f in findings], ["DEGRADED"])
+
+    def test_a_mixed_file_keeps_the_existing_finding_first(self):
+        src = 'fh = open("p.txt")\nprint("x")\n'
+        findings = run.check_python_code("x.py", src)
+        self.assertEqual(len(findings), 2, findings)
+        self.assertEqual(findings[0],
+                         ("INFO", "encoding",
+                          "x.py: open(...) with no explicit encoding="))
+        self.assertEqual(findings[1][0], "INFO")
+        self.assertIn(self.MARK, findings[1][2])
+
+    def test_run_check_reports_it_once_on_a_real_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "report.py").write_bytes(b'print("report")\n')
+            findings = run.run_check(root)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertEqual(findings[0][:2], ("INFO", "encoding"))
+        self.assertTrue(findings[0][2].startswith("pkg/report.py:"))
+
+    def test_an_info_only_tree_exits_successfully(self):
+        import contextlib
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "report.py").write_bytes(b'print("report")\n')
+            out = io.StringIO()
+            with mock.patch.object(run, "PROJECT_ROOT", root), \
+                    mock.patch.object(sys, "argv", ["run.py", "--check"]), \
+                    contextlib.redirect_stdout(out):
+                try:
+                    run.main()
+                except SystemExit as exc:  # pragma: no cover - the failure path
+                    self.fail(f"INFO-only tree exited with {exc.code}")
+        self.assertIn("**Info:** 1", out.getvalue())
+
+
 class TestHiddenDirWalk(unittest.TestCase):
     """The blind-spot fix: iter_text_files must descend into authored hidden
     config dirs (.codex, .github, ...) while still pruning system/tooling
