@@ -24,6 +24,7 @@ and change nothing it should not, a negative control must not.
 
 import sys
 from pathlib import Path
+from unittest import mock
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -407,6 +408,136 @@ class LabelTests(PlanCase):
         self.assertEqual(run.label_offset(), 0)
         self.assertEqual([s["step"] for s in run.state["steps"]],
                          ["build", "review-R1", "intent-final"])
+
+
+class AmendmentBoundaryTests(PlanCase):
+    """An amendment replaces the plan, so findings on the old plan are record only: no
+    later reviewer sees them, none may be raised again, and the stop rules count nothing
+    across the amendment. Replays the shape of the proof run that found this, where R3-2
+    re-raised R1-1 from the replaced plan and R4-1 re-raised R3-2."""
+
+    def amended(self, plan_cap=2, reviewed=None, revision=None):
+        self.h.plan_reviews = [[finding("Names a tool")], []]
+        if revision:
+            self.h.revisions = [revision]
+        run = self.plan(self.started(plan_cap=plan_cap))
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+        again = self.load(run)
+        (self.root / "revised.md").write_bytes(BRIEF.replace(
+            "- work/a.txt says done.", "- work/a.txt says done twice.").encode("utf-8"))
+        self.assertEqual(loop.amend(again, "revised.md"), [])
+        # Not left in the project, where the final intent check would count it as a change.
+        (self.root / "revised.md").unlink()
+        self.h.plan_reviews = reviewed or []
+        self.h.planning_calls.clear()
+        return again
+
+    def test_positive_every_finding_is_marked_and_stays_on_record(self):
+        run = self.plan(self.amended(reviewed=[[]]))
+        ledger = {f["label"]: f for f in run.state["ledger"]}
+        self.assertTrue(ledger["R1-1"]["replaced_by_amendment"])
+        self.assertEqual(ledger["R1-1"]["action"], sr.FIXED)
+        self.assertNotIn("superseded_by_amendment", ledger["R1-1"],
+                         "it was fixed before the amendment, not superseded by it")
+        report = (run.run_dir / planning.PLAN_REPORT).read_text(encoding="utf-8")
+        self.assertIn("R1-1 (addressed", report)
+        self.assertIn("Names a tool", (run.run_dir / "plan-review" / "packet.md")
+                      .read_text(encoding="utf-8"))
+
+    def test_positive_the_plan_reviewer_is_not_shown_the_replaced_plans_findings(self):
+        self.plan(self.amended(reviewed=[[]]))
+        prompt = self.reviews_of()[0]["prompt"]
+        self.assertNotIn("Names a tool", prompt)
+        self.assertNotIn("R1-1", prompt)
+        self.assertIn("PRIOR FINDINGS", prompt)
+
+    def test_positive_the_new_plans_own_findings_are_shown(self):
+        self.plan(self.amended(reviewed=[[finding("A new gap")], []]))
+        first, second = self.reviews_of()
+        self.assertNotIn("A new gap", first["prompt"])
+        self.assertIn("R3-1", second["prompt"])
+        self.assertIn("A new gap", second["prompt"])
+        self.assertNotIn("Names a tool", second["prompt"])
+
+    def test_positive_the_replayed_chain_stops_at_the_cap_and_can_resume(self):
+        run = self.plan(self.amended(reviewed=[
+            [finding("Names a tool again")],
+            [finding("Names a tool once more", reraises="R3-1")]]))
+        self.assertEqual(self.reason(run), sr.MAX_ROUNDS)
+        self.assertIn(sr.MAX_ROUNDS, sr.RESUMABLE)
+
+    def test_negative_a_link_to_the_replaced_plan_makes_a_new_finding(self):
+        run = self.plan(self.amended(reviewed=[
+            [finding("Names a tool again", reraises="R1-1")], []]))
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+        new = run.ledger.findings["R3-1"]
+        self.assertEqual((new["reraises"], new["names_replaced"], new["action"]),
+                         (None, "R1-1", sr.FIXED))
+        self.assertIn("Names a replaced finding: R1-1.",
+                      (run.run_dir / "plan-review" / "packet.md").read_text(encoding="utf-8"))
+
+    def test_negative_links_to_the_replaced_plan_in_a_row_are_not_reopened(self):
+        run = self.plan(self.amended(plan_cap=3, reviewed=[
+            [finding("Again", reraises="R1-1")], [finding("Again", reraises="R1-1")], []]))
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+
+    def test_negative_an_old_declined_finding_raised_again_is_no_disagreement(self):
+        run = self.plan(self.amended(
+            revision=revision_reply("declined-merits"),
+            reviewed=[[finding("Names a tool again", reraises="R1-1")], []]))
+        self.assertEqual(run.state["pause"], sr.AWAITING_PLAN_APPROVAL)
+
+    def test_negative_a_build_reviewers_link_to_the_replaced_plan_makes_a_new_finding(self):
+        run = self.plan(self.amended(reviewed=[[]]))
+        approved = self.approve(run)
+        self.h.builder_script = [edit(self.root, "x\n"), reply(actions(("R4-1", "fixed")))]
+        self.h.reviews = [[finding("Seen in the packet", reraises="R1-1")], []]
+        asyncio.run(approved.advance())
+        self.assertEqual(self.reason(approved), sr.CLEAN)
+        new = approved.ledger.findings["R4-1"]
+        self.assertEqual((new["reraises"], new["names_replaced"]), (None, "R1-1"))
+
+    def test_negative_a_chain_inside_the_new_plan_still_ends_reopened(self):
+        run = self.plan(self.amended(plan_cap=3, reviewed=[
+            [finding("One")],
+            [finding("One again", reraises="R3-1")],
+            [finding("One once more", reraises="R4-1")]]))
+        self.assertEqual(self.reason(run), sr.REOPENED)
+        self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["first_findings"],
+                         ["R3-1"])
+
+    def test_positive_the_build_reviewer_is_not_shown_the_replaced_plans_findings(self):
+        run = self.plan(self.amended(reviewed=[[finding("A new gap")], []]))
+        approved = self.approve(run)
+        self.h.builder_script = [edit(self.root, "x\n")]
+        self.h.reviews = [[]]
+        asyncio.run(approved.advance())
+        self.assertEqual(self.reason(approved), sr.CLEAN)
+        # The section alone: the packet's diff, further down, is the record and holds both.
+        prior = self.h.review_calls[0][0].split("PRIOR FINDINGS", 1)[1].split(
+            "THE CHANGED FILES", 1)[0]
+        self.assertIn("A new gap", prior)
+        self.assertNotIn("Names a tool", prior)
+
+    def test_positive_a_dry_amendment_marks_nothing(self):
+        self.h.plan_reviews = [[finding("Names a tool")], []]
+        run = self.plan(self.started())
+        again = self.load(run)
+        (self.root / "revised.md").write_bytes(BRIEF.encode("utf-8"))
+        with redirect_stderr(io.StringIO()):
+            loop.amend(again, "revised.md", dry_run=True)
+        self.assertEqual(again.ledger.current()[0]["label"], "R1-1")
+
+    def test_rejection_a_failed_amendment_takes_the_marks_back(self):
+        self.h.plan_reviews = [[finding("Names a tool")], []]
+        run = self.plan(self.started())
+        again = self.load(run)
+        (self.root / "revised.md").write_bytes(BRIEF.encode("utf-8"))
+        with mock.patch.object(loop.os, "replace", side_effect=OSError("held")), \
+                self.assertRaises(loop.RunRefused):
+            loop.amend(again, "revised.md")
+        self.assertEqual(again.ledger.current()[0]["label"], "R1-1")
+        self.assertEqual(self.load(run).ledger.current()[0]["label"], "R1-1")
 
 
 class PacketTests(PlanCase):

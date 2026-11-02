@@ -1682,7 +1682,7 @@ class Run:
         prior = "\n".join(
             f"- {f['label']} ({f['source']}) {f.get('title')}: builder action "
             f"{f.get('action') or 'none yet'}"
-            for f in self.ledger.findings.values()) or "None."
+            for f in self.ledger.current()) or "None."
         reviewer = self.deps.make_reviewer(self.settings, self.root, self.claude_usage,
                                            self.state["frozen_dir"])
         prompt = render("reviewer", round=round_no, brief=self.brief_text(),
@@ -3223,7 +3223,11 @@ def amend(run, brief_arg, dry_run=False):
     """``start.py --amend <run-id> <revised-brief>`` (plan 10.3 step 6): once the brief
     checker passes the revised brief, with logging off, replace the run's ``brief.md``
     with it and move every plan-review finding still open in the run's ledger to
-    Addressed with the note ``superseded by amendment``. ``state.json``'s
+    Addressed with the note ``superseded by amendment``. Every finding so far, open or
+    not, is marked ``replaced_by_amendment``: it stays on record, but it was about a plan
+    that is gone, so no later reviewer is shown it as a prior finding, and a link to it
+    makes a new finding, so the stop rules never count a link across the amendment.
+    ``state.json``'s
     ``edit_paths``, ``acceptance`` and ``start`` are left as they are. Since A3 chunk 3
     the amendment restarts planning at step 1 in the same run record, against the same
     starting commits (``restart_planning``): the run is set running with nothing of its
@@ -3262,6 +3266,8 @@ def amend(run, brief_arg, dry_run=False):
         for label in open_labels:
             run.ledger.findings[label].update(action=sr.FIXED, note=SUPERSEDED_NOTE,
                                               superseded_by_amendment=True)
+        for finding in run.ledger.findings.values():
+            finding["replaced_by_amendment"] = True
         state.setdefault("amendments", []).append(
             {"at": _now_text(), "brief": brief_arg, "superseded": open_labels})
         restart_planning(run)

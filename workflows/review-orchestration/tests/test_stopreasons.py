@@ -141,6 +141,16 @@ class ReviewReplyTests(unittest.TestCase):
                 with self.assertRaisesRegex(sr.ReplyError, reason):
                     sr.parse_review(value, self.ledger)
 
+    def test_negative_reraising_a_finding_an_amendment_replaced_makes_a_new_finding(self):
+        self.ledger.findings["R1-1"]["replaced_by_amendment"] = True
+        parsed, = sr.parse_review(reply(finding(reraises=" R1-1 ")), self.ledger)
+        self.assertEqual((parsed["reraises"], parsed["names_replaced"]), ("", "R1-1"))
+        new, = self.ledger.add_round(2, [], [parsed])
+        self.assertIsNone(new["reraises"])
+        self.assertEqual(new["names_replaced"], "R1-1")
+        self.assertEqual(self.ledger.current(), [new])
+        self.assertIn("R1-1", self.ledger.findings, "it stays on record")
+
     def test_positive_the_schema_matches_what_the_parser_requires(self):
         items = sr.REVIEW_SCHEMA["properties"]["findings"]["items"]
         self.assertEqual(set(items["required"]), set(items["properties"]))

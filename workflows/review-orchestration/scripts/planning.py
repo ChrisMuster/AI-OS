@@ -788,7 +788,7 @@ def _prior(run):
     return "\n".join(
         f"- {f['label']} ({f['source']}) {f.get('title')}: synthesiser action "
         f"{f.get('action') or 'none yet'}"
-        for f in run.ledger.findings.values()) or "None."
+        for f in run.ledger.current()) or "None."
 
 
 def plan_reviewer_prompt(run, label):

@@ -18,7 +18,9 @@ stop reason from structured fields alone, never from finding titles or prose:
   reviewer  its structured reply (``REVIEW_SCHEMA``) marks a finding that raises an
             earlier one again with ``reraises: <label>``; an empty ``reraises`` means
             the finding is new. A title holding a label, or a ``reraises`` naming a
-            label the run has not issued, is a malformed reply.
+            label the run has not issued, is a malformed reply. A ``reraises`` naming a
+            finding on a plan an amendment replaced makes the finding new, the label kept
+            in ``names_replaced``.
 
 The three rules, applied in this order after every pass (``decide``):
 
@@ -144,6 +146,12 @@ class Ledger:
         """Findings with no builder action yet, in the order issued."""
         return [name for name, f in self.findings.items() if f.get("action") is None]
 
+    def current(self):
+        """Findings about the plan in force, in the order issued: every finding but
+        those an amendment replaced, which stay on record but are no longer about
+        anything a reviewer is reading, so no reviewer is shown one as a prior finding."""
+        return [f for f in self.findings.values() if not f.get("replaced_by_amendment")]
+
     def add_round(self, round_no, mechanical, reviewer):
         """Issue labels for one review round: the script's own findings first, then
         the reviewer's, numbered from 1. Returns the new findings.
@@ -236,6 +244,11 @@ def parse_review(reply, ledger):
         if target and target not in ledger.findings:
             raise ReplyError(f"{where}: reraises {target!r}, which this run has not "
                              "issued")
+        if target and ledger.findings[target].get("replaced_by_amendment"):
+            # A reviewer can still read the old label in the packet's diff. What it found
+            # is about the plan in force, so it counts as new, the label kept as a note.
+            finding["names_replaced"] = target
+            target = ""
         finding["reraises"] = target
     return findings
 

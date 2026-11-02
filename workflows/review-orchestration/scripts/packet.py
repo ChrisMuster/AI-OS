@@ -94,6 +94,8 @@ def render(item, run_id, ledger, *, header_note=""):
             lines += [f"Suggested fix: {clean(f.get('fix'))}", ""]
             if f.get("reraises"):
                 lines += [f"Re-raises: {f['reraises']}.", ""]
+            if f.get("names_replaced"):
+                lines += [f"Names a replaced finding: {f['names_replaced']}.", ""]
             if f.get("action"):
                 lines += [f"Builder: {f['action']}. {clean(f.get('note'))}".rstrip(), ""]
             if f.get("decline_accepted"):
