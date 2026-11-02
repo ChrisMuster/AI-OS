@@ -290,11 +290,13 @@ def changed_paths_in(prompt):
 
 
 def intent_reply(prompt, status="met", unasked=(), undelivered=(), statuses=None):
-    """A compliant intent checker's reply to ``prompt``: every numbered line repeated
-    with ``status`` (or ``statuses[i]``) and evidence, the two lists, and for a final
-    check every changed path the prompt lists in ``files_reviewed``."""
+    """A compliant intent checker's reply to ``prompt``: every numbered line named by its
+    number and opening words with ``status`` (or ``statuses[i]``) and evidence, the two
+    lists, and for a final check every changed path the prompt lists in
+    ``files_reviewed``."""
     lines = intent_lines_in(prompt)
-    reply = {"lines": [{"line": text, "status": (statuses[i] if statuses else status),
+    reply = {"lines": [{"number": i + 1, "opening": sr.opening(text),
+                        "status": (statuses[i] if statuses else status),
                         "evidence": "seen in the change"}
                        for i, text in enumerate(lines)],
              "unasked_changes": [{"item": item, "evidence": "e"} for item in unasked],

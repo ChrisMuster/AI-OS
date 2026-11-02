@@ -324,11 +324,15 @@ def _check_actions(entries, open_labels, allowed, who):
 # The intent checker's reply (plan 10.6 item 2; the keys and the status wording are the
 # builder's choice). Every field required and nothing else allowed, as every reply
 # schema here is. ``lines`` holds one entry per Goal and Constraint line, in the
-# brief's order, the line repeated verbatim; ``unasked_changes`` and ``undelivered``
-# are the two lists, each item with its evidence. The final check's reply also lists
-# ``files_reviewed`` (``intent_schema(final=True)``).
+# brief's order, naming the line by its ``number`` and its ``opening`` words
+# (``OPENING_WORDS`` of them, or the whole line if shorter) rather than repeating it:
+# a checker copying whole lines dropped a sentence twice in the A4 proof run, and the
+# opening words catch a verdict given under the wrong number. ``unasked_changes`` and
+# ``undelivered`` are the two lists, each item with its evidence. The final check's
+# reply also lists ``files_reviewed`` (``intent_schema(final=True)``).
 MET, NOT_MET, CANNOT_TELL = "met", "not met", "cannot tell"
 INTENT_STATUSES = (MET, NOT_MET, CANNOT_TELL)
+OPENING_WORDS = 8
 _INTENT_TEXT = {"type": "string"}
 _EVIDENCED = {"type": "object", "additionalProperties": False,
               "required": ["item", "evidence"],
@@ -339,8 +343,9 @@ INTENT_SCHEMA = {
     "properties": {
         "lines": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["line", "status", "evidence"],
-            "properties": {"line": _INTENT_TEXT, "evidence": _INTENT_TEXT,
+            "required": ["number", "opening", "status", "evidence"],
+            "properties": {"number": {"type": "integer"}, "opening": _INTENT_TEXT,
+                           "evidence": _INTENT_TEXT,
                            "status": {"type": "string",
                                       "enum": list(INTENT_STATUSES)}}}},
         "unasked_changes": {"type": "array", "items": _EVIDENCED},
@@ -363,6 +368,12 @@ def _collapsed(text):
     return " ".join(str(text).split())
 
 
+def opening(text):
+    """A line's opening as the intent reply names it: its first ``OPENING_WORDS``
+    words, or the whole line if shorter, runs of whitespace collapsed."""
+    return " ".join(str(text).split()[:OPENING_WORDS])
+
+
 def _review_path(path):
     """A path as the build reviewer's coverage check reads it (``loop.Run._covered``)."""
     return path.strip().replace("\\", "/").removeprefix("./")
@@ -372,13 +383,16 @@ def parse_intent_reply(reply, expected_lines, changed_files=None):
     """Check an intent checker's reply against its schema and the brief's lines.
 
     ``expected_lines`` are the Goal and Constraint line texts in the brief's order
-    (``brief.intent_lines``). Every one must have exactly one entry, in that order, its
-    ``line`` the same text once runs of whitespace are collapsed; nothing else may be
-    there. Every evidence and every list item must be non-blank text, and a status one
-    of ``INTENT_STATUSES``. With ``changed_files`` given (the final check), the reply
-    must hold ``files_reviewed`` naming every one, by the build reviewer's rule.
+    (``brief.intent_lines``). Every one must have exactly one entry, in that order: the
+    numbers run 1 to N once each, and each entry's ``opening`` is that line's
+    ``opening`` once runs of whitespace are collapsed; nothing else may be there. Every
+    evidence and every list item must be non-blank text, and a status one of
+    ``INTENT_STATUSES``. With ``changed_files`` given (the final check), the reply must
+    hold ``files_reviewed`` naming every one, by the build reviewer's rule.
 
-    Returns the reply with ``files_reviewed`` left out. Anything else raises
+    Returns the reply with ``files_reviewed`` left out and each line entry as
+    ``number``, ``line`` (the brief's own text, filled in here), ``status`` and
+    ``evidence``, so a caller reads the line as the brief has it. Anything else raises
     ``ReplyError``: a refused reply is never a pass and never ``cannot tell``, and the
     run goes down the error path (plan 10.6 item 2)."""
     who = "the intent checker's reply"
@@ -395,28 +409,40 @@ def parse_intent_reply(reply, expected_lines, changed_files=None):
     entries = reply["lines"]
     if not isinstance(entries, list):
         raise ReplyError(f"{who}: lines is not a list")
-    fields = ("line", "status", "evidence")
-    for number, entry in enumerate(entries, 1):
-        where = f"{who}: line entry {number}"
+    fields = ("number", "opening", "status", "evidence")
+    for place, entry in enumerate(entries, 1):
+        where = f"{who}: line entry {place}"
         if not isinstance(entry, dict) or set(entry) != set(fields):
             raise ReplyError(f"{where} must hold exactly: {', '.join(fields)}")
-        if not all(isinstance(entry[name], str) for name in fields):
-            raise ReplyError(f"{where}: every field must be text")
+        # bool is an int in Python; a true or false is not a line number.
+        if not isinstance(entry["number"], int) or isinstance(entry["number"], bool):
+            raise ReplyError(f"{where}: number must be a whole number")
+        if not all(isinstance(entry[name], str) for name in fields[1:]):
+            raise ReplyError(f"{where}: opening, status and evidence must be text")
         if entry["status"] not in INTENT_STATUSES:
             raise ReplyError(f"{where}: status {entry['status']!r} is not one of "
                              f"{', '.join(INTENT_STATUSES)}")
         if not entry["evidence"].strip():
             raise ReplyError(f"{where} gives no evidence")
-    expected = [_collapsed(text) for text in expected_lines]
-    given = [_collapsed(entry["line"]) for entry in entries]
+    expected = list(range(1, len(expected_lines) + 1))
+    given = [entry["number"] for entry in entries]
     if given != expected:
-        missing = [text for text in expected if text not in given]
-        extra = [text for text in given if text not in expected]
-        detail = ("leaves out: " + "; ".join(missing[:3]) if missing
-                  else "adds: " + "; ".join(extra[:3]) if extra
-                  else "does not give the lines once each in the brief's order")
-        raise ReplyError(f"{who} does not repeat the brief's {len(expected)} Goal and "
-                         f"Constraint lines one entry each, in order: it {detail}")
+        missing = [n for n in expected if n not in given]
+        extra = sorted({n for n in given if n not in expected})
+        repeated = sorted({n for n in given if given.count(n) > 1})
+        detail = ("leaves out line " + ", ".join(map(str, missing[:5])) if missing
+                  else "names line " + ", ".join(map(str, extra[:5])) + ", which the "
+                  "brief does not have" if extra
+                  else "names line " + ", ".join(map(str, repeated[:5])) + " twice"
+                  if repeated else "does not give the lines in the brief's order")
+        raise ReplyError(f"{who} does not give the brief's {len(expected)} Goal and "
+                         f"Constraint lines one entry each, numbered 1 to "
+                         f"{len(expected)} in order: it {detail}")
+    for entry, text in zip(entries, expected_lines):
+        if _collapsed(entry["opening"]) != opening(text):
+            raise ReplyError(f"{who}: line {entry['number']}'s opening "
+                             f"{_collapsed(entry['opening'])!r} is not the start of "
+                             f"that line, which opens {opening(text)!r}")
     for key in ("unasked_changes", "undelivered"):
         items = reply[key]
         if not isinstance(items, list):
@@ -429,6 +455,9 @@ def parse_intent_reply(reply, expected_lines, changed_files=None):
                        for name in ("item", "evidence")):
                 raise ReplyError(f"{where} must give the item and its evidence as text")
     result = {key: reply[key] for key in INTENT_SCHEMA["required"]}
+    result["lines"] = [{"number": entry["number"], "line": text,
+                        "status": entry["status"], "evidence": entry["evidence"]}
+                       for entry, text in zip(entries, expected_lines)]
     if changed_files is not None:
         listed = reply["files_reviewed"]
         if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):

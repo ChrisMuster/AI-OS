@@ -34,6 +34,13 @@ class TemplateTests(unittest.TestCase):
                 self.assertIn(" ".join(EXEMPTION.split()), " ".join(text.split()))
                 self.assertIn("one reply entry per line, in the order given", text)
                 self.assertIn('"met", "not met" or "cannot tell"', text)
+                flat = " ".join(text.split())
+                self.assertIn("put the line's number in `number` and its first eight "
+                              "words in `opening`", flat)
+                self.assertIn("do not copy the rest of the line", flat)
+                self.assertIn("an `opening` that does not match the start of the line "
+                              "with that number is refused", flat)
+                self.assertEqual(sr.OPENING_WORDS, 8)
         final = (PROMPTS / "intent-final.md").read_text(encoding="utf-8")
         self.assertIn("files_reviewed", final)
 

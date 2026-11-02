@@ -6,11 +6,13 @@ for. Your result goes to the user before they approve the plan; it does not stop
 run. $checker_tools
 
 Judge each line under THE LINES TO JUDGE, one reply entry per line, in the order given:
-repeat the line's text in `line` exactly as written after its number and section (no
-number, no section), set `status` to "met", "not met" or "cannot tell", and give the
-evidence for that status in `evidence`, naming the plan step or the part of the brief
-it rests on. Use "cannot tell" only where the plan and the brief do not let you decide;
-say why in the evidence.
+put the line's number in `number` and its first eight words in `opening`, copied as
+written after the number and section (the whole line if it has fewer than eight
+words); do not copy the rest of the line.
+Set `status` to "met", "not met" or "cannot tell", and give the evidence for that
+status in `evidence`, naming the plan step or the part of the brief it rests on. Use
+"cannot tell" only where the plan and the brief do not let you decide; say why in the
+evidence.
 
 Then give two lists, each item with its evidence: `unasked_changes`, every change the
 plan makes that the brief did not ask for, and `undelivered`, every item the brief asks
@@ -28,4 +30,5 @@ THE PLAN (the merged plan, after its review)
 $plan
 
 Return JSON only, matching the schema. A reply that leaves a line out, adds one,
-changes its order or gives one with no evidence is refused.
+changes its order, gives one with no evidence, or gives an `opening` that does not
+match the start of the line with that number is refused.
