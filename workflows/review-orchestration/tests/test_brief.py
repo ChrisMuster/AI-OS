@@ -47,8 +47,13 @@ def _load(name):
 
 brief = _load("brief")
 run = _load("run")
-# The module the checker imports for the verification lists (the one in sys.modules).
+# The modules the checker imports for the verification lists. The checker imports them
+# when called, so it gets whatever ``sys.modules`` holds then, and other suites load
+# their own copies after this one; ``BriefCase`` puts these copies back for every test.
+# ``codex_rules`` is loaded second so that it binds this ``approver``, whose
+# ``ApproverError`` the checker catches.
 approver_mod = _load("approver")
+codex_rules_mod = _load("codex_rules")
 
 VALID = {
     "Goal": "The checker refuses an unready brief.",
@@ -81,6 +86,10 @@ class BriefCase(unittest.TestCase):
         (self.root / "docs" / "plan.md").write_bytes(b"# Plan\n")
         (self.root / "memory").mkdir()
         (self.root / "runs").mkdir()
+        modules = mock.patch.dict(sys.modules, {"approver": approver_mod,
+                                                "codex_rules": codex_rules_mod})
+        modules.start()
+        self.addCleanup(modules.stop)
 
     def tearDown(self):
         self._tmp.cleanup()
