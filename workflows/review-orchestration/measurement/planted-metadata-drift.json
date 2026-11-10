@@ -1,0 +1,16 @@
+{
+  "brief": "# Run brief: a longer wait for the weather services\n\n## Goal\n- Geocoding and weather requests in `workflows/weather/scripts/run.py` wait up to 20 seconds for an answer instead of 10, since the geocoding service is sometimes slow to reply.\n\n## Constraints\n- Standard library only.\n- UK English, with no em or en dashes and no smart quotes.\n\n## Out of scope\n- Every other part of the weather report.\n\n## Acceptance checks\n- python -m py_compile workflows/weather/scripts/run.py\n\n## Edit paths\n- workflows/weather/ | Measure: git ls-files workflows/weather/\n\n## Open questions\nNone\n\n## Source\n- `workflows/weather/scripts/run.py`\n",
+  "definition": {
+    "file": "workflows/weather/scripts",
+    "catch": "`workflows/weather/scripts/run.py` changed with no Revision History entry or Last modified update in `workflows/weather/scripts/CONTEXT.md` and no entry in its LOG.md, as the AGENTS.md maintenance rules require.",
+    "check": {"prefix": "doc-sync:", "file": "workflows/weather/scripts"}
+  },
+  "patch": [
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "        with urllib.request.urlopen(req, timeout=10) as resp:\n",
+     "replace": "        with urllib.request.urlopen(req, timeout=20) as resp:\n",
+     "defect": "timeout=20",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"}
+  ],
+  "acceptance": ["python -m py_compile workflows/weather/scripts/run.py"]
+}

@@ -1,12 +1,12 @@
 # Review Orchestration - Config
 
-**Last modified:** 2026-10-20
+**Last modified:** 2026-11-10
 
 ## Purpose
 Holds the review-orchestration settings, the files the user edits to change how runs behave. Settings live here rather than in the scripts so that nothing a run depends on is hard-coded.
 
 ## Contents
-- settings.json - `workflows/review-orchestration/config/settings.json` - The run settings: `usage_ceiling_percent` (default 80), `max_turns` (Claude builder 80, reviewer 200), `usage_probe_model` (default `claude-haiku-5-5`), `round_caps` (3 build-review rounds, 2 plan-review rounds), and `models`, the model and effort each provider uses in each role. Which provider builds is named for each run with `run.py --run --builder claude|codex`; a file that still holds `roles` is refused.
+- settings.json - `workflows/review-orchestration/config/settings.json` - The run settings: `usage_ceiling_percent` (default 80), `max_turns` (Claude builder 80, reviewer 200), `usage_probe_model` (default `claude-haiku-5-5`), `round_caps` (3 build-review rounds, 2 plan-review rounds), and `models`, the model and effort each provider uses in each role. Since A5 each provider also has a `judge` entry (plan 10.8 item 3, section 11 item 3's Judge row): its reviewer model at high effort, used by the measurement harness's judge sessions on the provider that did not review; it is a setting so another reviewer model can be measured, and no ordinary run needs it. Which provider builds is named for each run with `run.py --run --builder claude|codex`; a file that still holds `roles` is refused.
 - verify-commands.txt - `workflows/review-orchestration/config/verify-commands.txt` - The commands an orchestrated Claude builder may run to verify its own work: one regular expression per line, the whole command must match one. Since stage S7 every line runs in the container: the builder runs them only through the check helper's `run_check`, which judges them by the run's frozen copy of this list, and its header says so (decision 27). The starting set is the B2 rerun's list, tightened so that no line accepts a flag it does not name. The targeted audit and the close-out verifier are accepted only with `--read-only`, so neither writes a log or result file (orchestrator isolation plan 6).
 - codex-verify-commands.txt - `workflows/review-orchestration/config/codex-verify-commands.txt` - The verification commands a Codex builder may run, in the same format, since S7 only through the check helper and in the container, as its header says. Since S7 it holds the targeted audit and the close-out verifier in their read-only forms only (inside the clean copy neither writes anywhere that matters nor reads a personal file), and it still names each workflow check it allows instead of accepting any workflow's `--check`.
 - codex-read-commands.txt - `workflows/review-orchestration/config/codex-read-commands.txt` - The read commands a Codex builder may run, since it reads files through the shell: one regular expression per line with the tokens `PATH` and `QUOTED` replaced before compiling, and one exact command that gives the time for a LOG.md entry. The lines are for PowerShell. `Get-Content` is accepted only with `[Console]::OutputEncoding` set to UTF-8 and `-Encoding UTF8` together, because Windows PowerShell 5.1 returns non-ASCII text wrongly with either alone (measured 2026-10-04).
@@ -23,7 +23,7 @@ None directly. `workflows/review-orchestration/scripts/settings.py` [[workflows/
 N/A - this is a configuration directory, not a workflow.
 
 ## Dependencies
-- `workflows/review-orchestration/scripts/settings.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads `settings.json`. It refuses a value outside its allowed range rather than replacing it with the default.
+- `workflows/review-orchestration/scripts/settings.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads `settings.json`. It refuses a value outside its allowed range rather than replacing it with the default. `scripts/measure.py` refuses a measurement when either provider lacks its `judge`, `reviewer` or `plan_reviewer` entry.
 - `workflows/review-orchestration/scripts/approver.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads `verify-commands.txt`, refusing a line that is not a valid regular expression and a file that lists nothing.
 - `workflows/review-orchestration/scripts/codex_rules.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads the two Codex lists, with the same refusals.
 - `workflows/review-orchestration/scripts/planning.py` [[workflows/review-orchestration/scripts/CONTEXT]] - reads `provider-identifiers.txt`, refusing a malformed file before any planning session; `tests/test_planning.py` checks the shipped lists against plan 10.3 step 3.
@@ -49,3 +49,4 @@ N/A - this is a configuration directory, not a workflow.
 - 2026-10-11 - Orchestrator isolation stage S7: `codex-verify-commands.txt` gained the read-only close-out verifier and targeted audit (plan 6), and both verification lists' headers say every line runs in the container, through the check helper only (decision 27). Contents and Known Issues updated.
 - 2026-10-19 - Added `max_turns` and `usage_probe_model` to the resolved run settings, with the plan's defaults. Contents updated.
 - 2026-10-20 - A3 chunk 2: added `provider-identifiers.txt`, the identity check's four lists (plan 10.3 step 3). Contents, Outputs, Dependencies and Known Issues updated.
+- 2026-11-10 - A5: `settings.json` gained a `judge` entry for each provider, its reviewer model at high effort, for the measurement's judge sessions (plan 10.8 item 3). Contents and Dependencies updated.

@@ -94,6 +94,52 @@ def read_state(run_dir):
         return json.load(handle)
 
 
+# A measurement's record (plan 10.8, A5): ``runs/measure-<id>/``, beside the run records,
+# so the folder's gitignore and personal capture cover it; its id has the run-id form.
+MEASURE_PREFIX = "measure-"
+
+
+def measure_dir(measure_id, *, runs_dir=RUNS_DIR):
+    """Where a measurement's record is: ``runs/measure-<id>/``. Refuses an id not in
+    the run-id form."""
+    if not RUN_ID.match(measure_id or ""):
+        raise ValueError(f"not a measurement id: {measure_id!r} "
+                         "(expected YYYYMMDD-HHMMSS-xxxx)")
+    return Path(runs_dir) / f"{MEASURE_PREFIX}{measure_id}"
+
+
+def create_measure(measure_id, *, runs_dir=RUNS_DIR):
+    """Create ``runs/measure-<id>/``; a folder already there is refused, as a run's is,
+    so a measurement record is never reused or overwritten. Returns its path."""
+    folder = measure_dir(measure_id, runs_dir=runs_dir)
+    if folder.exists():
+        raise FileExistsError(f"measurement record already exists: {folder.name}")
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    folder.mkdir()
+    return folder
+
+
+def write_json_atomic(path, data):
+    """Write a JSON file atomically, as ``write_state`` writes ``state.json``: a
+    temporary file beside it, then a replace, so a reader never sees half a file and a
+    crash leaves the last whole version. Non-ASCII characters are escaped."""
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
+def write_text_atomic(path, text):
+    """Write a text file atomically (LF line endings), as ``write_json_atomic``."""
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    os.replace(temporary, path)
+
+
 # The intent check's start snapshot (plan 10.6, "What a changed path is"): written once
 # when the run is created, before the first planner, and never rewritten. The run removes
 # it at a stop reason a resume cannot continue, and the personal repository never takes it.

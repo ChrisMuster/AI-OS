@@ -303,6 +303,79 @@ class ResumeStopTests(StarterCase):
         self.refused(["--resume", RUN_ID], "cannot be read")
 
 
+class MeasureTests(StarterCase):
+    """The three ``--measure`` forms (plan 10.8, A5), added to the starter by hand: a
+    fresh measurement takes a start's committed-tree route to the live measure.py, and
+    a resume or score takes a resume's checks to the measurement's trusted measure.py."""
+
+    LIVE = "workflows/review-orchestration/scripts/measure.py"
+
+    def setUp(self):
+        super().setUp()
+        path = self.root / self.LIVE
+        path.write_bytes(b"# committed\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "measure")
+
+    def make_trusted_measure(self, run_id=RUN_ID):
+        self.make_frozen(run_id)
+        script = (self.temp / "book-dragon-orchestration" / run_id).joinpath(
+            *start.TRUSTED_MEASURE_PY)
+        script.write_bytes(b"# trusted\n")
+        return script
+
+    def test_positive_a_fresh_measure_runs_the_live_measure_py(self):
+        for argv in (["--measure"], ["--measure", "--git-dir", "C:/personal.git"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.handed(argv),
+                                 [str(self.python), str(self.root / self.LIVE), *argv])
+
+    def test_rejection_a_fresh_measure_on_an_uncommitted_tree(self):
+        (self.root / self.LIVE).write_bytes(b"raise SystemExit('planted')\n")
+        self.refused(["--measure"], self.LIVE)
+
+    def test_rejection_a_fresh_measure_with_a_root_override_for_another_project(self):
+        other = self.root.parent / "other-project"
+        other.mkdir()
+        self.refused(["--measure"], "BOOK_DRAGON_ROOT",
+                     environ={"PATH": "x", "BOOK_DRAGON_ROOT": str(other)})
+
+    def test_positive_resume_and_score_run_the_trusted_measure_py(self):
+        script = self.make_trusted_measure()
+        # The live tree may be dirty: a resume or score runs only the trusted copy.
+        (self.root / self.LIVE).write_bytes(b"x\n")
+        for argv in (["--measure", "--resume", RUN_ID], ["--measure", "--score", RUN_ID]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.handed(argv), [str(self.python), str(script), *argv])
+
+    def test_positive_resume_and_score_ask_for_no_bytecode_and_a_fresh_one_does_not(self):
+        self.make_trusted_measure()
+        for argv, wanted in ((["--measure", "--resume", RUN_ID], "1"),
+                             (["--measure", "--score", RUN_ID], "1"), (["--measure"], None)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.main(argv), 0)
+                (command, cwd, env), = self.calls
+                self.calls = []
+                self.assertEqual(env.get("PYTHONDONTWRITEBYTECODE"), wanted)
+
+    def test_rejection_resume_and_score_without_a_valid_measurement(self):
+        for form in ("--resume", "--score"):
+            with self.subTest(form=form):
+                self.refused(["--measure", form], "needs a measurement id")
+                self.refused(["--measure", form, "../x"], "not a run id")
+                self.refused(["--measure", form, RUN_ID], "no frozen folder")
+        # A frozen folder with hook.json and run.py but no trusted measure.py.
+        self.make_frozen()
+        for form in ("--resume", "--score"):
+            with self.subTest(form=form, missing="measure.py"):
+                self.refused(["--measure", form, RUN_ID], "no trusted measure.py")
+
+    def test_negative_the_measure_forms_stay_off_the_run_route(self):
+        # The trusted route for a run is unchanged; --measure is its own branch.
+        self.assertNotIn("--measure", start.TRUSTED_MODES)
+        self.assertIn("--measure --score <id>", start.USAGE)
+
+
 class StandaloneTests(unittest.TestCase):
 
     def test_positive_the_starter_imports_only_the_standard_library(self):

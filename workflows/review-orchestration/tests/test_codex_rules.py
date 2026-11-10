@@ -1257,7 +1257,7 @@ class RunRuleHookTests(unittest.TestCase):
 class ProjectRulesFileTests(unittest.TestCase):
     """The project's Codex rules entry for starting, resuming, stopping, approving and
     amending a run (the chunk (d) short plan, 11.1; A3 chunk 1 for the last two, added
-    by hand), checked with ``codex execpolicy check`` from the binary
+    by hand) and for a measurement's three forms (A5, added by hand), checked with ``codex execpolicy check`` from the binary
     the pinned ``openai-codex`` installs. That command matches plain tokens only and
     does not unwrap the ``powershell.exe -Command`` wrapper Codex uses on Windows, so
     these tests cannot show the wrapped form; a live Codex matching it is fact 17 of the
@@ -1278,14 +1278,19 @@ class ProjectRulesFileTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)
 
-    def test_positive_the_five_modes_are_allowed(self):
+    def test_positive_the_starter_modes_are_allowed(self):
         for argv in (("--run", "BRIEF.md", "--builder", "codex", "--item", "x",
                       "--git-dir", "C:/BookDragon/personal-work.git"),
                      ("--resume", "20261004-000000-abcd", "--rounds", "1"),
                      ("--stop", "20261004-000000-abcd"),
                      ("--approve", "20261004-000000-abcd"),
-                     ("--amend", "20261004-000000-abcd", "BRIEF.md")):
-            with self.subTest(mode=argv[0]):
+                     ("--amend", "20261004-000000-abcd", "BRIEF.md"),
+                     # A5's three measurement forms share the one --measure rule.
+                     ("--measure",),
+                     ("--measure", "--git-dir", "C:/BookDragon/personal-work.git"),
+                     ("--measure", "--resume", "20261110-000000-abcd"),
+                     ("--measure", "--score", "20261110-000000-abcd")):
+            with self.subTest(argv=argv):
                 result = self.check("python", self.STARTER, *argv)
                 self.assertEqual(result.get("decision"), "allow", result)
 
@@ -1298,6 +1303,8 @@ class ProjectRulesFileTests(unittest.TestCase):
                        ("python", self.RUN_PY, "--approve", "20261004-000000-abcd"),
                        ("python", self.RUN_PY, "--amend", "20261004-000000-abcd",
                         "BRIEF.md"),
+                       ("python", "workflows/review-orchestration/scripts/measure.py",
+                        "--measure"),
                        ("python", "workflows/audit/scripts/run.py", "--run"),
                        ("python", "-c", "print(1)"),
                        ("py", self.STARTER, "--run", "BRIEF.md")):
@@ -1306,7 +1313,7 @@ class ProjectRulesFileTests(unittest.TestCase):
                 self.assertEqual(result.get("matchedRules"), [], result)
                 self.assertNotIn("decision", result)
 
-    MODES = ("--run", "--resume", "--stop", "--approve", "--amend")
+    MODES = ("--run", "--resume", "--stop", "--approve", "--amend", "--measure")
 
     def rules_in(self, text):
         """Every ``prefix_rule`` call in ``text`` as ``(pattern tokens, decision)``,
@@ -1328,10 +1335,10 @@ class ProjectRulesFileTests(unittest.TestCase):
         self.assertEqual(sorted(self.rules_in(text)), sorted(expected))
         self.assertNotIn(self.RUN_PY, text)
 
-    def test_rejection_a_rule_outside_the_five_is_seen_whatever_its_spacing(self):
+    def test_rejection_a_rule_outside_the_expected_set_is_seen_whatever_its_spacing(self):
         # The positive control for the check above (code review R27-1): each planted
         # rule, in the spacing Codex also accepts, makes the file's rules differ from
-        # the five expected.
+        # the six expected.
         text = self.RULES.read_text(encoding="utf-8")
         expected = sorted((("python", self.STARTER, mode), "allow") for mode in self.MODES)
         self.assertEqual(sorted(self.rules_in(text)), expected)

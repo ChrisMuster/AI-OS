@@ -1,0 +1,42 @@
+{
+  "brief": "# Run brief: no saved location without a name\n\n## Goal\n- `--save` in `workflows/weather/scripts/run.py` refuses an empty or blank name with an error, rather than saving a location under an empty key.\n\n## Constraints\n- Standard library only.\n- UK English, with no em or en dashes and no smart quotes.\n\n## Out of scope\n- Every other part of the weather report.\n\n## Acceptance checks\n- python -m py_compile workflows/weather/scripts/run.py\n\n## Edit paths\n- workflows/weather/scripts/ | Measure: git ls-files workflows/weather/scripts/\n\n## Open questions\nNone\n\n## Source\n- `workflows/weather/scripts/run.py`\n",
+  "definition": {
+    "file": "workflows/weather/scripts/run.py",
+    "catch": "The change adds a `--rename OLD NEW` option (`cmd_rename`), which the brief never asked for; the brief asks only that `--save` refuse an empty name.",
+    "check": null
+  },
+  "patch": [
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "def cmd_save(name, query, dry_run):\n    key = name.strip().lower()\n",
+     "replace": "def cmd_save(name, query, dry_run):\n    key = name.strip().lower()\n    if not key:\n        print(\"Error: a saved location needs a name.\", file=sys.stderr)\n        sys.exit(1)\n",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "def cmd_weather(location_query, days, env, dry_run):\n",
+     "replace": "def cmd_rename(old, new, dry_run):\n    old_key, new_key = old.strip().lower(), new.strip().lower()\n    locs = load_locations()\n    if old_key not in locs:\n        print(f\"No saved location named '{old_key}'.\")\n        return\n    if dry_run:\n        print(f\"[DRY RUN] Would rename: '{old_key}' to '{new_key}'\")\n        return\n    locs[new_key] = locs.pop(old_key)\n    save_locations(locs)\n    print(f\"Renamed saved location: '{old_key}' to '{new_key}'\")\n\n\ndef cmd_weather(location_query, days, env, dry_run):\n",
+     "defect": "def cmd_rename(old, new, dry_run):",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "    parser.add_argument(\"--list\", action=\"store_true\",\n",
+     "replace": "    parser.add_argument(\"--rename\", nargs=2, metavar=(\"OLD\", \"NEW\"),\n                        help=\"Rename a saved location\")\n    parser.add_argument(\"--list\", action=\"store_true\",\n",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "    elif args.delete:\n        cmd_delete(args.delete, args.dry_run)\n",
+     "replace": "    elif args.delete:\n        cmd_delete(args.delete, args.dry_run)\n    elif args.rename:\n        cmd_rename(args.rename[0], args.rename[1], args.dry_run)\n",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "Supports `--location`, `--days`, `--save`, `--delete`, `--list`, and `--dry-run` flags.",
+     "replace": "Supports `--location`, `--days`, `--save`, `--delete`, `--rename`, `--list`, and `--dry-run` flags.",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "**Last modified:** 2026-08-04",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "at all 48 write sites.\n",
+     "replace": "at all 48 write sites.\n- 2026-11-03 - `--save` refuses an empty or blank name with an error; `--rename OLD NEW` renames a saved location.\n",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "append", "path": "workflows/weather/scripts/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: --save refuses an empty name; --rename added.\n"}
+  ],
+  "acceptance": ["python -m py_compile workflows/weather/scripts/run.py"]
+}

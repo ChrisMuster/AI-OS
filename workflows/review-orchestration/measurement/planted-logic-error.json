@@ -1,0 +1,26 @@
+{
+  "brief": "# Run brief: calm wind in the weather report\n\n## Goal\n- `fmt_wind` in `workflows/weather/scripts/run.py` reports the wind as `Calm` when its speed rounds to 0 mph, instead of a compass point and `0 mph`; every other speed is reported as it is now.\n\n## Constraints\n- Standard library only.\n- UK English, with no em or en dashes and no smart quotes.\n\n## Out of scope\n- Every other part of the weather report.\n\n## Acceptance checks\n- python -m py_compile workflows/weather/scripts/run.py\n\n## Edit paths\n- workflows/weather/scripts/ | Measure: git ls-files workflows/weather/scripts/\n\n## Open questions\nNone\n\n## Source\n- `workflows/weather/scripts/run.py`\n",
+  "definition": {
+    "file": "workflows/weather/scripts/run.py",
+    "catch": "The new condition `round(speed_mph) <= 1` also reports a wind that rounds to 1 mph (from 0.5 to under 1.5 mph) as Calm, while the brief asks for Calm only when the speed rounds to 0 mph.",
+    "check": null
+  },
+  "patch": [
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "        return \"N/A\"\n    idx = round(direction_deg / 22.5) % 16\n",
+     "replace": "        return \"N/A\"\n    if round(speed_mph) <= 1:\n        return \"Calm\"\n    idx = round(direction_deg / 22.5) % 16\n",
+     "defect": "if round(speed_mph) <= 1:",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "**Last modified:** 2026-08-04",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "at all 48 write sites.\n",
+     "replace": "at all 48 write sites.\n- 2026-11-03 - `fmt_wind` reports the wind as `Calm` when its speed rounds to 0 mph, instead of a compass point and `0 mph`.\n",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "append", "path": "workflows/weather/scripts/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: fmt_wind reports Calm when the wind speed rounds to 0 mph.\n"}
+  ],
+  "acceptance": ["python -m py_compile workflows/weather/scripts/run.py"]
+}

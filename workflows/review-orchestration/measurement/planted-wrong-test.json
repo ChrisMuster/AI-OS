@@ -1,0 +1,42 @@
+{
+  "brief": "# Run brief: no lines for a negative LOG tail\n\n## Goal\n- `log_tail` in `workflows/handoff/scripts/gather.py` returns no lines for a negative `tail`, instead of slicing from the wrong end of the log.\n- A test shows it.\n\n## Constraints\n- Standard library only.\n- UK English, with no em or en dashes and no smart quotes.\n\n## Out of scope\n- What the handoff packet holds.\n\n## Acceptance checks\n- python workflows/handoff/tests/run_tests.py\n\n## Edit paths\n- workflows/handoff/scripts/ | Measure: git ls-files workflows/handoff/scripts/\n- workflows/handoff/tests/ | Measure: git ls-files workflows/handoff/tests/\n\n## Open questions\nNone\n\n## Source\n- `workflows/handoff/scripts/gather.py`\n- `workflows/handoff/tests/test_gather.py`\n",
+  "definition": {
+    "file": "workflows/handoff/tests/test_log_tail.py",
+    "catch": "The new test calls `log_tail` on a folder with no LOG.md, which returns no lines before the negative-tail check is reached, so it passes with the fix removed; it needs a LOG.md holding entries.",
+    "check": null
+  },
+  "patch": [
+    {"op": "replace", "path": "workflows/handoff/scripts/gather.py",
+     "search": "    \"\"\"Return the last `tail` LOG.md entry lines for a directory, or [].\"\"\"\n",
+     "replace": "    \"\"\"Return the last `tail` LOG.md entry lines for a directory, or [].\"\"\"\n    if tail and int(tail) < 0:\n        return []\n",
+     "base_blob": "6a8020a6c3c88719e42ab042c9f6a649a09ce49d"},
+    {"op": "new", "path": "workflows/handoff/tests/test_log_tail.py",
+     "text": "#!/usr/bin/env python3\n\"\"\"A negative tail gives `log_tail` no lines rather than slicing from the wrong end.\"\"\"\nimport sys\nimport tempfile\nimport unittest\nfrom pathlib import Path\n\nTESTS_DIR = Path(__file__).resolve().parent\nsys.path.insert(0, str(TESTS_DIR.parent / \"scripts\"))\n\nimport gather  # noqa: E402\n\n\nclass TestNegativeTail(unittest.TestCase):\n    def test_a_negative_tail_returns_no_lines(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            (Path(tmp) / \"sub\").mkdir()\n            self.assertEqual(gather.log_tail(tmp, \"sub\", -2), [])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+     "defect": "(Path(tmp) / \"sub\").mkdir()"},
+    {"op": "replace", "path": "workflows/handoff/tests/CONTEXT.md",
+     "search": "- test_review_packets.py - the `review_packets` reader",
+     "replace": "- test_log_tail.py - `log_tail` returning no lines for a negative tail.\n- test_review_packets.py - the `review_packets` reader",
+     "base_blob": "6862efc299f3b8a8c4d6e366cd35961680f6dcdf"},
+    {"op": "replace", "path": "workflows/handoff/tests/CONTEXT.md",
+     "search": "**Last modified:** 2026-09-18",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "6862efc299f3b8a8c4d6e366cd35961680f6dcdf"},
+    {"op": "replace", "path": "workflows/handoff/tests/CONTEXT.md",
+     "search": "control for each fires none.\n",
+     "replace": "control for each fires none.\n- 2026-11-03 - Added `test_log_tail.py` (1 test, 66 to 67), for `log_tail` returning no lines for a negative tail.\n",
+     "base_blob": "6862efc299f3b8a8c4d6e366cd35961680f6dcdf"},
+    {"op": "replace", "path": "workflows/handoff/scripts/CONTEXT.md",
+     "search": "**Last modified:** 2026-09-18",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "806f839ed3616b87041922cfb82ecd378743b579"},
+    {"op": "replace", "path": "workflows/handoff/scripts/CONTEXT.md",
+     "search": "Suite 54 to 66.\n",
+     "replace": "Suite 54 to 66.\n- 2026-11-03 - `log_tail` returns no lines for a negative `tail`, instead of slicing from the wrong end of the log.\n",
+     "base_blob": "806f839ed3616b87041922cfb82ecd378743b579"},
+    {"op": "append", "path": "workflows/handoff/scripts/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: log_tail returns no lines for a negative tail.\n"},
+    {"op": "append", "path": "workflows/handoff/tests/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: test_log_tail.py added (66 to 67 tests).\n"}
+  ],
+  "acceptance": ["python workflows/handoff/tests/run_tests.py"]
+}

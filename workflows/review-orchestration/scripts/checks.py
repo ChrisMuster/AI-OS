@@ -466,14 +466,20 @@ CONTAINER_CLOSE_OUT = [CONTAINER_PYTHON, "workflows/close-out/scripts/run.py",
                        "--read-only", "--json"]
 
 
-def container_checks(root, commands, *, run_id, frozen_dir, public_head, image):
+def container_checks(root, commands, *, run_id, frozen_dir, public_head, image,
+                     floor=None):
     """The checks that run builder-written code (plan 7.2 item 1): in the run's image,
     offline, over one fresh clean copy at the run's public head with the start-of-run
     ignore floor, the close-out verifier (read-only, default scope) and each
     acceptance command, then the copy is removed. Returns (findings, lines). A Docker
     or copy failure raises ``container.ContainerError``: it is not a finding the
-    builder could fix, so the run ends ``error`` (plan 7.2)."""
-    floor = container.read_start_ignored(Path(frozen_dir) / START_IGNORED)
+    builder could fix, so the run ends ``error`` (plan 7.2).
+
+    ``floor`` given replaces the frozen folder's ``start-ignored.txt``: a measurement's
+    planted copy (plan 10.8, A5) records its own, since the measurement's frozen folder
+    holds the live project's, not the copy's. Left out, nothing changes."""
+    if floor is None:
+        floor = container.read_start_ignored(Path(frozen_dir) / START_IGNORED)
     dest = container.next_copy(run_id)
     try:
         container.make_copy(root, dest, public_head, floor)
@@ -499,14 +505,15 @@ def container_checks(root, commands, *, run_id, frozen_dir, public_head, image):
 
 
 def run_all(root, edit_paths, directories, commands, python=None, *, run_id, frozen_dir,
-            public_head, image, round_dir):
+            public_head, image, round_dir, floor=None):
     """The checks after every builder turn (plan 7.2): the container's (close-out and
     the acceptance commands, over a clean copy), then the four trusted host checks
     from the frozen folder's ``trusted/`` (targeted audit, doc-sync, personal-data
-    guard, link check). Returns (findings, text for the prompts and the report)."""
+    guard, link check). Returns (findings, text for the prompts and the report).
+    ``floor`` is ``container_checks``'s (a measurement's planted copy, A5)."""
     python = python or sys.executable
     found, lines = container_checks(root, commands, run_id=run_id, frozen_dir=frozen_dir,
-                                    public_head=public_head, image=image)
+                                    public_head=public_head, image=image, floor=floor)
     host, text = trusted_host_checks(root, python, Path(frozen_dir) / TRUSTED_DIR,
                                      edit_paths, directories, round_dir)
     return found + host, "\n".join(lines + ([text] if text else []))

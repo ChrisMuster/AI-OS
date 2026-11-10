@@ -752,36 +752,17 @@ def next_label(run):
     return loop.label_rounds_used(run) + 1
 
 
-def plan_review_schema(with_pattern=True):
-    """The plan reviewer's reply schema: the build reviewer's (``REVIEW_SCHEMA``), in the
-    packet's one label form with ``reraises``. A plan has no changed files, so there is
-    no ``files_reviewed``. Without the title pattern for a Claude session, or once Codex
-    has refused it, as for the build reviewer."""
-    schema = json.loads(json.dumps(sr.REVIEW_SCHEMA))
-    if not with_pattern:
-        schema["properties"]["findings"]["items"]["properties"]["title"].pop("pattern",
-                                                                            None)
-    return schema
+# The plan reviewer's reply schema, moved to ``loop.py`` with the shared plan review step
+# in A5 (plan 10.8); the name stays here for its readers.
+plan_review_schema = loop.plan_review_schema
 
 
 def _review_once(run, session, prompt):
-    """One plan review, with the build reviewer's title-pattern rule (``loop.Run.
-    _review_once``): a Claude session is never sent the pattern, and a Codex one that
-    refuses it is asked again without it, the refusal recorded for the run."""
-    live = run.state.setdefault("live", {})
-    if session.provider == limits.CLAUDE or live.get("title_pattern",
-                                                      "").startswith("refused"):
-        return session.review(prompt, plan_review_schema(with_pattern=False))
-    try:
-        record = session.review(prompt, plan_review_schema())
-    except providers.ProviderError as exc:
-        if "pattern" not in str(exc).lower():
-            raise
-        live["title_pattern"] = f"refused: {exc}"
-        run.save()
-        return session.review(prompt, plan_review_schema(with_pattern=False))
-    live.setdefault("title_pattern", "accepted")
-    return record
+    """One plan review, with the build reviewer's title-pattern rule: a Claude session is
+    never sent the pattern, and a Codex one that refuses it is asked again without it,
+    the refusal recorded for the run. Since A5 the rule is ``loop.call_reviewer``."""
+    return loop.call_reviewer(session, prompt, plan_review_schema, run.state, run.save,
+                              note_claude=False)
 
 
 def _prior(run):
@@ -791,12 +772,18 @@ def _prior(run):
         for f in run.ledger.current()) or "None."
 
 
-def plan_reviewer_prompt(run, label):
-    """The brief, the merged plan and the prior findings with the synthesiser's action
-    on each: not the two plans, not the synthesiser's notes."""
+def plan_reviewer_values(run, label):
+    """The plan reviewer prompt's fields: the brief, the merged plan and the prior
+    findings with the synthesiser's action on each; not the two plans, not the
+    synthesiser's notes."""
     merged = (planning_state(run).get("synthesis") or {}).get("merged_plan") or {}
-    return loop.render("plan-reviewer", round=label, brief=run.brief_text(),
-                       plan=loop.render_plan(merged), prior=_prior(run))
+    return dict(round=label, brief=run.brief_text(), plan=loop.render_plan(merged),
+                prior=_prior(run))
+
+
+def plan_reviewer_prompt(run, label):
+    """The plan reviewer's prompt, as the shared step renders it."""
+    return loop.render("plan-reviewer", **plan_reviewer_values(run, label))
 
 
 def render_review_packet(run):
@@ -822,26 +809,37 @@ async def _review_round(run, label, step):
     if await _check_usage(run, step, provider):
         return
     session = None
+    recorded = []
+
+    def called(record):
+        # The session's record is kept before its reply is read, as it always was. Marked
+        # first, so a failure while recording is raised as it always was, not taken for
+        # a failed session.
+        recorded.append(True)
+        _record_session(run, step, "plan_reviewer", provider, session, record)
+
     try:
         session = run.deps.make_plan_reviewer(run.settings, run.root, run.claude_usage,
                                               state["frozen_dir"])
-        record = await asyncio.to_thread(_review_once, run, session,
-                                         plan_reviewer_prompt(run, label))
+        # The shared step (plan 10.8): render, call and parse.
+        _record, findings = await asyncio.to_thread(
+            loop.plan_review_step, session, plan_reviewer_values(run, label),
+            ledger=run.ledger, state=run.state, save=run.save, after_call=called)
     except limits.UsageLimitError as exc:
         _failed_callbacks(run, step, "plan_reviewer", session)
         end(run, sr.USAGE_LIMIT, _usage_evidence(exc, step))
         return
     except Exception as exc:  # noqa: BLE001 - a provider failure
+        if recorded:
+            # The session completed and was recorded; only its reply was refused.
+            if isinstance(exc, sr.ReplyError):
+                end(run, sr.ERROR, {"step": step, "error": str(exc)})
+                return
+            raise
         for refusal in getattr(session, "refusals", None) or ():
             state.setdefault("refusals", []).append({"step": step, **refusal})
         _failed_callbacks(run, step, "plan_reviewer", session)
         end(run, sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
-        return
-    _record_session(run, step, "plan_reviewer", provider, session, record)
-    try:
-        findings = sr.parse_review(record.reply, run.ledger)
-    except sr.ReplyError as exc:
-        end(run, sr.ERROR, {"step": step, "error": str(exc)})
         return
     new = run.ledger.add_round(label, [], findings)
     run._accept_declines(label, new)

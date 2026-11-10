@@ -810,6 +810,128 @@ def review_schema(with_pattern=True):
     return schema
 
 
+def plan_review_schema(with_pattern=True):
+    """The plan reviewer's reply schema: the build reviewer's (``REVIEW_SCHEMA``), in the
+    packet's one label form with ``reraises``. A plan has no changed files, so there is
+    no ``files_reviewed``. Without the title pattern for a Claude session, or once Codex
+    has refused it, as for the build reviewer. Moved here from ``planning.py`` in A5
+    (plan 10.8), which keeps the name as an alias."""
+    schema = json.loads(json.dumps(sr.REVIEW_SCHEMA))
+    if not with_pattern:
+        schema["properties"]["findings"]["items"]["properties"]["title"].pop("pattern",
+                                                                            None)
+    return schema
+
+
+# ------------------------------------------ the shared review steps (plan 10.8, A5)
+#
+# The body of the loop's review step and of the plan review step, each one function
+# here, called by the loop (``Run.review``), by ``planning.py`` and by ``measure.py``, so
+# a measurement runs the real step by construction. Each caller keeps its own state and
+# its own recording through three callbacks, called in the order the steps always
+# recorded: ``before_call`` after the prompt is rendered and before the session is
+# called, ``on_failure`` if the call raises (and the error is raised again), and
+# ``after_call`` with the session's record once the call returns, before the coverage
+# check and the parse, so a reply refused there is still recorded first.
+
+# The ``$plan`` text of a run with no planning half (plan 10.8 item 2, "Order of one
+# change": a planted change's review step carries it).
+NO_PLAN = "None: this run has no approved plan."
+
+
+def call_reviewer(session, prompt, schema, state, save, *, note_claude=True):
+    """One review call with the title-pattern rule (plan 10.4 chunk (c) check 3): a
+    Claude session is never sent the pattern, and a Codex one that refuses it is asked
+    again without it, the refusal recorded in ``state["live"]`` and saved. ``schema``
+    takes ``with_pattern``. ``note_claude`` records ``not sent`` for a Claude session,
+    as the build's review step always has; the plan review step never did."""
+    live = state.setdefault("live", {})
+    if session.provider == limits.CLAUDE:
+        if note_claude:
+            live["title_pattern"] = "not sent"
+        return session.review(prompt, schema(with_pattern=False))
+    if live.get("title_pattern", "").startswith("refused"):
+        return session.review(prompt, schema(with_pattern=False))
+    try:
+        record = session.review(prompt, schema())
+    except providers.ProviderError as exc:
+        if "pattern" not in str(exc).lower():
+            raise
+        live["title_pattern"] = f"refused: {exc}"
+        save()
+        return session.review(prompt, schema(with_pattern=False))
+    live.setdefault("title_pattern", "accepted")
+    return record
+
+
+def covered(reply, changed_files, required=()):
+    """Check the reviewer listed every changed file in ``files_reviewed``, then return
+    the reply without that field for ``parse_review``. A missing file is a malformed
+    reply, so the round ends ``error`` rather than passing unread (R4-1). ``required``
+    are further files the reply must list, named apart (a measurement's replayed code
+    round requires its two plans, plan 10.8 item 1)."""
+    if not isinstance(reply, dict):
+        return reply
+    reply = dict(reply)
+    listed = reply.pop("files_reviewed", None)
+    if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):
+        raise sr.ReplyError("the reviewer's reply has no files_reviewed list")
+    seen = {p.strip().replace("\\", "/").removeprefix("./") for p in listed}
+    missing = [path for path in changed_files if path not in seen]
+    if missing:
+        raise sr.ReplyError("the reviewer did not list these changed files as "
+                            "reviewed: " + ", ".join(missing[:20])
+                            + (" ..." if len(missing) > 20 else ""))
+    absent = [path for path in required if path not in seen]
+    if absent:
+        raise sr.ReplyError("the reviewer did not list these required files as "
+                            "reviewed: " + ", ".join(absent))
+    return reply
+
+
+def _call_step(session, prompt, schema, state, save, before_call, after_call,
+               on_failure, note_claude):
+    if before_call is not None:
+        before_call()
+    try:
+        record = call_reviewer(session, prompt, schema, state, save,
+                               note_claude=note_claude)
+    except Exception:
+        if on_failure is not None:
+            on_failure()
+        raise
+    if after_call is not None:
+        after_call(record)
+    return record
+
+
+def review_step(session, values, *, ledger, state, save, changed_files, required=(),
+                before_call=None, after_call=None, on_failure=None):
+    """The build reviewer's step (plan 10.4, 10.8): ``prompts/reviewer.md`` rendered from
+    ``values``, the call with ``review_schema``, the ``files_reviewed`` coverage check
+    against ``changed_files`` and ``required``, and ``stopreasons.parse_review``.
+    Returns ``(record, findings)``; a refused reply raises ``ReplyError`` after
+    ``after_call``."""
+    prompt = render("reviewer", **values)
+    record = _call_step(session, prompt, review_schema, state, save, before_call,
+                        after_call, on_failure, True)
+    reply = covered(record.reply, list(changed_files), list(required))
+    return record, sr.parse_review(reply, ledger)
+
+
+def plan_review_step(session, values, *, ledger, state, save, before_call=None,
+                     after_call=None, on_failure=None):
+    """The plan reviewer's step (plan 10.3 step 4, 10.8): ``prompts/plan-reviewer.md``
+    rendered from ``values``, the call with ``plan_review_schema`` and
+    ``stopreasons.parse_review``; a plan has no changed files, so no coverage check.
+    Returns ``(record, findings)``; a refused reply raises ``ReplyError`` after
+    ``after_call``."""
+    prompt = render("plan-reviewer", **values)
+    record = _call_step(session, prompt, plan_review_schema, state, save, before_call,
+                        after_call, on_failure, False)
+    return record, sr.parse_review(record.reply, ledger)
+
+
 # ------------------------------------------- the intent check's mechanical layer
 
 
@@ -1084,7 +1206,7 @@ class Run:
         synthesis = (self.state.get("planning") or {}).get("synthesis")
         merged = synthesis.get("merged_plan") if isinstance(synthesis, dict) else None
         if not isinstance(merged, dict):
-            return "None: this run has no approved plan."
+            return NO_PLAN
         return render_plan(merged)
 
     # ---------------------------------------------------------------- driving
@@ -1616,23 +1738,9 @@ class Run:
         """One review. If Codex refuses the schema's title pattern, it comes out and
         the script's own title check is the only one (plan 10.4 chunk (c) check 3). A
         Claude reviewer is never sent the pattern: whether Claude accepts a lookahead
-        there is not measured, and the script's check holds either way."""
-        live = self.state.setdefault("live", {})
-        if reviewer.provider == limits.CLAUDE:
-            live["title_pattern"] = "not sent"
-            return reviewer.review(prompt, review_schema(with_pattern=False))
-        if live.get("title_pattern", "").startswith("refused"):
-            return reviewer.review(prompt, review_schema(with_pattern=False))
-        try:
-            record = reviewer.review(prompt, review_schema())
-        except providers.ProviderError as exc:
-            if "pattern" not in str(exc).lower():
-                raise
-            live["title_pattern"] = f"refused: {exc}"
-            self.save()
-            return reviewer.review(prompt, review_schema(with_pattern=False))
-        live.setdefault("title_pattern", "accepted")
-        return record
+        there is not measured, and the script's check holds either way. Since A5 the
+        rule is ``call_reviewer``, shared with the plan review and the measurement."""
+        return call_reviewer(reviewer, prompt, review_schema, self.state, self.save)
 
     def review(self, round_no):
         step = f"review-R{round_no}"
@@ -1685,34 +1793,37 @@ class Run:
             for f in self.ledger.current()) or "None."
         reviewer = self.deps.make_reviewer(self.settings, self.root, self.claude_usage,
                                            self.state["frozen_dir"])
-        prompt = render("reviewer", round=round_no, brief=self.brief_text(),
-                        plan=self.approved_plan(),
-                        mechanical=mechanical_text or "None.", prior=prior,
-                        diff=self._shown_diff(diff, folder),
-                        changed_files="\n".join(f"- {path}" for path in changed_files)
-                        or "None.",
-                        check_written=check_written or "None.",
-                        reviewer_tools=reviewer_tools(reviewer.provider))
-        self._inject(step, reviewer.provider)
-        try:
-            record = self._review_once(reviewer, prompt)
-        except Exception:
+        values = dict(round=round_no, brief=self.brief_text(), plan=self.approved_plan(),
+                      mechanical=mechanical_text or "None.", prior=prior,
+                      diff=self._shown_diff(diff, folder),
+                      changed_files="\n".join(f"- {path}" for path in changed_files)
+                      or "None.",
+                      check_written=check_written or "None.",
+                      reviewer_tools=reviewer_tools(reviewer.provider))
+
+        def failed():
             # What a reviewer was refused before its round failed still goes in the
             # report.
             self._take_refusals(step, getattr(reviewer, "refusals", None))
             self._record_review_callbacks(step, getattr(reviewer, "callback_record",
                                                         None))
-            raise
-        self._take_refusals(step, record.refusals)
-        self._record_review_callbacks(step, getattr(record, "callbacks", None))
-        self._record_model(reviewer.provider, record.model)
-        # A Codex reviewer's launch readings (plan 7.6 item 4, live check 4b).
-        launch = getattr(record, "launch", None)
-        if launch is not None:
-            self.state.setdefault("live", {}).setdefault(
-                "codex_reviewer_launches", []).append({"step": step, **launch})
-        reply = self._covered(record.reply, changed_files)
-        findings = sr.parse_review(reply, self.ledger)
+
+        def called(record):
+            self._take_refusals(step, record.refusals)
+            self._record_review_callbacks(step, getattr(record, "callbacks", None))
+            self._record_model(reviewer.provider, record.model)
+            # A Codex reviewer's launch readings (plan 7.6 item 4, live check 4b).
+            launch = getattr(record, "launch", None)
+            if launch is not None:
+                self.state.setdefault("live", {}).setdefault(
+                    "codex_reviewer_launches", []).append({"step": step, **launch})
+
+        # The shared step (plan 10.8): render, call, coverage check and parse.
+        record, findings = review_step(
+            reviewer, values, ledger=self.ledger, state=self.state, save=self.save,
+            changed_files=changed_files,
+            before_call=lambda: self._inject(step, reviewer.provider),
+            after_call=called, on_failure=failed)
         new = self.ledger.add_round(round_no, mechanical, findings)
         self._accept_declines(round_no, new)
         self.state.setdefault("steps", []).append(
@@ -1770,23 +1881,9 @@ class Run:
                 "files_reviewed list.)")
 
     def _covered(self, reply, changed_files):
-        """Check the reviewer listed every changed file in ``files_reviewed``, then
-        return the reply without that field for ``parse_review``. A missing file is a
-        malformed reply, so the round ends ``error`` rather than passing unread
-        (R4-1)."""
-        if not isinstance(reply, dict):
-            return reply
-        reply = dict(reply)
-        listed = reply.pop("files_reviewed", None)
-        if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):
-            raise sr.ReplyError("the reviewer's reply has no files_reviewed list")
-        seen = {p.strip().replace("\\", "/").removeprefix("./") for p in listed}
-        missing = [path for path in changed_files if path not in seen]
-        if missing:
-            raise sr.ReplyError("the reviewer did not list these changed files as "
-                                "reviewed: " + ", ".join(missing[:20])
-                                + (" ..." if len(missing) > 20 else ""))
-        return reply
+        """Check the reviewer listed every changed file in ``files_reviewed`` (R4-1);
+        since A5 the module's ``covered``, which the shared review step calls."""
+        return covered(reply, changed_files)
 
     def _accept_declines(self, round_no, new):
         """A finding the builder declined on its merits that this round's reviewer did

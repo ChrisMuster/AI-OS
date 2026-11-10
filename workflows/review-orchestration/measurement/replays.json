@@ -1,0 +1,42 @@
+{
+  "note": "A note from the measurement harness, before the round's own brief: the brief below was written for a review round run by hand, and is given here word for word. In this session you write nothing: ignore any instruction in it to write or update a review packet, a baseline or any other file, and ignore what it says about where findings are recorded. Reply only in the JSON form the prompt gives. Any command the brief asks you to run that you cannot run here is unavailable; do not report its absence as a finding.",
+  "rounds": {
+    "code": {
+      "title": "the sync Stage A code review of 2026-09-02",
+      "public_ref": "b632926cb0c45f422f7e38bab1a67b234cb0f27c",
+      "personal_ref": "702a8f34e63f9c555c4f12c2f9d93b3e1ee0ab42",
+      "brief": {"path": "CODEX-CODE-REVIEW-BRIEF.md"},
+      "new_files": [
+        "workflows/sync-architecture/scripts/allowlist.py",
+        "workflows/sync-architecture/scripts/boundary.py",
+        "workflows/sync-architecture/scripts/preseed.py",
+        "workflows/sync-architecture/scripts/run.py",
+        "workflows/sync-architecture/tests/test_allowlist.py",
+        "workflows/sync-architecture/tests/test_boundary.py",
+        "workflows/sync-architecture/tests/test_preseed.py",
+        "workflows/sync-architecture/tests/test_run.py"
+      ],
+      "required_plans": ["SYNC-ARCHITECTURE-PLAN.md", "SHADOW-REPOSITORY-PLAN.md"],
+      "plan_slot": "No merged plan was approved for this round. Its specification is the two plans in the working folder, `SYNC-ARCHITECTURE-PLAN.md` and `SHADOW-REPOSITORY-PLAN.md`: read both as the approved plan, and list both in your files_reviewed.",
+      "answer_labels": ["C1", "P1"],
+      "review_process": ["P1"],
+      "original_could_run": "the original reviewer could run the four scripts' tests and other commands on the project; this session runs no project code and reads only the restored copy",
+      "drift": "none recorded for this round"
+    },
+    "plan": {
+      "title": "the review-orchestration Stage A plan review of 2026-09-24",
+      "public_ref": "f64bb334a9e63c1ac298434db19d9c38e3dc6ac8",
+      "personal_ref": "d4921455af203553533bc6749eeca2296b8ebfaa",
+      "brief": {
+        "ref": "1b8284e32fbdc2543d221f17b578740a1a6159a1",
+        "path": "CODEX-REVIEW-ORCHESTRATION-STAGE-A-R1-REVIEW-BRIEF.md",
+        "sha256": "5388c1fd76a81cc9859e61353ef9983fd6c4d84305690356f6da5eebe92b94f5"
+      },
+      "plan_path": "REVIEW-ORCHESTRATION-PLAN.md",
+      "answer_labels": ["R1-1", "R1-2", "R1-3", "R1-4", "R1-5", "R1-6", "R1-7", "R1-8", "R1-9", "R1-10", "R1-11"],
+      "review_process": ["R1-11"],
+      "original_could_run": "the original reviewer could read the live project and run read-only commands there; this session reads only the restored copy and runs no project code",
+      "drift": "two documents the original reviewer was given were edited after capture d492145 and before the review, and no ref holds the versions read: memory/review_orchestration_decision_log.md gained the row naming the round's brief and packet, and memory/review_orchestration_review_ledger.md gained the section on tool output quoted into a packet; neither touches any R1 finding, and the replay restores both as held at d492145"
+    }
+  }
+}

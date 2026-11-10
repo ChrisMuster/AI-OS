@@ -253,6 +253,134 @@ def parse_review(reply, ledger):
     return findings
 
 
+# ------------------------------------------------- the measurement's judge (A5)
+#
+# Plan 10.8 item 3: for each recorded finding or definition, caught or missed, the
+# matching new finding quoted and why; for each other new finding, plausible or not and
+# why. A finding made on the planted set's control is a false alarm whatever it says, so
+# the judge is asked to mark it so, and only it.
+
+CAUGHT = "caught"
+MISSED = "missed"
+PLAUSIBLE = "plausible"
+NOT_PLAUSIBLE = "not plausible"
+FALSE_ALARM = "false alarm"
+JUDGE_ITEM_VERDICTS = (CAUGHT, MISSED)
+JUDGE_FINDING_VERDICTS = (PLAUSIBLE, NOT_PLAUSIBLE, FALSE_ALARM)
+_JUDGE_TEXT = {"type": "string"}
+JUDGE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["items", "findings"],
+    "properties": {
+        "items": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["item", "verdict", "match", "why"],
+            "properties": {"item": _JUDGE_TEXT,
+                           "verdict": {"type": "string",
+                                       "enum": list(JUDGE_ITEM_VERDICTS)},
+                           "match": _JUDGE_TEXT, "why": _JUDGE_TEXT}}},
+        "findings": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["finding", "verdict", "why"],
+            "properties": {"finding": _JUDGE_TEXT,
+                           "verdict": {"type": "string",
+                                       "enum": list(JUDGE_FINDING_VERDICTS)},
+                           "why": _JUDGE_TEXT}}},
+    },
+}
+
+
+_MATCH = re.compile(r"^\s*([^\s:]+)\s*:\s*(\S.*)$", re.DOTALL)
+
+
+def _judge_entries(reply, key, name, fields, verdicts):
+    entries = reply[key]
+    if not isinstance(entries, list):
+        raise ReplyError(f"the judge's {key} are not a list")
+    seen = {}
+    for number, entry in enumerate(entries, 1):
+        where = f"judge {name} {number}"
+        if not isinstance(entry, dict) or set(entry) != set(fields):
+            raise ReplyError(f"{where} must hold exactly: {', '.join(fields)}")
+        if not all(isinstance(entry[field], str) for field in fields):
+            raise ReplyError(f"{where}: every field must be text")
+        ident = entry[name].strip()
+        if ident in seen:
+            raise ReplyError(f"{where} names {ident!r} a second time")
+        if entry["verdict"] not in verdicts:
+            raise ReplyError(f"{where}: verdict {entry['verdict']!r} is not one of "
+                             f"{', '.join(verdicts)}")
+        seen[ident] = {**entry, name: ident}
+    return seen
+
+
+def parse_judge_reply(reply, items, findings, control=()):
+    """Check a judge's reply (``JUDGE_SCHEMA``) against what it was given.
+
+    ``items`` maps each recorded finding or definition the judge rules ``caught`` or
+    ``missed`` to the new findings that may match it (None: any). A ``caught`` item's
+    ``match`` is the matching finding's id, a colon, then the finding quoted; a
+    ``missed`` one's may be empty. ``findings`` are every new finding; ``findings`` in
+    the reply must name exactly those not given as a match, each ``plausible`` or ``not
+    plausible``, except ``control``, the findings made on the planted set's control,
+    which are ``false alarm`` and alone may be. Returns ``{"items": {id: entry},
+    "findings": {id: entry}, "matched": {finding id: item id}}``; raises ``ReplyError``
+    on anything else, so a malformed judgement is an error of its session, never a
+    score."""
+    if isinstance(reply, str):
+        try:
+            reply = json.loads(reply)
+        except ValueError as exc:
+            raise ReplyError(f"the judge's reply is not JSON: {exc}") from exc
+    if not isinstance(reply, dict) or set(reply) != {"items", "findings"}:
+        raise ReplyError("the judge's reply must hold exactly: items, findings")
+    findings, control = list(findings), set(control)
+    ruled = _judge_entries(reply, "items", "item", ("item", "verdict", "match", "why"),
+                           JUDGE_ITEM_VERDICTS)
+    wanted = list(items)
+    for ident in ruled:
+        if ident not in items:
+            raise ReplyError(f"the judge rules on {ident!r}, which it was not given")
+    missing = [ident for ident in wanted if ident not in ruled]
+    if missing:
+        raise ReplyError("the judge's reply leaves out item(s): " + ", ".join(missing))
+    matched = {}
+    for ident, entry in ruled.items():
+        if entry["verdict"] != CAUGHT:
+            continue
+        found = _MATCH.match(entry["match"])
+        allowed = items[ident]
+        if found is None:
+            raise ReplyError(f"judge item {ident}: caught, but its match is not written "
+                             "`<finding id>: <the finding quoted>`")
+        finding = found.group(1)
+        if finding not in findings or (allowed is not None and finding not in allowed):
+            raise ReplyError(f"judge item {ident}: its match names {finding!r}, which is "
+                             "not a finding it could match")
+        if finding in control:
+            raise ReplyError(f"judge item {ident}: a finding on the control cannot catch "
+                             "anything")
+        if finding in matched:
+            raise ReplyError(f"judge item {ident}: {finding} already caught "
+                             f"{matched[finding]}")
+        matched[finding] = ident
+    sorted_ = _judge_entries(reply, "findings", "finding", ("finding", "verdict", "why"),
+                             JUDGE_FINDING_VERDICTS)
+    others = [ident for ident in findings if ident not in matched]
+    for ident, entry in sorted_.items():
+        if ident not in others:
+            raise ReplyError(f"the judge sorts {ident!r}, which is not a new finding left "
+                             "unmatched")
+        if (ident in control) != (entry["verdict"] == FALSE_ALARM):
+            raise ReplyError(f"judge finding {ident}: a finding on the control is a false "
+                             "alarm, and only such a finding is")
+    left = [ident for ident in others if ident not in sorted_]
+    if left:
+        raise ReplyError("the judge's reply leaves out finding(s): " + ", ".join(left))
+    return {"items": ruled, "findings": sorted_, "matched": matched}
+
+
 def parse_builder_reply(text, open_labels):
     """Read the builder's action list: the last fenced ``json`` block in its reply.
 

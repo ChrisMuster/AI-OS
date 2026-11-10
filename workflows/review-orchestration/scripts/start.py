@@ -20,6 +20,13 @@ project goes through here (orchestrator isolation plan 7.0 items 2 and 3, stage 
                                     10.3 steps 6 and 8, A3) act on a run paused for
                                     plan approval, so they take the same route; their
                                     own checks are the trusted run.py's.
+  start.py --measure ...            A fresh measurement (plan 10.8, A5): refuses
+                                    unless the whole project is committed, then runs
+                                    the project's measure.py, which hands over to its
+                                    measurement's trusted copy.
+  start.py --measure --resume <id>  Runs the measurement's trusted measure.py after the
+  start.py --measure --score <id>   same id and hook.json checks as a resume, with no
+                                    bytecode written.
 
 A start or brief check also refuses a ``BOOK_DRAGON_ROOT`` naming any project but this
 one, since run.py would work on the project it names, which nothing here checked; for a
@@ -46,6 +53,8 @@ ROOT = Path(__file__).resolve().parents[3]
 RUN_PY = "workflows/review-orchestration/scripts/run.py"
 FROZEN_PARENT = "book-dragon-orchestration"
 TRUSTED_RUN_PY = ("trusted", "workflows", "review-orchestration", "scripts", "run.py")
+MEASURE_PY = "workflows/review-orchestration/scripts/measure.py"
+TRUSTED_MEASURE_PY = ("trusted", "workflows", "review-orchestration", "scripts", "measure.py")
 # The run-record form (runrecord.RUN_ID), restated: the starter imports nothing.
 RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 # The only code the brief checker loads (plan 7.0 item 2).
@@ -54,7 +63,8 @@ STARTER_MARKER = "BOOK_DRAGON_REVIEW_ORCHESTRATION_STARTER"
 ROOT_ENV = "BOOK_DRAGON_ROOT"
 USAGE = ("usage: start.py --run <brief> ... | --check-brief <brief> | "
          "--resume <run-id> ... | --stop <run-id> ... | --approve <run-id> ... | "
-         "--amend <run-id> <revised-brief> ...")
+         "--amend <run-id> <revised-brief> ... | --measure ... | "
+         "--measure --resume <id> | --measure --score <id>")
 # The modes that act on an existing run through its trusted copy (plan 7.0 item 3, and
 # A3's approve and amend, plan 10.3 step 8).
 TRUSTED_MODES = ("--resume", "--stop", "--approve", "--amend")
@@ -147,6 +157,20 @@ def command_for(argv, root=ROOT, temp_root=None, python=None, environ=None):
             raise Refused(f"{mode} needs a run id. {USAGE}")
         trusted = trusted_target(argv[1], root, temp_root)
         return [python, str(trusted), *argv]
+    if mode == "--measure":
+        if argv[1:2] in (["--resume"], ["--score"]):
+            if len(argv) < 3:
+                raise Refused(f"--measure {argv[1]} needs a measurement id. {USAGE}")
+            trusted_target(argv[2], root, temp_root)
+            script = (Path(temp_root or tempfile.gettempdir()) / FROZEN_PARENT
+                      / argv[2]).joinpath(*TRUSTED_MEASURE_PY)
+            if not script.is_file():
+                raise Refused(f"measurement {argv[2]} has no trusted measure.py "
+                              f"({script.as_posix()})")
+            return [python, str(script), *argv]
+        check_root_override(root, environ)
+        check_committed(root)
+        return [python, str(Path(root) / MEASURE_PY), *argv]
     if mode == "--run":
         check_root_override(root, environ)
         check_committed(root)
@@ -175,7 +199,8 @@ def main(argv=None, *, root=ROOT, temp_root=None, python=None, runner=subprocess
         print(f"REFUSED: {exc}")
         return REFUSED
     env = dict(environ, **{STARTER_MARKER: "1"})
-    if argv[0] in TRUSTED_MODES:
+    if argv[0] in TRUSTED_MODES or (argv[0] == "--measure"
+                                    and argv[1:2] in (["--resume"], ["--score"])):
         # The trusted copy writes no bytecode cache in its frozen folder (code review
         # R20-1); it also turns that off itself, so this is a second layer.
         env["PYTHONDONTWRITEBYTECODE"] = "1"

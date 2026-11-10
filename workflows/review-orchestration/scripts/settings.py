@@ -12,7 +12,8 @@ It holds:
   round_caps             plan section 11 item 5: 3 build-review rounds, 2 plan-review
                          rounds.
   models                 plan section 11 item 3: for each provider, the model and
-                         effort it uses in each role it can hold.
+                         effort it uses in each role it can hold. ``judge`` is the
+                         measurement's (plan 10.8 item 3), which no run needs.
 
 Which provider builds is not a setting. The user names it for each run
 (``run.py --run --builder claude|codex``) and the other provider reviews;
@@ -41,7 +42,11 @@ DEFAULT_MAX_TURNS = {"builder": 80, "reviewer": 200}
 DEFAULT_USAGE_PROBE_MODEL = "claude-haiku-5-5"
 
 PROVIDERS = ("claude", "codex")
-ROLES = ("builder", "planner", "plan_reviewer", "reviewer", "intent_checker")
+ROLES = ("builder", "planner", "plan_reviewer", "reviewer", "intent_checker", "judge")
+# The measurement's judge (plan 10.8 item 3, section 11 item 3's Judge row): a setting so
+# another reviewer model can be measured, but no ordinary run uses it, so a run's
+# coverage check never asks for it (``measure.py`` checks it itself).
+JUDGE = "judge"
 
 # The effort values each pinned SDK accepts: claude-agent-sdk's EffortLevel and
 # openai-codex's ReasoningEffort. An SDK upgrade may change them (see Known Issues).
@@ -61,6 +66,7 @@ DEFAULT_MODELS = {
         "plan_reviewer": {"model": "claude-opus-5-5", "effort": "high"},
         "reviewer": {"model": "claude-opus-5-5", "effort": "high"},
         "intent_checker": {"model": "claude-opus-5-5", "effort": "medium"},
+        "judge": {"model": "claude-opus-5-5", "effort": "high"},
     },
     "codex": {
         "builder": {"model": "gpt-6-sol", "effort": "high"},
@@ -68,6 +74,7 @@ DEFAULT_MODELS = {
         "plan_reviewer": {"model": "gpt-6-sol", "effort": "high"},
         "reviewer": {"model": "gpt-6-sol", "effort": "high"},
         "intent_checker": {"model": "gpt-6-sol", "effort": "medium"},
+        "judge": {"model": "gpt-6-sol", "effort": "high"},
     },
 }
 

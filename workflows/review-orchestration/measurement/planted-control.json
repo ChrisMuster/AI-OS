@@ -1,0 +1,21 @@
+{
+  "brief": "# Run brief: a count in the saved-locations list\n\n## Goal\n- `--list` in `workflows/weather/scripts/run.py` shows how many locations are saved, in the heading above the list.\n\n## Constraints\n- Standard library only.\n- UK English, with no em or en dashes and no smart quotes.\n\n## Out of scope\n- Every other part of the weather report.\n\n## Acceptance checks\n- python -m py_compile workflows/weather/scripts/run.py\n\n## Edit paths\n- workflows/weather/scripts/ | Measure: git ls-files workflows/weather/scripts/\n\n## Open questions\nNone\n\n## Source\n- `workflows/weather/scripts/run.py`\n",
+  "definition": null,
+  "patch": [
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "        print(\"\\nSaved locations:\")\n",
+     "replace": "        print(f\"\\nSaved locations ({len(locs)}):\")\n",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "**Last modified:** 2026-08-04",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "at all 48 write sites.\n",
+     "replace": "at all 48 write sites.\n- 2026-11-03 - `--list` shows how many locations are saved, in the heading above the list.\n",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "append", "path": "workflows/weather/scripts/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: --list shows how many locations are saved.\n"}
+  ],
+  "acceptance": ["python -m py_compile workflows/weather/scripts/run.py"]
+}

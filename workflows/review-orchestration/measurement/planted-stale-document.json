@@ -1,0 +1,39 @@
+{
+  "brief": "# Run brief: a shorter forecast range\n\n## Goal\n- `--days` in `workflows/weather/scripts/run.py` accepts only 1 to 7; any other value is refused with an error naming the range, since forecasts further ahead have proved unreliable.\n\n## Constraints\n- Standard library only.\n- UK English, with no em or en dashes and no smart quotes.\n\n## Out of scope\n- Every other part of the weather report.\n\n## Acceptance checks\n- python -m py_compile workflows/weather/scripts/run.py\n\n## Edit paths\n- workflows/weather/ | Measure: git ls-files workflows/weather/\n\n## Open questions\nNone\n\n## Source\n- `workflows/weather/scripts/run.py`\n- `workflows/weather/CONTEXT.md`\n",
+  "definition": {
+    "file": "workflows/weather/CONTEXT.md",
+    "catch": "The Inputs line of `workflows/weather/CONTEXT.md` still says `--days N` takes 2 to 16 for a multi-day forecast, but the change limits `--days` to 1 to 7.",
+    "check": null
+  },
+  "patch": [
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "    args = parser.parse_args()\n    env  = load_env()\n",
+     "replace": "    args = parser.parse_args()\n    if not 1 <= args.days <= 7:\n        parser.error(\"--days must be between 1 and 7\")\n    env  = load_env()\n",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/run.py",
+     "search": "help=\"Number of forecast days (default: 1)\")",
+     "replace": "help=\"Number of forecast days, 1 to 7 (default: 1)\")",
+     "base_blob": "52da975a6361a455c2148430af6aaa9d97629813"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "**Last modified:** 2026-08-04",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "replace", "path": "workflows/weather/scripts/CONTEXT.md",
+     "search": "at all 48 write sites.\n",
+     "replace": "at all 48 write sites.\n- 2026-11-03 - `--days` accepts 1 to 7 only; any other value is refused with an error naming the range.\n",
+     "base_blob": "9db4cf1706471c5e30a7a86046c541a748f77d07"},
+    {"op": "replace", "path": "workflows/weather/CONTEXT.md",
+     "search": "**Last modified:** 2026-08-12",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "73dda3309cebdcf5168c5025979d33fbf2eb0baa"},
+    {"op": "replace", "path": "workflows/weather/CONTEXT.md",
+     "search": "so a path documented everywhere except Outputs is invisible to it.\n",
+     "replace": "so a path documented everywhere except Outputs is invisible to it.\n- 2026-11-03 - `--days` is limited to 1 to 7 (`workflows/weather/scripts/run.py`).\n",
+     "base_blob": "73dda3309cebdcf5168c5025979d33fbf2eb0baa"},
+    {"op": "append", "path": "workflows/weather/scripts/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: --days accepts 1 to 7 only.\n"},
+    {"op": "append", "path": "workflows/weather/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: --days limited to 1 to 7; Revision History updated.\n"}
+  ],
+  "acceptance": ["python -m py_compile workflows/weather/scripts/run.py"]
+}

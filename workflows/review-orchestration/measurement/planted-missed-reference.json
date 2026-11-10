@@ -1,0 +1,25 @@
+{
+  "brief": "# Run brief: one name for the diff summary\n\n## Goal\n- `git_diff_stat` in `workflows/handoff/scripts/gather.py` is renamed `diff_stat`, to match the packet's `diffstat` field, with no change in what it returns.\n\n## Constraints\n- Standard library only.\n- UK English, with no em or en dashes and no smart quotes.\n\n## Out of scope\n- What the handoff packet holds.\n\n## Acceptance checks\n- python workflows/handoff/tests/run_tests.py\n\n## Edit paths\n- workflows/handoff/scripts/ | Measure: git ls-files workflows/handoff/scripts/\n\n## Open questions\nNone\n\n## Source\n- `workflows/handoff/scripts/gather.py`\n",
+  "definition": {
+    "file": "workflows/handoff/scripts/run.py",
+    "catch": "`run.py`'s `--gather` still calls `gather.git_diff_stat`, which the rename removed, so every gather fails with an AttributeError; no test runs that call.",
+    "check": null
+  },
+  "patch": [
+    {"op": "replace", "path": "workflows/handoff/scripts/gather.py",
+     "search": "def git_diff_stat(project_root) -> str:\n",
+     "replace": "def diff_stat(project_root) -> str:\n",
+     "base_blob": "6a8020a6c3c88719e42ab042c9f6a649a09ce49d"},
+    {"op": "replace", "path": "workflows/handoff/scripts/CONTEXT.md",
+     "search": "**Last modified:** 2026-09-18",
+     "replace": "**Last modified:** 2026-11-03",
+     "base_blob": "806f839ed3616b87041922cfb82ecd378743b579"},
+    {"op": "replace", "path": "workflows/handoff/scripts/CONTEXT.md",
+     "search": "Suite 54 to 66.\n",
+     "replace": "Suite 54 to 66.\n- 2026-11-03 - `gather.git_diff_stat` renamed `diff_stat`, to match the packet's `diffstat` field; what it returns is unchanged.\n",
+     "base_blob": "806f839ed3616b87041922cfb82ecd378743b579"},
+    {"op": "append", "path": "workflows/handoff/scripts/LOG.md",
+     "text": "[{{TIMESTAMP}}] | Actor: Biblio | Action: modified | Note: gather.git_diff_stat renamed diff_stat.\n"}
+  ],
+  "acceptance": ["python workflows/handoff/tests/run_tests.py"]
+}
