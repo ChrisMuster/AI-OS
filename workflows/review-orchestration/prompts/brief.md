@@ -6,6 +6,10 @@ check it with:
 Keep the seven headings exactly as written and in this order. Comments are ignored.
 A line that is only "...", only an angle-bracket placeholder, or that begins TODO or
 TBD counts as empty. No fenced code blocks anywhere in a section.
+Size the work so its build is expected to fit within one five-hour usage window where
+the work allows; split a larger item into chunks, each its own brief and run ending
+tested and committable. The plan report's size estimate is the check; the checker is
+not.
 -->
 
 ## Goal

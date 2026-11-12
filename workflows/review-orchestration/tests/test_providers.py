@@ -29,6 +29,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,6 +152,16 @@ def overage_event():
                            resets_at=2000000,
                            raw={"isUsingOverage": True, "unifiedWindows": {
                                "five_hour": {"utilization": 1, "resetsAt": 2000000}}})
+    return type("RateLimitEvent", (), {"rate_limit_info": info})()
+
+
+def window_event(utilization, status="allowed"):
+    """A rate-limit event with the five-hour window at ``utilization`` (0 to 1) and no
+    overage, as A5's build received at nearly every turn (plan 10.10 item 7)."""
+    info = SimpleNamespace(status=status, rate_limit_type="five_hour", resets_at=2000000,
+                           raw={"isUsingOverage": False, "unifiedWindows": {
+                               "five_hour": {"utilization": utilization,
+                                             "resetsAt": 2000000}}})
     return type("RateLimitEvent", (), {"rate_limit_info": info})()
 
 
@@ -283,6 +295,48 @@ class ClaudeBuilderTests(unittest.TestCase):
         self.builder.usage.paid_allowed = True
         records = self.run_turns([init(), overage_event(), result()])
         self.assertEqual(len(records), 1)
+        self.assertEqual(self.client.interrupts, 0)
+
+    # The ceiling during a build or fix step (plan 10.10 item 7, 2026-11-10): the run
+    # sets ``step_ceiling`` on the usage object for those steps only.
+
+    def test_rejection_the_step_ceiling_interrupts_at_the_first_reading_at_or_above_it(self):
+        self.builder.usage.step_ceiling = 80
+        with self.assertRaisesRegex(limits.UsageLimitError,
+                                    "80% reached the 80% ceiling during the step") as caught:
+            self.run_turns([init(), window_event(0.45), window_event(0.8),
+                            window_event(0.95), result()])
+        self.assertEqual(self.client.interrupts, 1)
+        self.assertEqual(caught.exception.resets_at, 2000000)
+        self.assertNotIn("paid overage", caught.exception.detail)
+
+    def test_positive_readings_below_the_step_ceiling_leave_the_turn_running(self):
+        self.builder.usage.step_ceiling = 80
+        records = self.run_turns([init(), window_event(0.45), window_event(0.79), result()])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(self.client.interrupts, 0)
+
+    def test_positive_paid_permission_lifts_the_step_ceiling(self):
+        self.builder.usage.step_ceiling = 80
+        self.builder.usage.paid_allowed = True
+        records = self.run_turns([init(), window_event(0.95), result()])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(self.client.interrupts, 0)
+
+    def test_negative_no_step_ceiling_set_never_stops_on_the_percentage(self):
+        # Every session but a Claude builder's build and fix steps leaves it unset.
+        records = self.run_turns([init(), window_event(0.95), result()])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(self.client.interrupts, 0)
+
+    def test_negative_an_unavailable_reading_never_stops_the_step(self):
+        self.builder.usage.step_ceiling = 80
+        info = SimpleNamespace(status="allowed", rate_limit_type="five_hour",
+                               resets_at=2000000, raw={})
+        bare = type("RateLimitEvent", (), {"rate_limit_info": info})()
+        records = self.run_turns([init(), bare, result()])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(self.builder.usage.reading().source, limits.UNAVAILABLE)
         self.assertEqual(self.client.interrupts, 0)
 
     def test_positive_a_pre_tool_use_hook_covers_every_tool(self):
@@ -1892,6 +1946,119 @@ class CodexBuilderTests(unittest.TestCase):
                       RuntimeError("transport closed"))
         self.assertTrue((self.run_dir / "hook-decisions.jsonl").is_file())
         self.assertIsNone(self.clients[-1].registered)
+
+
+class FakeWatch:
+    """Stands in for ``loop.CodexWatch`` beside a Codex builder turn (part (e2b)): once
+    started it makes one reading on its own thread, noting whether the turn was still
+    running, then stops the turn when told to."""
+
+    def __init__(self, stop=True):
+        self.stop = stop
+        self.started = threading.Event()
+        self.read = threading.Event()
+        self.ended = threading.Event()
+        self.read_while_running = None
+        self.stopped = None
+        self.thread = None
+
+    def start(self, interrupt):
+        self.started.set()
+
+        def watch():
+            time.sleep(0.05)  # the turn is under way and the builder's thread is held
+            self.read_while_running = not self.ended.is_set()
+            self.read.set()
+            if self.stop:
+                self.stopped = {"detail": "Codex usage 85% is at or above the 80% ceiling",
+                                "resets_at": 19000, "paid_usage": False}
+                interrupt()
+        self.thread = threading.Thread(target=watch, daemon=True)
+        self.thread.start()
+
+    def turn_ended(self):
+        self.ended.set()
+
+
+@NEEDS_CODEX
+class CodexBuilderWatchTests(unittest.TestCase):
+    """The usage watch beside a Codex builder turn (plan 10.10 item 7, R74-1): the
+    turn's thread is held by ``next_turn_notification``, so the watch runs on its own
+    thread; its reading completes while a deliberately long turn runs, and its
+    interrupt ends the turn as a usage limit. The builder fixtures are
+    ``CodexBuilderTests``' own, borrowed so its tests do not run twice."""
+
+    setUp = CodexBuilderTests.setUp
+    factory = CodexBuilderTests.factory
+    builder = CodexBuilderTests.builder
+    started = CodexBuilderTests.started
+    turn = CodexBuilderTests.turn
+
+    def long_turn(self, client, limit=5.0):
+        """A turn step that holds the builder's thread, as ``next_turn_notification``
+        does, until the turn is interrupted or ``limit`` seconds pass."""
+        interrupted = threading.Event()
+        real = client.turn_interrupt
+
+        def interrupt(thread_id, turn_id):
+            real(thread_id, turn_id)
+            interrupted.set()
+        client.turn_interrupt = interrupt
+        self.held_for = None
+
+        def hold(_client):
+            began = time.monotonic()
+            interrupted.wait(limit)
+            self.held_for = time.monotonic() - began
+        return hold, interrupted
+
+    def test_positive_a_watch_reading_completes_while_a_long_turn_runs_and_its_interrupt_ends_it(self):
+        builder = self.started()
+        watch = FakeWatch()
+        builder.watch = watch
+        hold, interrupted = self.long_turn(self.clients[-1])
+        with self.assertRaises(limits.UsageLimitError) as caught:
+            self.turn(builder, said_codex("working"), hold, turn_done("interrupted"))
+        self.assertTrue(watch.read_while_running)
+        self.assertTrue(interrupted.is_set())
+        self.assertLess(self.held_for, 2.0, "the interrupt ended the long turn")
+        self.assertEqual(self.clients[-1].interrupted, [(THREAD, BUILD_TURN)])
+        self.assertEqual((caught.exception.provider, caught.exception.resets_at,
+                          caught.exception.paid_usage), (limits.CODEX, 19000, False))
+        self.assertIn("80% ceiling", caught.exception.detail)
+        self.assertTrue(watch.ended.is_set())
+
+    def test_negative_a_turn_the_watch_did_not_stop_completes_and_the_watch_is_told(self):
+        builder = self.started()
+        watch = FakeWatch(stop=False)
+        builder.watch = watch
+
+        def wait_for_reading(_client):
+            watch.read.wait(5)
+        record = self.turn(builder, said_codex("working"), wait_for_reading,
+                           said_codex("Done."), turn_done())
+        self.assertEqual(record.final_text, "Done.")
+        self.assertTrue(watch.read_while_running)
+        self.assertTrue(watch.ended.is_set())
+        self.assertEqual(self.clients[-1].interrupted, [])
+
+    def test_rejection_an_interrupted_turn_with_no_watch_stop_is_still_an_error(self):
+        builder = self.started()
+        builder.watch = FakeWatch(stop=False)
+        with self.assertRaisesRegex(providers.ProviderError, "ended interrupted"):
+            self.turn(builder, turn_done("interrupted"))
+
+    def test_negative_a_turn_that_never_starts_never_starts_the_watch(self):
+        builder = self.started()
+        watch = FakeWatch()
+        builder.watch = watch
+
+        def refuse(thread_id, prompt, params):
+            raise RuntimeError("the turn could not start")
+        self.clients[-1].turn_start = refuse
+        with self.assertRaisesRegex(RuntimeError, "could not start"):
+            self.turn(builder)
+        self.assertFalse(watch.started.is_set())
 
 
 class FakeReviewClient(FakeClaudeClient):

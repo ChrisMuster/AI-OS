@@ -1489,22 +1489,19 @@ class TrustedSessionsLoopTests(LoopCase):
                                 "toolsError": None})
                 return {"data": out}
 
-        class FakeCodex:
-            def __init__(self, config):
-                seen.append(config)
-                self._client = FakeRpc(tuple(config.config_overrides))
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
+            def close(self):
                 pass
-        import openai_codex
+
+        def fake_client(config, opened, expired):
+            seen.append(config)
+            client = FakeRpc(tuple(config.config_overrides))
+            opened.append(client)
+            return client
 
         def read(client):
             asked.append(client.overrides)
             return "reading"
-        with mock.patch.object(openai_codex, "Codex", FakeCodex), \
+        with mock.patch.object(loop, "_codex_client", fake_client), \
                 mock.patch.object(limits, "read_codex", read):
             result = loop._read_codex_live(self.root, folder)
         return result, seen, asked
@@ -1541,6 +1538,128 @@ class TrustedSessionsLoopTests(LoopCase):
             self.live_reading(servers, keep_counting=("node_repl",))
         with self.assertRaisesRegex(providers.ProviderError, "cannot be written"):
             self.live_reading([("bad name!", ("t",))])
+
+    def silent_reading(self, hang_in, timeout=0.2):
+        """_read_codex_live where one call never answers until its client is closed, as
+        an app server that stays up but stops answering (R76-1). ``hang_in`` is "start"
+        (the client's initialize), "list" (the server listing) or "usage" (the usage
+        request, which then comes back as a reading, the way a transport failure can).
+        Returns the error raised, the seconds taken and every client's closes."""
+        from openai_codex.errors import TransportClosedError
+        clients = []
+
+        class SilentRpc:
+            def __init__(self):
+                self.closed = threading.Event()
+                self.closes = 0
+
+            def wait_closed(self):
+                if not self.closed.wait(10):
+                    raise AssertionError("the client was never closed")
+
+            def _request_raw(self, method, params=None):
+                if hang_in == "list":
+                    self.wait_closed()
+                    raise TransportClosedError("Codex process is not running")
+                return {"data": []}
+
+            def close(self):
+                self.closes += 1
+                self.closed.set()
+
+        def fake_client(config, opened, expired):
+            client = SilentRpc()
+            clients.append(client)
+            opened.append(client)
+            if hang_in == "start":
+                client.wait_closed()
+                raise TransportClosedError("Codex process is not running")
+            return client
+
+        def read(client):
+            if hang_in == "usage":
+                client.wait_closed()
+            return "reading"
+        started = time.monotonic()
+        with mock.patch.object(loop, "_codex_client", fake_client), \
+                mock.patch.object(limits, "read_codex", read):
+            with self.assertRaises(loop.CodexReadTimeout) as caught:
+                loop._read_codex_live(self.root, "C:/frozen/run", timeout=timeout)
+        return caught.exception, time.monotonic() - started, [c.closes for c in clients]
+
+    def test_rejection_a_reading_that_never_answers_times_out_as_a_failure(self):
+        # R76-1: the SDK waits for an answer with no limit; the reading's timer closes
+        # its client, which wakes the request, and the reading raises within its time.
+        for hang_in in ("start", "list", "usage"):
+            with self.subTest(hang_in=hang_in):
+                error, seconds, closes = self.silent_reading(hang_in)
+                self.assertIn("did not answer within 0.2 seconds", str(error))
+                self.assertIsInstance(error, providers.ProviderError)
+                self.assertLess(seconds, 5)
+                self.assertTrue(closes and all(closes), closes)
+
+    def test_positive_a_reading_in_time_is_returned_and_its_clients_closed(self):
+        closed = []
+
+        class QuickRpc:
+            overrides = ()
+
+            def _request_raw(self, method, params=None):
+                return {"data": []}
+
+            def close(self):
+                closed.append(self)
+
+        def fake_client(config, opened, expired):
+            client = QuickRpc()
+            opened.append(client)
+            return client
+        with mock.patch.object(loop, "_codex_client", fake_client), \
+                mock.patch.object(limits, "read_codex", lambda client: "reading"):
+            self.assertEqual(loop._read_codex_live(self.root, "C:/frozen/run", timeout=5),
+                             "reading")
+        self.assertEqual(len(set(map(id, closed))), 2)
+
+    def test_positive_a_client_is_registered_before_it_starts(self):
+        # The timer can only close a client it can see, and initialize is the first
+        # request that can wait for ever; a timer that ran before the process existed
+        # closes the client as soon as it has started.
+        import openai_codex._initialize_metadata as metadata
+        import openai_codex.client as sdk_client
+        events = []
+
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+
+            def start(self):
+                events.append(("start", self in opened))
+
+            def initialize(self):
+                events.append(("initialize",))
+                return "metadata"
+
+            def close(self):
+                events.append(("close",))
+        for expired_first in (False, True):
+            with self.subTest(expired_first=expired_first):
+                events.clear()
+                opened, expired = [], threading.Event()
+                if expired_first:
+                    expired.set()
+                with mock.patch.object(sdk_client, "CodexClient", FakeClient), \
+                        mock.patch.object(metadata, "validate_initialize_metadata",
+                                          lambda payload: payload):
+                    client = loop._codex_client("config", opened, expired)
+                self.assertEqual(opened, [client])
+                self.assertEqual(events, [("start", True)]
+                                 + ([("close",)] if expired_first else [])
+                                 + [("initialize",)])
+
+    def test_positive_every_reading_is_bounded_by_default(self):
+        self.assertEqual(loop.CODEX_READ_TIMEOUT, 120)
+        self.assertIs(loop.Deps().read_codex, loop._read_codex_live)
+        self.assertIs(loop.Deps().read_codex_watch, loop._read_codex_live)
 
 
 class ResumeDockerTests(LoopCase):

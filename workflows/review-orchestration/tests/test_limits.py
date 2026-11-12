@@ -250,6 +250,47 @@ class CodexReadingTests(unittest.TestCase):
         self.assertEqual(limit.source, limits.LIMIT_REPORTED)
         self.assertIsNotNone(limits.check_ceiling([limit], 80))
 
+    # Part (e), plan 10.10 item 7: every Codex reading keeps both windows apart.
+
+    def test_positive_both_windows_are_kept_apart_beside_the_summary(self):
+        reading = limits.classify_codex(codex_response(LIVE_SHAPE))
+        self.assertEqual(reading.windows,
+                         {"five_hour": {"percent": 12, "resets_at": 1790190000},
+                          "weekly": {"percent": 44, "resets_at": 1790492400}})
+        self.assertEqual(reading.summary(),
+                         "Codex usage 44% (secondary, 10080 min), resets at 1790492400")
+
+    def test_positive_a_window_is_placed_by_its_length_never_by_its_name(self):
+        payload = {"ordinaryUsageAllowed": True, "rateLimits": {
+            "primary": {"usedPercent": 44, "resetsAt": 9, "windowDurationMins": 10080},
+            "secondary": {"usedPercent": 12, "resetsAt": 5, "windowDurationMins": 300}}}
+        reading = limits.classify_codex(codex_response(payload))
+        self.assertEqual(reading.windows, {"five_hour": {"percent": 12, "resets_at": 5},
+                                           "weekly": {"percent": 44, "resets_at": 9}})
+
+    def test_negative_a_window_of_no_or_another_length_is_not_placed(self):
+        payload = {"ordinaryUsageAllowed": True, "rateLimits": {
+            "primary": {"usedPercent": 30, "resetsAt": 5},
+            "secondary": {"usedPercent": 40, "resetsAt": 9, "windowDurationMins": 60}}}
+        reading = limits.classify_codex(codex_response(payload))
+        self.assertEqual((reading.source, reading.percent), (limits.REPORTED, 40))
+        self.assertIsNone(reading.windows)
+
+    def test_positive_a_reported_limit_keeps_its_windows(self):
+        for allowed in (False, None):
+            with self.subTest(ordinaryUsageAllowed=allowed):
+                reading = limits.classify_codex(codex_response(
+                    dict(LIVE_SHAPE, ordinaryUsageAllowed=allowed)))
+                self.assertEqual(reading.source, limits.LIMIT_REPORTED)
+                self.assertEqual(reading.windows["five_hour"]["percent"], 12)
+
+    def test_positive_a_reading_after_a_negative_result_keeps_its_windows(self):
+        run = limits.RunUsage()
+        run.codex(limits.Reading(limits.CODEX, limits.UNAVAILABLE, reason="down"))
+        later = run.codex(limits.classify_codex(codex_response(LIVE_SHAPE)))
+        self.assertEqual(later.source, limits.UNAVAILABLE)
+        self.assertEqual(later.windows["weekly"], {"percent": 44, "resets_at": 1790492400})
+
     def test_negative_closed_transport_is_not_a_usage_answer(self):
         client = FakeClient(error=TransportClosedError("gone"))
         with self.assertRaises(TransportClosedError):
@@ -283,6 +324,41 @@ class CodexReadingTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------- Claude
+
+
+class CodexResetTests(unittest.TestCase):
+    """``codex_reset_between`` (plan 10.10 item 7, part (e)): a reset between two
+    Codex readings told by reset time, not only by a drop."""
+
+    def pair(self, later, earlier=None):
+        earlier = earlier or {"read_at": 1000, "percent": 20, "resets_at": 19000}
+        return limits.codex_reset_between(earlier, later)
+
+    def test_negative_a_used_window_whose_reset_time_stands_still(self):
+        self.assertIs(self.pair({"read_at": 1600, "percent": 25, "resets_at": 19000}), False)
+
+    def test_negative_an_unused_window_whose_reset_time_moves_with_the_clock(self):
+        # Seen in the live check: unused, the reset time moves forward with each reading.
+        earlier = {"read_at": 1000, "percent": 0, "resets_at": 19000}
+        self.assertIs(self.pair({"read_at": 1600, "percent": 0, "resets_at": 19600},
+                                earlier), False)
+
+    def test_rejection_a_reset_time_about_five_hours_on_is_a_reset(self):
+        self.assertIs(self.pair({"read_at": 1600, "percent": 25, "resets_at": 37000}), True)
+
+    def test_rejection_a_reset_time_one_second_past_the_allowance_is_a_reset(self):
+        self.assertIs(self.pair({"read_at": 1600, "percent": 25, "resets_at": 19601}), True)
+
+    def test_rejection_a_fall_in_percentage_is_a_reset(self):
+        self.assertIs(self.pair({"read_at": 1600, "percent": 3, "resets_at": 19000}), True)
+
+    def test_negative_an_unknown_time_or_percentage_leaves_it_unknown(self):
+        for key in ("read_at", "percent", "resets_at"):
+            later = {"read_at": 1600, "percent": 25, "resets_at": 19000}
+            later[key] = None
+            with self.subTest(missing=key):
+                self.assertIsNone(self.pair(later))
+        self.assertIsNone(self.pair({"read_at": 1600, "percent": True, "resets_at": 19000}))
 
 
 class ClaudeReadingTests(unittest.TestCase):

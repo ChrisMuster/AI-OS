@@ -427,19 +427,33 @@ def jsonable(obj):
 
 
 async def watch_claude_event(client, usage, message):
-    """Persist an event and interrupt paid overage even if persistence failed."""
+    """Persist an event and interrupt paid overage even if persistence failed.
+
+    During a Claude builder's build or fix step the run also sets ``usage.step_ceiling``
+    (plan 10.10 item 7, the user's decision of 2026-11-10): the first reported reading
+    at or above it interrupts the session the same way, unless the step is permitted
+    paid usage, which lifts the ceiling for its step (item 8). An unavailable reading
+    never stops a step, and every other session leaves the attribute unset."""
     failure = None
     try:
         usage.observe(message)
     except Exception as exc:
         failure = exc
     reading = usage.reading()
-    if reading.reason == "using paid overage" and not getattr(usage, "paid_allowed", False):
+    paid_allowed = getattr(usage, "paid_allowed", False)
+    ceiling = getattr(usage, "step_ceiling", None)
+    detail = None
+    if reading.reason == "using paid overage" and not paid_allowed:
+        detail = "using paid overage"
+    elif (ceiling is not None and not paid_allowed and reading.source == limits.REPORTED
+          and reading.percent is not None and reading.percent >= ceiling):
+        detail = (f"Claude usage {reading.percent:g}% reached the {ceiling:g}% ceiling "
+                  "during the step")
+    if detail is not None:
         try:
             await client.interrupt()
         except Exception:  # the usage stop still takes precedence
             pass
-        detail = "using paid overage"
         if failure is not None:
             detail += f"; saving the event failed: {type(failure).__name__}: {failure}"
         raise limits.UsageLimitError(limits.CLAUDE, detail, reading.resets_at)
@@ -693,6 +707,18 @@ def _note(notification):
     return {"method": notification.method, "payload": data}
 
 
+def watch_stop_error(watch):
+    """The ``UsageLimitError`` for a Codex builder turn the usage watch interrupted
+    (plan 10.10 item 7, part (e)), or None when no watch stopped it. It carries the
+    watch's detail, reset time and whether the stop was about paid usage, so the step
+    ends ``usage-limit`` as a Claude builder's does."""
+    stopped = getattr(watch, "stopped", None)
+    if not stopped:
+        return None
+    return limits.UsageLimitError(limits.CODEX, stopped["detail"], stopped.get("resets_at"),
+                                  paid_usage=stopped.get("paid_usage"))
+
+
 class CodexBuilder:
     """The builder session on Codex, through ``openai-codex``'s ``CodexClient`` (the
     public ``Codex`` class takes no approval handler and no raw thread parameters)."""
@@ -730,6 +756,9 @@ class CodexBuilder:
         # What this launch read back and relied on, for the run record (the chunk (d)
         # short plan, 11.2); set only once every check of the launch has passed.
         self.launch_record = None
+        # The usage watch for the next turn (plan 10.10 item 7, part (e)), set by the
+        # loop: started once the turn has started, told when it ends.
+        self.watch = None
 
     # ------------------------------------------------------------- launch
 
@@ -1073,6 +1102,11 @@ class CodexBuilder:
         events = []
         self.last_messages = events
         problem = None
+        watch = self.watch
+        if watch is not None:
+            # On its own thread for the length of the turn (R74-1): this thread is
+            # held by ``next_turn_notification`` until a notification arrives.
+            watch.start(lambda: client.turn_interrupt(thread_id, turn_id))
         client.register_turn_notifications(turn_id)
         try:
             while True:
@@ -1091,12 +1125,18 @@ class CodexBuilder:
                 except Exception as exc:  # noqa: BLE001 - the turn is ended either way
                     problem += f" (and the turn could not be interrupted: {exc})"
         finally:
+            if watch is not None:
+                watch.turn_ended()
             client.unregister_turn_notifications(turn_id)
             self._after_turn(turn_id)
         if problem is not None:
             raise ProviderError(f"the Codex builder turn was ended: {problem}")
         turn = events[-1]["payload"].get("turn") or {}
         status = turn.get("status")
+        if status == "interrupted":
+            stopped = watch_stop_error(watch)
+            if stopped is not None:
+                raise stopped
         if status == "failed":
             hit = limits.codex_turn_error(turn.get("error"))
             if hit is not None:

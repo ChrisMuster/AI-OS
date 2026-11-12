@@ -87,6 +87,7 @@ import string
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -178,7 +179,34 @@ class TurnCheckError(Exception):
 # ------------------------------------------------------------------ dependencies
 
 
-def _read_codex_live(root, folder=None):
+# How long one Codex usage reading may take, start to answer, before its client is
+# closed and the reading raises (code review R76-1): the SDK waits for an answer with
+# no limit, so an app server that stays up but never answers would otherwise hang the
+# step's check, or the watch and the turn it watches. A healthy reading takes seconds.
+CODEX_READ_TIMEOUT = 120
+
+
+class CodexReadTimeout(providers.ProviderError):
+    """A Codex usage reading that did not answer within its time; a failed reading."""
+
+
+def _codex_client(config, opened, expired):
+    """A started, initialised Codex client, with the steps of ``openai_codex.Codex``'s
+    own constructor, except that it is added to ``opened`` before it starts, so the
+    reading's timer can close it while its ``initialize`` request still waits."""
+    from openai_codex._initialize_metadata import validate_initialize_metadata
+    from openai_codex.client import CodexClient
+    client = CodexClient(config=config)
+    opened.append(client)
+    client.start()
+    if expired.is_set():
+        # The timer ran before the process existed, so it had nothing to close.
+        client.close()
+    validate_initialize_metadata(client.initialize())
+    return client
+
+
+def _read_codex_live(root, folder=None, timeout=None):
     """One Codex usage reading on a fresh, initialised client. No model call.
 
     It never loads the project's configuration (plan 7.6 item 4): its ``cwd`` is the
@@ -186,25 +214,54 @@ def _read_codex_live(root, folder=None):
     reading and removed after it, and plugins and apps are off. Servers from outside the
     project are switched off as at every Codex launch (decision 35, R38-1): a first
     client lists them, a second switches off by name every one that counts and reads
-    them back, and the reading fails if any still counts. ``root`` is not used."""
-    from openai_codex import Codex, CodexConfig
+    them back, and the reading fails if any still counts. ``root`` is not used.
+
+    The whole reading has ``timeout`` seconds (``CODEX_READ_TIMEOUT`` by default, R76-1):
+    a timer then closes every client it opened, which wakes a waiting request with a
+    transport failure, and the reading raises ``CodexReadTimeout`` whatever came back."""
+    from openai_codex import CodexConfig
+    timeout = CODEX_READ_TIMEOUT if timeout is None else timeout
     empty = None if folder else tempfile.mkdtemp(prefix="book-dragon-usage-")
+    opened, expired = [], threading.Event()
+
+    def expire():
+        expired.set()
+        for client in list(opened):
+            client.close()
+
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
     try:
         cwd = str(folder or empty)
         base = (providers.PLUGINS_OFF, providers.APPS_OFF)
-        with Codex(CodexConfig(cwd=cwd, config_overrides=base)) as first:
-            listed = first._client._request_raw("mcpServerStatus/list", {})
+        first = _codex_client(CodexConfig(cwd=cwd, config_overrides=base), opened, expired)
+        listed = first._request_raw("mcpServerStatus/list", {})
+        first.close()
         off = providers.servers_off(listed)
-        with Codex(CodexConfig(cwd=cwd, config_overrides=(*base, *off))) as codex:
-            extra = providers.counting_servers(
-                codex._client._request_raw("mcpServerStatus/list", {}))
-            if extra:
-                raise providers.ProviderError("the usage reading's Codex client has an "
-                                              "MCP server in force: " + ", ".join(extra))
-            return limits.read_codex(codex._client)
+        client = _codex_client(CodexConfig(cwd=cwd, config_overrides=(*base, *off)),
+                               opened, expired)
+        extra = providers.counting_servers(client._request_raw("mcpServerStatus/list", {}))
+        if extra:
+            raise providers.ProviderError("the usage reading's Codex client has an "
+                                          "MCP server in force: " + ", ".join(extra))
+        reading = limits.read_codex(client)
+    except Exception as exc:
+        if expired.is_set():
+            raise CodexReadTimeout(f"the Codex usage reading did not answer within "
+                                   f"{timeout} seconds") from exc
+        raise
     finally:
+        timer.cancel()
+        for opened_client in opened:
+            opened_client.close()
         if empty is not None:
             shutil.rmtree(empty, ignore_errors=True)
+    if expired.is_set():
+        # A transport failure can come back as an unavailable reading, not an error.
+        raise CodexReadTimeout(f"the Codex usage reading did not answer within "
+                               f"{timeout} seconds")
+    return reading
 
 
 # What Codex answers when the usage reading is made inside its sandbox (probed on
@@ -290,6 +347,12 @@ class Deps:
     make_builder: Callable = None
     make_reviewer: Callable = None
     read_codex: Callable = None
+    # The readings taken while a Codex builder's step runs (plan 10.10 item 7, part
+    # (e)): a fresh client each time, as ``read_codex``, which it defaults to; kept
+    # apart so a test can script them without moving the readings before each step.
+    read_codex_watch: Callable = None
+    # The watch's waits are its schedule's seconds times this; 1 but in the tests.
+    watch_scale: float = 1.0
     run_checks: Callable = None
     baseline_checks: Callable = None
     category_a: Callable = None
@@ -359,6 +422,8 @@ class Deps:
             self.inventory = worktree.inventory
         if self.read_codex is None:
             self.read_codex = _read_codex_live
+        if self.read_codex_watch is None:
+            self.read_codex_watch = self.read_codex
         if self.run_checks is None:
             self.run_checks = checks_mod.run_all
         if self.baseline_checks is None:
@@ -436,6 +501,102 @@ def _reading_record(reading, now):
             "resets_at": reading.resets_at, "read_at": now}
 
 
+SEGMENT_COMPLETED = "completed"
+SEGMENT_INTERRUPTED = "interrupted"
+
+
+def _five_hour(reading):
+    """The five-hour window's (percent, resets_at) carried by this event itself, or
+    None. Only the event's own raw form is read, never the windows kept from earlier
+    events, so an event about another window cannot repeat an old figure."""
+    raw = reading.raw if isinstance(reading.raw, dict) else {}
+    unified = raw.get("unifiedWindows")
+    window = unified.get("five_hour") if isinstance(unified, dict) else None
+    if isinstance(window, dict):
+        util, resets = window.get("utilization"), window.get("resetsAt")
+    elif raw.get("rateLimitType") == "five_hour":
+        util, resets = raw.get("utilization"), raw.get("resetsAt")
+    else:
+        return None
+    if not isinstance(util, (int, float)) or isinstance(util, bool):
+        return None
+    return round(util * 100, 1), resets
+
+
+def _note_five_hour(record, reading):
+    """Add one event's five-hour reading to a segment record: the first and last
+    readings, how many there were, and every drop between two readings (a reset), kept
+    as the readings either side so the segment's rise can be added up piece by piece."""
+    found = _five_hour(reading)
+    if found is None:
+        return
+    percent, resets = found
+    window = record.get("five_hour")
+    if window is None:
+        record["five_hour"] = {"first": percent, "last": percent, "readings": 1,
+                               "drops": [], "resets_at": resets}
+        return
+    if percent < window["last"]:
+        window["drops"].append({"from": window["last"], "to": percent})
+    window["last"] = percent
+    window["readings"] += 1
+    window["resets_at"] = resets
+
+
+def _segment_turns(turn, messages):
+    """A segment's turns: the result message's ``num_turns``, from the completed turn
+    or, for one that failed, from a result message in its transcript (a turn-limit stop
+    has one). None where there is no result message."""
+    value = getattr(turn, "num_turns", None)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("_type") == "ResultMessage":
+            value = message.get("num_turns")
+            return value if isinstance(value, int) and not isinstance(value, bool) else None
+    return None
+
+
+def _codex_windows(reading):
+    """A Codex reading's windows kept apart (plan 10.10 item 7, part (e)), as recorded
+    in ``state.json`` beside its summary, or None where it carried none."""
+    windows = getattr(reading, "windows", None)
+    return json.loads(json.dumps(windows)) if windows else None
+
+
+def _codex_segment_reading(reading, read_at, at):
+    """One Codex reading as a segment keeps it (plan 10.10 item 10, part (e)): when it
+    was read, which reading it was (``at``), and its five-hour window's percentage and
+    reset time; or, where it carried no five-hour window, a failed reading naming why."""
+    five = (getattr(reading, "windows", None) or {}).get(limits.FIVE_HOUR)
+    if five is None:
+        why = (reading.reason if reading.source == limits.UNAVAILABLE and reading.reason
+               else "the reading carried no five-hour window")
+        return {"at": at, "read_at": read_at, "failed": why}
+    return {"at": at, "read_at": read_at, "percent": five["percent"],
+            "resets_at": five["resets_at"]}
+
+
+def _note_codex_reading(record, entry):
+    """Add one Codex reading to a segment's ``five_hour``: every reading in order, a
+    failed one included, and between each reading that answered and the one before it
+    that answered, a reset (``resets``) or a reset the test cannot rule out
+    (``unknown_resets``), told by ``limits.codex_reset_between``, with the two readings
+    either side."""
+    window = record.get("five_hour")
+    if window is None:
+        window = record["five_hour"] = {"readings": [], "resets": [], "unknown_resets": []}
+    answered = [earlier for earlier in window["readings"] if "failed" not in earlier]
+    window["readings"].append(entry)
+    if "failed" in entry or not answered:
+        return
+    found = limits.codex_reset_between(answered[-1], entry)
+    if found is None:
+        window["unknown_resets"].append({"before": answered[-1], "after": entry})
+    elif found:
+        window["resets"].append({"before": answered[-1], "after": entry})
+
+
 def _last_claude(state):
     saved = state.get("claude_last_reading")
     return (limits.Reading(limits.CLAUDE, saved["source"],
@@ -462,6 +623,349 @@ def _usage_stop(readings, ceiling, *, allow_paid=False):
                 return limits.check_ceiling([reading], ceiling)
         return None
     return limits.check_ceiling(readings, ceiling)
+
+
+def _stop_evidence(step, stop):
+    """A ``usage-limit`` stop's evidence from a ``limits.LimitStop``."""
+    return {"step": step, "provider": stop.provider, "detail": stop.reason,
+            "reading": stop.reading.summary(), "resets_at": stop.reading.resets_at,
+            "paid_usage": (_paid_overage(stop.reading) or
+                           stop.reading.reason == "ordinaryUsageAllowed is null or absent")}
+
+
+def codex_stop(reading, step, *, permitted, ceiling, state):
+    """The evidence for stopping a Codex step on ``reading``, or None (plan 10.10
+    items 1, 3 and 8): ``ordinaryUsageAllowed`` false, which always stops; then, unless
+    the step is permitted paid usage, the permission absent and the ceiling; then,
+    unpermitted, a credit snapshot missing from the reading, one recorded at preflight
+    that cannot be tracked, one changed since preflight, and the included allowance
+    reached with credits next. ``state`` is the run's, for the snapshot recorded at
+    preflight. The check before a Codex step and the watch during a Codex builder's
+    step both call it (R71-1)."""
+    stop = _usage_stop([reading], ceiling, allow_paid=permitted)
+    if stop is not None:
+        return _stop_evidence(step, stop)
+    if permitted:
+        return None
+    now = credit_snapshot(reading)
+    recorded = state.get("credits")
+    then = recorded or {}
+    if now is None:
+        return {"step": step, "provider": limits.CODEX, "resets_at": None,
+                "detail": "the Codex credit snapshot is missing from the reading "
+                          f"({reading.summary()})", "paid_usage": True}
+    # A preflight whose next step did not use Codex records the snapshot as read,
+    # trackable or not (plan 10.10 item 3, R42-2); an untrackable one stops the first
+    # later Codex step.
+    unusable = untrackable(recorded) if "credits" in state else None
+    if unusable is not None:
+        return {"step": step, "provider": limits.CODEX, "resets_at": None,
+                "detail": "the Codex credit snapshot recorded at preflight could "
+                          f"not be tracked ({unusable})", "paid_usage": True}
+    differs = [key for key in ("hasCredits", "unlimited", "balance")
+               if now.get(key) != then.get(key)]
+    if differs:
+        return {"step": step, "provider": limits.CODEX, "resets_at": None,
+                "detail": "the Codex credit snapshot changed since preflight ("
+                          + ", ".join(f"{key} {then.get(key)!r} -> {now[key]!r}"
+                                      for key in differs) + ")",
+                "paid_usage": True}
+    if _reached_type(reading) and now.get("hasCredits"):
+        return {"step": step, "provider": limits.CODEX, "resets_at": reading.resets_at,
+                "detail": "Codex reports its included allowance "
+                          f"reached ({_reached_type(reading)}) with credits next",
+                "paid_usage": True}
+    return None
+
+
+# The watch during a Codex builder's step (plan 10.10 item 7, part (e)): its schedule,
+# in seconds, and how each reading is judged. E2b runs it beside the turn.
+WATCH_FIRST = 120
+WATCH_MIN = 60
+WATCH_MAX = 600
+WATCH_RETRY = 60
+# How long the watch waits for the turn's interrupt to be answered before taking it as
+# failed (code review R77-1): the SDK waits for the reply with no limit.
+WATCH_INTERRUPT_TIMEOUT = 60
+
+WATCH_GO = "go"
+WATCH_RETRY_ACTION = "retry"
+WATCH_STOP = "stop"
+
+
+@dataclass(frozen=True)
+class WatchDecision:
+    """What the watch does after one reading: ``go`` on (the next reading at
+    ``delay`` seconds, None for the schedule's own), ``retry`` a failed reading after
+    ``delay``, or ``stop`` the step with ``stop`` as its evidence. ``failure`` names a
+    failed reading, recorded whatever the action."""
+
+    action: str
+    stop: dict | None = None
+    failure: str | None = None
+    delay: int | None = None
+
+
+def _watch_view(reading, negative):
+    """A watch reading as the run's unavailable latch sees it (R73-2): the watch never
+    sets the latch, but one already held from a reading before a step binds it as it
+    binds that step, so a reported reading is read as ``RunUsage`` would read it, with
+    no ceiling, while the credit and hard-refusal checks still apply."""
+    if negative is None:
+        return reading
+    held = limits.RunUsage()
+    held.codex_negative = negative
+    return held.codex(reading)
+
+
+def judge_watch_reading(answer, step, *, permitted, ceiling, state, negative=None,
+                        failed_before=None):
+    """Judge one watch reading, in the order of plan 10.10 item 7 (R73-1).
+
+    ``answer`` is the reading, or the exception its request raised. First an answer
+    with ``ordinaryUsageAllowed`` false stops, permission or not, whatever else it
+    lacks. Then a failed reading (one that raised, or an answer with no credit
+    snapshot, an unavailable reading with no answer included; R72-1): with paid-usage
+    permission it never stops and the next reading comes at ``WATCH_MAX``; without,
+    the first is retried after ``WATCH_RETRY`` and a second in a row
+    (``failed_before`` naming the first) stops the step, naming both. Otherwise the
+    reading is judged by ``codex_stop``, the rules a Codex step is judged by before it
+    starts, under the latch the run already holds (``negative``, never set here)."""
+    if (isinstance(answer, limits.Reading) and answer.source == limits.LIMIT_REPORTED
+            and answer.reason == "ordinaryUsageAllowed is false"):
+        return WatchDecision(WATCH_STOP,
+                             stop=_stop_evidence(step, limits.check_ceiling([answer],
+                                                                            ceiling)))
+    failure = None
+    if isinstance(answer, Exception):
+        failure = f"{type(answer).__name__}: {answer}"
+    elif credit_snapshot(answer) is None:
+        failure = f"the reading carried no credit snapshot ({answer.summary()})"
+    if failure is not None:
+        if permitted:
+            return WatchDecision(WATCH_GO, failure=failure, delay=WATCH_MAX)
+        if failed_before is None:
+            return WatchDecision(WATCH_RETRY_ACTION, failure=failure, delay=WATCH_RETRY)
+        return WatchDecision(WATCH_STOP, failure=failure, stop={
+            "step": step, "provider": limits.CODEX, "resets_at": None,
+            "detail": "two Codex usage readings in a row failed during the step "
+                      f"({failed_before}; then {failure})", "paid_usage": True})
+    stop = codex_stop(_watch_view(answer, negative), step, permitted=permitted,
+                      ceiling=ceiling, state=state)
+    if stop is not None:
+        return WatchDecision(WATCH_STOP, stop=stop)
+    return WatchDecision(WATCH_GO)
+
+
+def next_watch_delay(readings, ceiling):
+    """Seconds to the next watch reading (plan 10.10 item 7), from a Codex segment's
+    readings so far (``_codex_segment_reading``'s form): the last two that answered
+    give the rise per minute and the room left to the ceiling a projected time to the
+    ceiling, and the next reading comes at half of it, between ``WATCH_MIN`` and
+    ``WATCH_MAX``. Fewer than two, a rise of zero or less, or a reset between them
+    that is found or cannot be ruled out (``limits.codex_reset_between``) gives
+    ``WATCH_MAX``; no room left gives ``WATCH_MIN``. The first reading of a step, at
+    ``WATCH_FIRST``, and a retry, at ``WATCH_RETRY``, are not this function's."""
+    answered = [entry for entry in readings if "failed" not in entry]
+    if len(answered) < 2:
+        return WATCH_MAX
+    earlier, later = answered[-2], answered[-1]
+    if limits.codex_reset_between(earlier, later) is not False:
+        return WATCH_MAX
+    rise = later["percent"] - earlier["percent"]
+    minutes = (later["read_at"] - earlier["read_at"]) / 60
+    if rise <= 0 or minutes <= 0:
+        return WATCH_MAX
+    room = ceiling - later["percent"]
+    if room <= 0:
+        return WATCH_MIN
+    half = room / (rise / minutes) * 60 / 2
+    return int(min(max(half, WATCH_MIN), WATCH_MAX))
+
+
+class CodexWatch:
+    """The usage watch during one Codex builder turn (plan 10.10 item 7, part (e)).
+
+    The builder starts it once the turn has started (``start``, given a function that
+    interrupts the turn) and tells it when the turn ends (``turn_ended``); it runs on
+    its own thread for the length of the turn (R74-1), since the builder's thread is
+    held by the SDK until each notification arrives. Its first reading comes at
+    ``WATCH_FIRST``, then on ``next_watch_delay``'s schedule, a retry after
+    ``WATCH_RETRY``; each is read on ``Deps.read_codex_watch``, judged by
+    ``judge_watch_reading`` under the run's unavailable latch only if one is already
+    held (it never sets it, R73-2), and added to the segment. A stop decided while the
+    turn is still running, judged when the decision is made, interrupts it and is kept
+    in ``stopped`` (R73-3, R74-2); one decided after the turn ended interrupts
+    nothing and is recorded as ``would_stop``. An interrupt that raises, or is not
+    answered within ``WATCH_INTERRUPT_TIMEOUT`` (R77-1), is not a stop (R76-2): it is
+    recorded in ``watch_interrupt_failed``, and the watch reads again
+    after ``WATCH_RETRY`` and tries again at the next stop, ``stopped`` kept so a turn
+    that was interrupted after all still ends as that stop. ``finish``, called by the
+    loop once the turn is over however it ended, joins the thread and makes the
+    turn-end reading (R72-2), except after a stop that interrupted the turn, whose
+    stopping reading is its last; it carries a failure the watch was about to retry
+    into that reading, and retries a failed turn-end reading once after
+    ``WATCH_RETRY`` (R76-3). Nothing is saved while the turn runs (the check after the
+    turn compares two inventories either side of it); the segment is saved when it
+    closes.
+    """
+
+    def __init__(self, run, step, segment):
+        self.run = run
+        self.step = step
+        self.segment = segment
+        self.permitted = _permits(run.state.get("paid_usage_pending"), step)
+        self.ceiling = run.settings["usage_ceiling_percent"]
+        self.negative = run.usage.codex_negative
+        self.scale = run.deps.watch_scale
+        self.stopped = None
+        self.interrupted = False
+        self.delays = []
+        self._failed_before = None
+        self._interrupt = None
+        self._thread = None
+        self._running = False
+        self._lock = threading.Lock()
+        self._ended = threading.Event()
+
+    def start(self, interrupt):
+        self._interrupt = interrupt
+        with self._lock:
+            self._running = True
+        self._thread = threading.Thread(target=self._watch, daemon=True,
+                                        name=f"codex-watch-{self.step}")
+        self._thread.start()
+
+    def turn_ended(self):
+        with self._lock:
+            self._running = False
+        self._ended.set()
+
+    def _wait(self, seconds):
+        """Wait ``seconds`` of the schedule; True once the turn has ended."""
+        self.delays.append(seconds)
+        return self._ended.wait(seconds * self.scale)
+
+    def _note(self, entry):
+        with self._lock:
+            _note_codex_reading(self.segment, entry)
+
+    def _read_and_judge(self, at, failed_before):
+        """One reading made, recorded and judged. Anything that goes wrong in it is a
+        failed reading, never lost (R74-1)."""
+        try:
+            answer = self.run.deps.read_codex_watch(self.run.root,
+                                                    self.run.state.get("frozen_dir"))
+        except Exception as exc:  # noqa: BLE001 - a failed reading
+            answer = exc
+        now = self.run.deps.now()
+        try:
+            decision = judge_watch_reading(answer, self.step, permitted=self.permitted,
+                                           ceiling=self.ceiling, state=self.run.state,
+                                           negative=self.negative,
+                                           failed_before=failed_before)
+        except Exception as exc:  # noqa: BLE001 - judged as a failed reading
+            answer = exc
+            decision = judge_watch_reading(exc, self.step, permitted=self.permitted,
+                                           ceiling=self.ceiling, state=self.run.state,
+                                           negative=self.negative,
+                                           failed_before=failed_before)
+        if decision.failure is not None:
+            self._note({"at": at, "read_at": now, "failed": decision.failure})
+        else:
+            self._note(_codex_segment_reading(answer, now, at))
+            self.run._keep_codex_five_hour(answer)
+        return decision
+
+    def _watch(self):
+        delay = WATCH_FIRST
+        while not self._wait(delay):
+            failed_before = self._failed_before
+            try:
+                decision = self._read_and_judge("watch", failed_before)
+            except Exception as exc:  # noqa: BLE001 - a failure in the watch itself
+                # Treated as a failed reading, under the same retry rule (R74-1).
+                decision = judge_watch_reading(exc, self.step, permitted=self.permitted,
+                                               ceiling=self.ceiling, state=self.run.state,
+                                               negative=self.negative,
+                                               failed_before=failed_before)
+                self._note({"at": "watch", "read_at": None, "failed": decision.failure})
+            if decision.action == WATCH_STOP:
+                if self._stop(decision.stop):
+                    return
+                # The interrupt failed (R76-2): read again soon and stop again then.
+                self._failed_before, delay = None, WATCH_RETRY
+                continue
+            if decision.action == WATCH_RETRY_ACTION:
+                # Kept on the watch, so a turn ending before the retry hands it to
+                # ``finish`` (R76-3).
+                self._failed_before, delay = decision.failure, decision.delay
+                continue
+            self._failed_before = None
+            with self._lock:
+                readings = list((self.segment.get("five_hour") or {}).get("readings", []))
+            delay = decision.delay or next_watch_delay(readings, self.ceiling)
+
+    def _stop(self, evidence):
+        """Act on a stop: True when the watch is done, False when the turn runs on
+        because its interrupt raised (R76-2)."""
+        with self._lock:
+            if not self._running:
+                self.segment["would_stop"] = evidence
+                return True
+            # Set before the interrupt, so a turn that ends interrupted finds it.
+            self.stopped = evidence
+        try:
+            self._call_interrupt()
+        except Exception as exc:  # noqa: BLE001 - recorded; the watch goes on
+            with self._lock:
+                self.segment.setdefault("watch_interrupt_failed", []).append(
+                    {"error": f"{type(exc).__name__}: {exc}", "stop": evidence})
+            return False
+        with self._lock:
+            self.interrupted = True
+            self.segment["watch_stop"] = evidence
+        return True
+
+    def _call_interrupt(self):
+        """The turn's interrupt on a helper thread, given ``WATCH_INTERRUPT_TIMEOUT``
+        (R77-1): an interrupt never answered raises ``TimeoutError``, a failed interrupt
+        like one that raised. The helper is left waiting; the builder's client wakes it
+        when it closes, and an interrupt answered late still ends the turn as the stop,
+        ``stopped`` being kept."""
+        outcome = {}
+
+        def call():
+            try:
+                self._interrupt()
+            except BaseException as exc:  # noqa: BLE001 - handed to the watch
+                outcome["error"] = exc
+
+        helper = threading.Thread(target=call, daemon=True,
+                                  name=f"codex-interrupt-{self.step}")
+        helper.start()
+        helper.join(WATCH_INTERRUPT_TIMEOUT * self.scale)
+        if helper.is_alive():
+            raise TimeoutError("the interrupt was not answered within "
+                               f"{WATCH_INTERRUPT_TIMEOUT} seconds")
+        if "error" in outcome:
+            raise outcome["error"]
+
+    def finish(self):
+        self.turn_ended()
+        if self._thread is not None:
+            self._thread.join()
+        if self.interrupted:
+            return
+        decision = self._read_and_judge("turn-end", self._failed_before)
+        if decision.action == WATCH_RETRY_ACTION:
+            # The turn is over, so this wait cannot be cut short by its end (R76-3).
+            self.delays.append(decision.delay)
+            time.sleep(decision.delay * self.scale)
+            decision = self._read_and_judge("turn-end", decision.failure)
+        if decision.action == WATCH_STOP:
+            with self._lock:
+                self.segment["would_stop"] = decision.stop
 
 
 def _effective_last(state, now, *, user_resume=False):
@@ -529,8 +1033,42 @@ def _grant_paid(run, reading):
     step = next_step_name(run)
     run.state.setdefault("paid_usage", []).append({
         "step": step, "at": _now_text(), "codex": reading.summary(),
+        "codex_windows": _codex_windows(reading),
         "claude": _last_claude(run.state).summary()})
     run.state["paid_usage_pending"] = step
+
+
+def builder_turn_limit(run):
+    """The Claude builder's turn limit for the build and fix steps (plan 10.10 item 9):
+    the one the last ``--max-turns`` gave, else the run's resolved setting."""
+    given = run.state.get("max_turns_builder")
+    if given:
+        return given["value"]
+    return run.settings.get("max_turns", {}).get(
+        "builder", providers.DEFAULT_MAX_TURNS["builder"])
+
+
+def max_turns_refusal(run):
+    """Why ``--max-turns`` cannot be given for this run, or None: a Codex builder
+    takes no turn limit (plan 10.10 item 9)."""
+    builder = run.settings["roles"]["builder"]
+    if builder != limits.CLAUDE:
+        return (f"--max-turns sets the Claude builder's turn limit, and run "
+                f"{run.state['run_id']} is built by {builder}, which takes no turn limit")
+    return None
+
+
+def set_max_turns(run, value, command, *, dry_run=False):
+    """Record a ``--max-turns`` given with ``command`` (plan 10.10 item 9), for the
+    build and fix steps from this command on; a dry run says what it would set and
+    sets nothing. The caller has already checked ``max_turns_refusal``."""
+    if dry_run:
+        print(f"--max-turns would set the Claude builder's turn limit to {value} for the "
+              f"build and fix steps (now {builder_turn_limit(run)}); nothing was set.")
+        return
+    run.state["max_turns_builder"] = {"value": value, "command": command,
+                                      "at": _now_text()}
+    run.save()
 
 
 class UsageRefused(RunRefused):
@@ -1138,6 +1676,12 @@ class Run:
                 limits.CODEX, limits.UNAVAILABLE, reason=source.get("codex_reason"),
                 raw=source.get("codex_raw"))
         self.builder = None
+        # The segment record of the Claude builder turn in progress, if any (plan 10.10
+        # item 10): the five-hour readings of its rate-limit events go into it.
+        self._segment = None
+        # The Codex reading made before the current step, as a segment keeps it: a
+        # Codex builder segment's first reading (plan 10.10 item 10, part (e)).
+        self._codex_before_step = None
 
     @property
     def approver(self):
@@ -1284,6 +1828,13 @@ class Run:
                 self.state["claude_unknown_reset_resume"] = False
             self.end(sr.USAGE_LIMIT, stop)
             return
+        # The ceiling during a step (plan 10.10 item 7): a Claude builder's build and
+        # fix steps only, whose session a resume continues; the watch skips it when
+        # the step is permitted paid usage.
+        self.claude_usage.step_ceiling = (
+            self.settings["usage_ceiling_percent"]
+            if provider == limits.CLAUDE and (step == "build" or step.startswith("fix"))
+            else None)
         try:
             if step == "build":
                 await self.build()
@@ -1298,9 +1849,11 @@ class Run:
                 self._interrupted(step)
             self.state.pop("paid_usage_pending", None)
             self.claude_usage.paid_allowed = False
+            paid = getattr(exc, "paid_usage", None)
             self.end(sr.USAGE_LIMIT, {"step": step, "provider": exc.provider,
                                       "detail": exc.detail, "resets_at": exc.resets_at,
-                                      "paid_usage": "paid overage" in exc.detail})
+                                      "paid_usage": ("paid overage" in exc.detail
+                                                     if paid is None else bool(paid))})
         except Exception as exc:  # a provider, a check or a reply failed
             if step != INTENT_FINAL:
                 self._interrupted(step)
@@ -1315,6 +1868,7 @@ class Run:
             if provider == limits.CLAUDE:
                 self.state["claude_unknown_reset_resume"] = False
             self.claude_usage.paid_allowed = False
+            self.claude_usage.step_ceiling = None
             if permitted and self.state["status"] == sr.RUNNING:
                 # A permitted step establishes the next Codex credit comparison.
                 try:
@@ -1375,6 +1929,8 @@ class Run:
 
     def note_claude_event(self, reading):
         self.state["claude_last_reading"] = _reading_record(reading, self.deps.now())
+        if self._segment is not None:
+            _note_five_hour(self._segment, reading)
         # Persist before another model request can run, including when the current
         # session or probe later fails after this event.
         self.save()
@@ -1384,6 +1940,7 @@ class Run:
         source, as plan 10.10 item 1 asks: ``usage_source.codex`` is "unavailable",
         with the reason and the raw response, from the first reading that was, and it
         stays so for the rest of the run (review finding R2-4)."""
+        self._keep_codex_five_hour(reading)
         reading = self.usage.codex(reading)
         source = self.state.setdefault("usage_source", {})
         if reading.source == limits.UNAVAILABLE:
@@ -1395,6 +1952,17 @@ class Run:
         else:
             source.setdefault("codex", "reported")
         return reading
+
+    def _keep_codex_five_hour(self, reading):
+        """Keep the latest five-hour Codex reading as ``codex_last_five_hour``
+        (percentage, reset time, when read), as ``claude_last_reading`` is kept for
+        Claude (plan 10.10 item 7, part (e)). A reading without the five-hour window,
+        a weekly-only one included, leaves it as it was."""
+        five = (getattr(reading, "windows", None) or {}).get(limits.FIVE_HOUR)
+        if five is not None:
+            self.state["codex_last_five_hour"] = {"percent": five["percent"],
+                                                  "resets_at": five["resets_at"],
+                                                  "read_at": self.deps.now()}
 
     def readings(self):
         codex = self.note_codex(self.deps.read_codex(self.root,
@@ -1411,9 +1979,12 @@ class Run:
         before a Claude step. The two planners, a step using both, are checked one
         provider after the other (``planning.planners``)."""
         self._probe_for_step = None
+        self._codex_before_step = None
         permitted = _permits(self.state.get("paid_usage_pending"), step)
         codex = self.note_codex(self.deps.read_codex(self.root,
                                                      self.state.get("frozen_dir")))
+        self._codex_before_step = _codex_segment_reading(codex, self.deps.now(),
+                                                         "before-step")
         last = _effective_last(self.state, self.deps.now(),
                                user_resume=bool(self.state.get("claude_unknown_reset_resume")))
         if not self.state.get("claude_last_reading"):
@@ -1445,6 +2016,7 @@ class Run:
                         detail["probe_on_overage"] = True
                     self.state.setdefault("readings", []).append({
                         "step": step, "codex": codex.summary(),
+                        "codex_windows": _codex_windows(codex),
                         "claude": latest.summary(), "usage_probe": detail})
                 raise
             claude = probe.reading
@@ -1454,50 +2026,20 @@ class Run:
                     and not permitted):
                 self._probe_for_step["probe_on_overage"] = True
             self.state["claude_unknown_reset_resume"] = False
-        entry = {"step": step, "codex": codex.summary(), "claude": claude.summary()}
+        entry = {"step": step, "codex": codex.summary(),
+                 "codex_windows": _codex_windows(codex), "claude": claude.summary()}
         if probe is not None:
             entry["usage_probe"] = dict(self._probe_for_step)
         self.state.setdefault("readings", []).append(entry)
+        ceiling = self.settings["usage_ceiling_percent"]
+        if stop is None and provider == limits.CODEX:
+            # The Codex rules, shared with the watch during a Codex builder's step
+            # (plan 10.10 item 7, R71-1), so the two cannot drift apart.
+            return codex_stop(codex, step, permitted=permitted, ceiling=ceiling,
+                              state=self.state)
         if stop is None:
-            own = claude if provider == limits.CLAUDE else codex
-            stop = _usage_stop([own], self.settings["usage_ceiling_percent"],
-                               allow_paid=permitted)
-        if stop is not None:
-            return {"step": step, "provider": stop.provider, "detail": stop.reason,
-                    "reading": stop.reading.summary(), "resets_at": stop.reading.resets_at,
-                    "paid_usage": (_paid_overage(stop.reading) or
-                                   stop.reading.reason ==
-                                   "ordinaryUsageAllowed is null or absent")}
-        if provider == limits.CODEX and not permitted:
-            now = credit_snapshot(codex)
-            recorded = self.state.get("credits")
-            then = recorded or {}
-            if now is None:
-                return {"step": step, "provider": limits.CODEX, "resets_at": None,
-                        "detail": "the Codex credit snapshot is missing from the reading "
-                                  f"({codex.summary()})", "paid_usage": True}
-            # A preflight whose next step did not use Codex records the snapshot as
-            # read, trackable or not (plan 10.10 item 3, R42-2); an untrackable one
-            # stops the first later Codex step.
-            unusable = untrackable(recorded) if "credits" in self.state else None
-            if unusable is not None:
-                return {"step": step, "provider": limits.CODEX, "resets_at": None,
-                        "detail": "the Codex credit snapshot recorded at preflight could "
-                                  f"not be tracked ({unusable})", "paid_usage": True}
-            differs = [key for key in ("hasCredits", "unlimited", "balance")
-                       if now.get(key) != then.get(key)]
-            if differs:
-                return {"step": step, "provider": limits.CODEX, "resets_at": None,
-                        "detail": "the Codex credit snapshot changed since preflight ("
-                                  + ", ".join(f"{key} {then.get(key)!r} -> {now[key]!r}"
-                                              for key in differs) + ")",
-                        "paid_usage": True}
-            if _reached_type(codex) and now.get("hasCredits"):
-                return {"step": step, "provider": limits.CODEX, "resets_at":
-                        codex.resets_at, "detail": "Codex reports its included allowance "
-                        f"reached ({_reached_type(codex)}) with credits next",
-                        "paid_usage": True}
-        return None
+            stop = _usage_stop([claude], ceiling, allow_paid=permitted)
+        return _stop_evidence(step, stop) if stop is not None else None
 
     # -------------------------------------------------------------- builder
 
@@ -1506,7 +2048,13 @@ class Run:
         that reports a launch record (a Codex builder, the chunk (d) short plan, 11.2)
         has it stored in the run record with that step before any turn runs."""
         if self.builder is None:
-            self.builder = self.deps.make_builder(self.settings, self.approver, self.root,
+            settings = self.settings
+            if self.state.get("max_turns_builder"):
+                # A --max-turns given for the run (plan 10.10 item 9); the saved
+                # settings.json keeps the limit the run started with.
+                settings = {**settings, "max_turns": {**settings.get("max_turns", {}),
+                                                      "builder": builder_turn_limit(self)}}
+            self.builder = self.deps.make_builder(settings, self.approver, self.root,
                                                   self.state.get("builder_session"),
                                                   self.run_dir, self.claude_usage)
             await self.builder.start()
@@ -1525,20 +2073,68 @@ class Run:
         a turn, ``worktree.TURN_RECORD_WRITES``), any change in either repository's git
         state, or any change to the frozen hook folder ends the run ``error``."""
         if not getattr(builder, "needs_turn_check", False):
+            segment = (self._open_segment(step, builder.provider)
+                       if builder.provider == limits.CLAUDE else None)
+            # Anything that is not an Exception (Ctrl+C, a cancelled task) leaves the
+            # segment ``interrupted``, as a process killed outright does.
+            ended, turn = SEGMENT_INTERRUPTED, None
             try:
-                return await builder.turn(step, prompt)
+                turn = await builder.turn(step, prompt)
+                ended = SEGMENT_COMPLETED
+                return turn
+            except limits.UsageLimitError:
+                ended = sr.USAGE_LIMIT
+                raise
+            except Exception:
+                ended = sr.ERROR
+                raise
             finally:
                 self._record_callbacks(step, builder)
+                if segment is not None:
+                    self._close_segment(step, segment, builder, ended, turn)
+        # A Codex builder's turn is a segment too (plan 10.10 item 10, part (e)), its
+        # first reading the one made before the step and its last the turn's end.
+        segment = self._open_segment(step, builder.provider)
+        ended, turn = SEGMENT_INTERRUPTED, None
+        try:
+            turn = await self._checked_turn(step, builder, prompt, segment)
+            ended = SEGMENT_COMPLETED
+            return turn
+        except limits.UsageLimitError:
+            ended = sr.USAGE_LIMIT
+            raise
+        except Exception:
+            ended = sr.ERROR
+            raise
+        finally:
+            self._close_segment(step, segment, builder, ended, turn)
+
+    async def _checked_turn(self, step, builder, prompt, segment):
+        """A Codex builder's turn with the check after it and the usage watch beside it
+        (``CodexWatch``), whose ``finish`` makes the turn-end reading as soon as the turn
+        is over, however it ended (R72-2). A turn ended by something that is not an
+        ``Exception``, such as Ctrl+C, has none."""
         edit_paths, git_dir = self.state["edit_paths"], self.state["git_dir"]
         started = time.time()
         before = self.deps.inventory(self.root, git_dir, self.deps.category_a(self.root))
         frozen = frozen_state(builder.frozen_dir)
         spent = time.time() - started
         turn, failure = None, None
+        # The usage watch beside the turn (plan 10.10 item 7, part (e)). Only a Codex
+        # builder's build and fix steps come here.
+        watch = CodexWatch(self, step, segment)
+        builder.watch = watch
         try:
             turn = await builder.turn(step, prompt)
         except Exception as exc:  # noqa: BLE001 - compared first, then raised again
             failure = exc
+        finally:
+            builder.watch = None
+        try:
+            await asyncio.to_thread(watch.finish)
+        except Exception as exc:  # noqa: BLE001 - the turn's own end goes on unchanged
+            self.state.setdefault("segment_notes", []).append(
+                f"{step}: the usage watch could not finish: {type(exc).__name__}: {exc}")
         started = time.time()
         after = self.deps.inventory(self.root, git_dir, self.deps.category_a(self.root))
         problems = worktree.compare_inventory(before, after, edit_paths, self.run_dir,
@@ -1566,6 +2162,58 @@ class Run:
         if callable(record):
             self.state.setdefault("live", {}).setdefault(
                 "claude_builder_callbacks", []).append({"step": step, **record()})
+
+    def _open_segment(self, step, provider):
+        """Start the record of one segment of a builder's build or fix step (plan 10.10
+        item 10, R67-2), in ``state["segments"][step]``, saved before the turn begins.
+        It reads ``interrupted`` until the turn ends, so a process killed outright still
+        leaves the segment counted. A Claude segment takes the five-hour readings of the
+        rate-limit events that arrive during it; a Codex one (part (e)) starts from the
+        reading made before the step, and its readings are added by the loop."""
+        segments = self.state.setdefault("segments", {}).setdefault(step, [])
+        record = {"segment": len(segments) + 1, "ended": SEGMENT_INTERRUPTED,
+                  "started_at": _now_text(), "ended_at": None, "transcript": None,
+                  "num_turns": None, "assistant_messages": None, "five_hour": None}
+        segments.append(record)
+        if provider == limits.CLAUDE:
+            self._segment = record
+        elif self._codex_before_step is not None:
+            _note_codex_reading(record, dict(self._codex_before_step))
+        self.save()
+        return record
+
+    def _close_segment(self, step, record, builder, ended, turn):
+        """End a segment's record: how it ended, its own transcript
+        (``transcripts/<step>-segment-<n>.json``, never overwritten), its turns and its
+        assistant messages. Best effort, and never raises: it runs while the turn's own
+        result or failure is on its way out, which must reach the caller unchanged."""
+        self._segment = None
+        notes = []
+        try:
+            record["ended"] = ended
+            record["ended_at"] = _now_text()
+            messages = turn.messages if turn is not None else builder.last_messages
+            messages = messages if isinstance(messages, list) else []
+            if messages:
+                name = f"{step}-segment-{record['segment']}.json"
+                _write_json(self.run_dir / "transcripts" / name, messages)
+                record["transcript"] = f"transcripts/{name}"
+            if builder.provider == limits.CLAUDE:
+                record["num_turns"] = _segment_turns(turn, messages)
+                record["assistant_messages"] = sum(
+                    1 for message in messages
+                    if isinstance(message, dict)
+                    and message.get("_type") == "AssistantMessage")
+            # A Codex turn has neither measure (plan 10.10 item 10): both stay None.
+        except Exception as exc:  # noqa: BLE001 - noted, never raised
+            notes.append(f"{step}: segment {record.get('segment')}'s record could not be "
+                         f"completed: {type(exc).__name__}: {exc}")
+        if notes:
+            self.state.setdefault("segment_notes", []).extend(notes)
+        try:
+            self.save()
+        except Exception:  # noqa: BLE001 - the run's own end saves again
+            pass
 
     def _record_review_callbacks(self, step, record, key="claude_reviewer_callbacks"):
         """A Claude reviewer's callback record for this step's round (the A3 proof
@@ -1668,6 +2316,10 @@ class Run:
              **({"usage_probe": self._probe_for_step} if self._probe_for_step else {}),
              "usage": turn.usage, "cost_usd_equivalent": turn.cost_usd_equivalent,
              "wall_seconds": turn.wall_seconds, "summary": (turn.final_text or "")[-4000:]})
+        segments = (self.state.get("segments") or {}).get(step)
+        if segments:
+            # The completed step's record carries its segments too (plan 10.10 item 10).
+            self.state["steps"][-1]["segments"] = json.loads(json.dumps(segments))
         _write_json(self.run_dir / "transcripts" / f"{step}.json", turn.messages)
         self._take_refusals(step, turn.refusals)
 
@@ -2337,6 +2989,7 @@ def write_report(run):
         "addressed": [f["label"] for f in findings if packet_mod.is_addressed(f)],
         "readings": state.get("readings", []), "steps": state.get("steps", []),
         "paid_usage": state.get("paid_usage", []),
+        "max_turns_builder": state.get("max_turns_builder"),
         "claude_last_reading": state.get("claude_last_reading"),
         "refusals": state.get("refusals", []), "live": state.get("live", {}),
         "turn_checks": state.get("turn_checks", []),
@@ -2399,6 +3052,10 @@ def write_report(run):
                       .replace("`", "'") + "`", ""]
     lines += [f"**Findings:** {len(report['open'])} open, {len(report['addressed'])} "
               f"addressed, in `{report['packet']}`.", ""]
+    if report["max_turns_builder"]:
+        given = report["max_turns_builder"]
+        lines += [f"**Builder turn limit:** {given['value']}, given with "
+                  f"`{given['command']}` at {given['at']}.", ""]
     if report["intent"]:
         lines += intent_report_lines(report["intent"]) + [""]
     lines += ["## Steps", ""]
@@ -3108,6 +3765,18 @@ def _approval_reading(run, *, allow_paid=False, providers_=None, user_resume=Fal
     return reading, credits
 
 
+def _dry_run_estimate(run):
+    """``--approve --dry-run``'s size-estimate lines: the fit advice worked out again
+    with the same expiry rule. Advice only, so a failure is a line, never a refusal."""
+    import estimate  # estimate imports this module, so it is imported late
+    try:
+        return estimate.dry_run_lines(estimate.estimate(
+            run.run_dir.parent, run.state["run_id"], run.state, run.settings,
+            now=run.deps.now()))
+    except Exception as exc:  # noqa: BLE001 - advice must never stop the dry run
+        return [f"Size estimate: could not be worked out: {type(exc).__name__}: {exc}."]
+
+
 def approve(run, dry_run=False, allow_paid=False):
     """``start.py --approve <run-id>`` (plan 10.3 step 6): continue a run paused for plan
     approval into the build, in the order the plan numbers.
@@ -3158,6 +3827,9 @@ def approve(run, dry_run=False, allow_paid=False):
               "and start the build. Nothing was changed, and no Docker command was run."
               + (" --allow-paid would permit the build only." if allow_paid else ""),
               file=sys.stderr)
+        # The fit advice worked out again now (plan 10.10 item 10, R69-1); advice only.
+        for line in _dry_run_estimate(run):
+            print(line, file=sys.stderr)
         return None
     # The run is claimed before Docker, approval's first change (plan 10.10 item 5).
     lock = claim(run, seen)

@@ -43,6 +43,11 @@ CLAUDE = "claude"
 CODEX_METHOD = "account/rateLimits/read"
 CODEX_PARAMS = {"excludeResetCreditDetails": True}
 
+# A Codex window's slot by its ``windowDurationMins`` (plan 10.10 item 7, part (e)).
+FIVE_HOUR = "five_hour"
+WEEKLY = "weekly"
+CODEX_WINDOWS = {300: FIVE_HOUR, 10080: WEEKLY}
+
 # Codex's turn-error code for an exhausted plan allowance. ``rateLimitExceeded`` is
 # short-term throttling of requests, not the allowance, and is deliberately not here.
 _CODEX_LIMIT_CODES = {"usageLimitExceeded"}
@@ -58,7 +63,9 @@ class Reading:
     ``resets_at`` (Unix seconds) and ``window`` belong to that same window. Both are
     None where the provider gave none. ``reason`` says why a reading is
     ``limit-reported`` or ``unavailable``. ``raw`` is what the provider sent, for the
-    run report.
+    run report. ``windows`` (Codex only, plan 10.10 item 7, part (e)) keeps each
+    window apart, ``{"five_hour": {"percent", "resets_at"}, "weekly": {...}}``, a
+    window placed by its length alone; None where the reading carried none.
     """
 
     provider: str
@@ -68,6 +75,7 @@ class Reading:
     window: str | None = None
     reason: str | None = None
     raw: Any = None
+    windows: Any = None
 
     def summary(self):
         """One line for the run report."""
@@ -95,11 +103,14 @@ class UsageLimitError(Exception):
     """A provider hit its usage limit mid-session. Caught as its own class, so the run
     ends as ``usage-limit`` rather than ``error``."""
 
-    def __init__(self, provider, detail, resets_at=None):
+    def __init__(self, provider, detail, resets_at=None, paid_usage=None):
         super().__init__(f"{_title(provider)} usage limit reached: {detail}")
         self.provider = provider
         self.detail = detail
         self.resets_at = resets_at
+        # Whether the stop is about paid usage, where the raiser knows (the Codex watch,
+        # part (e)); None leaves the run to tell it from the detail, as before.
+        self.paid_usage = paid_usage
 
 
 def _title(provider):
@@ -152,28 +163,59 @@ def classify_codex(response):
     raw = response.model_dump(by_alias=True, mode="json", exclude_none=True)
     snapshot = response.rate_limits
     windows = []
+    apart = {}
     for name, window in (("primary", snapshot.primary), ("secondary", snapshot.secondary)):
         if window is not None:
             label = name
             if window.window_duration_mins is not None:
                 label = f"{name}, {window.window_duration_mins} min"
             windows.append((label, window.used_percent, window.resets_at))
+            # Placed by its length, never by the name ``primary`` (plan 10.10 item 7).
+            slot = CODEX_WINDOWS.get(window.window_duration_mins)
+            if slot is not None and slot not in apart:
+                apart[slot] = {"percent": window.used_percent,
+                               "resets_at": window.resets_at}
     highest = _highest(windows)
+    apart = apart or None
 
     if response.ordinary_usage_allowed is False:
         label, percent, resets = highest if highest else (None, None, None)
         return Reading(CODEX, LIMIT_REPORTED, percent=percent, resets_at=resets,
-                       window=label, reason="ordinaryUsageAllowed is false", raw=raw)
+                       window=label, reason="ordinaryUsageAllowed is false", raw=raw,
+                       windows=apart)
     if response.ordinary_usage_allowed is None:
         label, percent, resets = highest if highest else (None, None, None)
         return Reading(CODEX, LIMIT_REPORTED, percent=percent, resets_at=resets,
-                       window=label, reason="ordinaryUsageAllowed is null or absent", raw=raw)
+                       window=label, reason="ordinaryUsageAllowed is null or absent", raw=raw,
+                       windows=apart)
     if highest:
         label, percent, resets = highest
         return Reading(CODEX, REPORTED, percent=percent, resets_at=resets,
-                       window=label, raw=raw)
+                       window=label, raw=raw, windows=apart)
     return Reading(CODEX, UNAVAILABLE,
                    reason="the response carried neither usage window", raw=raw)
+
+
+def codex_reset_between(earlier, later):
+    """Whether Codex's five-hour window reset between two readings (plan 10.10 item 7).
+
+    Each argument is ``{"read_at", "percent", "resets_at"}``, the time it was read and
+    its reset time in Unix seconds. ``False`` when none happened: the later reset time
+    is no later than the earlier one plus the time between the readings, and the
+    percentage did not fall. An unused window's reset time moves forward with every
+    reading, which that allows; a real reset moves it about five hours on. ``True``
+    otherwise, and ``None`` when a time or percentage the test needs is unknown.
+    """
+    def known(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    needed = [earlier.get("read_at"), earlier.get("resets_at"), earlier.get("percent"),
+              later.get("read_at"), later.get("resets_at"), later.get("percent")]
+    if not all(known(value) for value in needed):
+        return None
+    if later["percent"] < earlier["percent"]:
+        return True
+    return later["resets_at"] > earlier["resets_at"] + (later["read_at"] - earlier["read_at"])
 
 
 class RunUsage:
@@ -203,7 +245,7 @@ class RunUsage:
                            reason=("an earlier reading in this run was unavailable "
                                    f"({self.codex_negative.reason}), so the ceiling is "
                                    "not applied to Codex for the rest of the run"),
-                           raw=reading.raw)
+                           raw=reading.raw, windows=reading.windows)
         return reading
 
 

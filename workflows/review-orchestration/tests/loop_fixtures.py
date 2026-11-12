@@ -27,6 +27,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 import zipfile
@@ -451,6 +453,11 @@ class Harness:
         self.intent_launch = None  # a Codex intent checker's launch readings, if set
         self.acceptance_exits = {}
         self.acceptance_lines = True
+        # Part (e): the Codex readings made during a builder's step, scripted apart.
+        self.watch_readings = []
+        self.watch_folders = []
+        # The watch's schedule run a thousand times faster: its first reading at 0.12 s.
+        self.watch_scale = 0.001
 
     def start_check(self, root, python, read_only=False):
         """The start-of-run close-out check: clean unless a test says otherwise."""
@@ -513,6 +520,8 @@ class Harness:
         return loop.Deps(make_builder=self.make_builder, make_reviewer=self.make_reviewer,
                          probe_claude=self.probe_claude,
                          read_codex=self.read_codex, run_checks=self.run_checks,
+                         read_codex_watch=self.read_codex_watch,
+                         watch_scale=self.watch_scale,
                          baseline_checks=self.start_check,
                          category_a=lambda root: set(self.cat_a),
                          capture_problems=lambda root, git_dir: [],
@@ -591,6 +600,15 @@ class Harness:
         self.reading_folders.append(folder)
         return self.readings.pop(0) if self.readings else reading()
 
+    def read_codex_watch(self, root, folder=None):
+        """The readings made while a Codex builder's step runs (part (e)), scripted
+        apart from the before-step ones: each entry a reading or an exception to raise."""
+        self.watch_folders.append(folder)
+        answer = self.watch_readings.pop(0) if self.watch_readings else reading()
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
     def run_checks(self, root, edit_paths, directories, commands, python=None, *, run_id,
                    frozen_dir, public_head, image, round_dir):
         self.check_calls.append({"run_id": run_id, "frozen_dir": frozen_dir,
@@ -636,12 +654,26 @@ class FakeBuilder:
     async def turn(self, name, prompt):
         self.prompts.append((name, prompt))
         self.last_messages = [{"_type": "SystemMessage", "data": {"session_id": "s-1"}}]
+        # The usage watch beside a Codex turn (part (e)), started and told the turn's
+        # end as the real CodexBuilder does; its interrupt sets ``interrupted``, which a
+        # long scripted turn can wait on.
+        watch = getattr(self, "watch", None)
+        self.interrupted = threading.Event()
+        if watch is not None:
+            watch.start(self.interrupted.set)
         try:
             text = self.harness.builder_script.pop(0)(prompt)
         except Exception:
             # A real Codex builder keeps what its hook refused when a turn fails.
             self.refusals = list(self.harness.builder_refusals)
             raise
+        finally:
+            if watch is not None:
+                watch.turn_ended()
+        if self.interrupted.is_set():
+            stopped = providers.watch_stop_error(watch)
+            if stopped is not None:
+                raise stopped
         self.session_id = "s-1"
         if self.harness.swapped:
             total = self.harness.codex_totals.pop(0) if self.harness.codex_totals else 700

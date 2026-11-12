@@ -45,6 +45,11 @@ Modes:
                          findings to Addressed, and restart planning from its first
                          step against the revised brief.
 
+--max-turns N, with --run, --approve or --resume: the Claude builder's turn limit for
+the build and fix steps from that command on, recorded in state.json as
+max_turns_builder and named in report.md (plan 10.10 item 9). Without it the run keeps
+the limit it has. Refused for a Codex builder; the reviewer's limit never changes.
+
 --dry-run: with --check-brief, prints the LOG.md entries to stderr instead of writing
 them; with --run, makes every read-only preflight check and says what it would do,
 creating nothing and calling no model; with --resume, --stop, --approve and --amend,
@@ -363,6 +368,9 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
                         help="sleep through a usage limit with a reset time, then resume")
     parser.add_argument("--allow-paid", action="store_true",
                         help="permit paid usage for the next step only")
+    parser.add_argument("--max-turns", type=int, metavar="N",
+                        help="the Claude builder's turn limit for the build and fix steps "
+                             "from this command on (with --run, --approve or --resume)")
     parser.add_argument("--inject-limit", metavar="STEP",
                         help="test only: raise a usage limit at this step, once")
     parser.add_argument("--dry-run", action="store_true",
@@ -376,6 +384,15 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
         parser.error("--allow-paid cannot be used with --wait")
     if args.allow_paid and not (args.run or args.resume or args.approve):
         parser.error("--allow-paid is used only with --run, --resume or --approve")
+    if args.max_turns is not None:
+        # Plan 10.10 item 9: a whole number of at least 1, for these three modes only.
+        if not (args.run or args.resume or args.approve):
+            parser.error("--max-turns is used only with --run, --resume or --approve")
+        if args.max_turns < 1:
+            parser.error("--max-turns must be a whole number of at least 1")
+        if args.run and args.builder == "codex":
+            parser.error("--max-turns sets the Claude builder's turn limit, and a Codex "
+                         "builder takes no turn limit")
     if args.check_brief:
         return brief.run_check(args.check_brief, root=root, log_path=log_path,
                                dry_run=args.dry_run)
@@ -393,6 +410,19 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
     import runrecord
     runs_dir = runs_dir or runrecord.RUNS_DIR
     common = {"root": root, "deps": deps, "log_path": log_path, "runs_dir": runs_dir}
+
+    def refuse_max_turns(run):
+        # Before the mode's own checks, so a refusal changes nothing.
+        if args.max_turns is not None:
+            problem = loop.max_turns_refusal(run)
+            if problem is not None:
+                raise loop.RunRefused([problem])
+
+    def give_max_turns(run, command):
+        # After the mode's checks have passed, so a refused command sets nothing.
+        if args.max_turns is not None:
+            loop.set_max_turns(run, args.max_turns, command, dry_run=args.dry_run)
+
     try:
         if args.advance:
             run = loop.load(args.advance, wait=args.wait, **common)
@@ -407,7 +437,11 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
                              allow_paid=args.allow_paid,
                              **common)
             if run is None:
+                if args.max_turns is not None:
+                    print(f"--max-turns would set the Claude builder's turn limit to "
+                          f"{args.max_turns} for the build and fix steps; nothing was set.")
                 return 0
+            give_max_turns(run, "--run")
             if handover is not None:
                 return handover(run, root=root, wait=args.wait)
         elif args.resume:
@@ -416,14 +450,19 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
             import planning
 
             def act(run):
+                refuse_max_turns(run)
                 # A run in its planning half resumes there (plan 10.3 step 2 and
                 # "Resuming the planning half"), never into the build, with the build's
                 # options (A3 chunk 3, the chunk 3 bullet's first follow-on).
                 if planning.in_planning(run):
-                    return planning.resume(run, dry_run=args.dry_run,
-                                           allow_paid=args.allow_paid, rounds=args.rounds)
-                return loop.resume(run, rounds=args.rounds, dry_run=args.dry_run,
-                                   allow_paid=args.allow_paid)
+                    result = planning.resume(run, dry_run=args.dry_run,
+                                             allow_paid=args.allow_paid,
+                                             rounds=args.rounds)
+                else:
+                    result = loop.resume(run, rounds=args.rounds, dry_run=args.dry_run,
+                                         allow_paid=args.allow_paid)
+                give_max_turns(run, "--resume")
+                return result
             # A user-started --resume --wait waits at its preflight too (plan 10.10
             # item 5), in both halves; a plain --resume is refused as before.
             run, _ = loop.resume_waiting(
@@ -433,7 +472,9 @@ def main(argv=None, *, root=brief.PROJECT_ROOT, log_path=brief.LOG_PATH, deps=No
                 return 0
         elif args.approve:
             run = loop.load(args.approve, wait=args.wait, **common)
+            refuse_max_turns(run)
             loop.approve(run, dry_run=args.dry_run, allow_paid=args.allow_paid)
+            give_max_turns(run, "--approve")
             if args.dry_run:
                 return 0
         elif args.amend:

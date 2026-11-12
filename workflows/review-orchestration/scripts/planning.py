@@ -68,6 +68,7 @@ from datetime import datetime
 from pathlib import Path
 
 import brief as brief_mod
+import estimate
 import limits
 import loop
 import providers
@@ -1079,8 +1080,23 @@ def write_plan_report(run):
                   "approving, amending or stopping.", ""]
     else:  # pragma: no cover - the pause follows the check, which records its result
         lines += ["## Intent check", "", "The intent check has no recorded result.", ""]
+    lines += size_estimate_lines(run)
     (run.run_dir / PLAN_REPORT).write_text("\n".join(lines), encoding="utf-8",
                                            newline="\n")
+
+
+def size_estimate_lines(run):
+    """The plan report's "Size estimate" section (plan 10.10 item 10), worked out from
+    the earlier runs beside this one. It is advice, so a failure to work it out is
+    reported in the section and never stops the pause."""
+    try:
+        result = estimate.estimate(run.run_dir.parent, run.state["run_id"], run.state,
+                                   run.settings, now=run.deps.now())
+        return estimate.report_lines(result)
+    except Exception as exc:  # noqa: BLE001 - advice must never stop the run
+        return ["## Size estimate", "",
+                f"The size estimate could not be worked out: {type(exc).__name__}: {exc}.",
+                "", estimate.ADVICE_ONLY, ""]
 
 
 def review_lines(run):
