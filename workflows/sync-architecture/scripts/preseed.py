@@ -103,10 +103,72 @@ def oversized(paths, project=None, limit=SIZE_LIMIT):
     return sorted(hits, key=lambda row: row[1], reverse=True)
 
 
+def _git_out(args, cwd):
+    """stdout of a git command run in `cwd`, or None if git failed."""
+    try:
+        proc = subprocess.run(["git"] + args, cwd=cwd, capture_output=True,
+                              text=True, encoding="utf-8")
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def captured_unchanged(paths, compare_git_dir, project=None):
+    """Which of `paths` the comparison repository's HEAD holds byte-identical.
+
+    Returns (unchanged, problem). `unchanged` is a set of paths; `problem` is
+    None, or a short reason the question could not be answered, in which case
+    `unchanged` is empty and the caller flags every file as before. Erring
+    towards the flag is the point: an unanswered comparison must never hide a
+    large file.
+
+    Used by the size flag ONLY. The selection and both blocking parts never see
+    this repository, so passing it cannot narrow what the gate checks; that is
+    why it is a separate option from --git-dir, which changes the selection.
+
+    Content, not dates: each file is hashed with `git hash-object` in the same
+    --git-dir / --work-tree pairing the capture's own `add` uses, so attribute
+    and line-ending filters apply identically, and the result is compared with
+    the blob HEAD records for that path. If the two disagreed about filtering,
+    the file would read as changed and be flagged, which is the safe side.
+    """
+    if not paths:
+        return set(), None
+    project = os.path.abspath(project or os.getcwd())
+    gd = os.path.abspath(compare_git_dir)
+    if not Path(gd).exists():
+        return set(), f"no repository at {compare_git_dir}"
+    base = ["--literal-pathspecs", "--git-dir", gd, "--work-tree", project]
+    if _git_out(base + ["rev-parse", "--verify", "-q", "HEAD^{commit}"],
+                project) is None:
+        return set(), "the comparison repository has no commits yet"
+    tree = _git_out(base + ["ls-tree", "-r", "-z", "HEAD", "--"] + list(paths),
+                    project)
+    hashes = _git_out(base + ["hash-object", "--"] + list(paths), project)
+    if tree is None or hashes is None:
+        return set(), "git could not compare the files"
+    recorded = {}
+    for row in tree.split("\0"):
+        if "\t" in row:
+            meta, path = row.split("\t", 1)
+            parts = meta.split()
+            if len(parts) == 3 and parts[1] == "blob":
+                recorded[path] = parts[2]
+    current = hashes.split()
+    if len(current) != len(paths):
+        return set(), "git returned an unexpected number of hashes"
+    return {p for p, h in zip(paths, current) if recorded.get(p) == h}, None
+
+
 # --------------------------------------------------------------------- the gate
 
-def run_checks(specs, git_dir=None, project=None, limit=SIZE_LIMIT):
+def run_checks(specs, git_dir=None, project=None, limit=SIZE_LIMIT,
+               compare_git_dir=None):
     """Run all three parts. Returns (findings, blocked).
+
+    compare_git_dir, when given, is consulted by the size flag alone: an
+    oversized file that repository's HEAD already holds unchanged is reported
+    as INFO rather than flagged. See captured_unchanged.
 
     findings is a list of (level, message) with levels FAIL, FLAG, PASS and INFO.
     blocked is True when the seed commit must not proceed.
@@ -165,12 +227,30 @@ def run_checks(specs, git_dir=None, project=None, limit=SIZE_LIMIT):
     # permanently with nobody looking. An oversized file is not necessarily
     # wrong, only worth seeing, which is why this is a flag.
     big = oversized(selected, project=project, limit=limit)
+    # A large file already captured, unchanged, was flagged on every capture,
+    # and a flag that always fires for an accepted file teaches everyone to
+    # skip the flag. With a comparison repository, those are reported as INFO
+    # instead: still visible, no longer a flag. New, changed, or unanswerable
+    # files are flagged exactly as before.
+    if big and compare_git_dir:
+        known, problem = captured_unchanged(
+            [p for p, _ in big], compare_git_dir, project=project)
+        if problem:
+            findings.append(("INFO", f"could not compare large files against "
+                                     f"{compare_git_dir} ({problem}); every "
+                                     f"large file is flagged"))
+        elif known:
+            findings.append(("INFO", f"{len(known)} large file(s) already "
+                                     f"captured unchanged, not flagged: "
+                                     f"{', '.join(sorted(known))}"))
+        big = [(p, s) for p, s in big if p not in known]
     if big:
         for path, size in big:
             findings.append(("FLAG", f"{path} is {size / 1048576:.2f} MiB, over "
                                      f"the {limit / 1048576:.0f} MiB threshold"))
     else:
-        findings.append(("PASS", f"no selected file exceeds "
+        scope = "new or changed " if compare_git_dir else ""
+        findings.append(("PASS", f"no {scope}selected file exceeds "
                                  f"{limit / 1048576:.0f} MiB"))
 
     total = sum((Path(project or os.getcwd()) / p).stat().st_size
@@ -304,6 +384,60 @@ def self_test():
         finally:
             os.chdir(cwd)
 
+        # ------------------------------------------- already captured, unchanged
+        # The size flag's comparison repository. Before it, a large file the
+        # personal repository already held was flagged on every capture. The
+        # controls that carry the weight are the positive ones: a NEW large
+        # file and a CHANGED one must still be flagged, or the comparison has
+        # become a way to hide exactly what the flag exists to show.
+        known = Path(tmp) / "known"
+        personal = Path(tmp) / "personal.git"
+        _write(known / ".gitignore", "notes/*\n")
+        _write(known / "notes" / "kept.md", "k" * 400)
+        _write(known / "notes" / "edited.md", "e" * 400)
+        try:
+            os.chdir(known)
+            _git(["init", "-q", "."])
+            _git(["add", "-f", ".gitignore"])
+            _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed"])
+            _git(["init", "--bare", "-q", str(personal)])
+            pair = ["--git-dir", str(personal), "--work-tree", "."]
+            _git(pair + ["add", "-f", "notes/kept.md", "notes/edited.md"])
+            _git(pair + ["-c", "user.email=t@t", "-c", "user.name=t",
+                         "commit", "-qm", "capture"])
+            _write(known / "notes" / "edited.md", "E" * 401)
+            _write(known / "notes" / "fresh.md", "f" * 400)
+
+            findings, blocked = run_checks([":(glob)notes/*"], limit=10,
+                                           compare_git_dir=str(personal))
+            flagged = " | ".join(m for l, m in findings if l == "FLAG")
+            info = " | ".join(m for l, m in findings if l == "INFO")
+            check("a large file captured unchanged is not flagged",
+                  "kept.md" not in flagged)
+            check("...and is still named, as INFO",
+                  "already captured unchanged" in info and "kept.md" in info)
+            check("a large file changed since capture is still flagged",
+                  "edited.md" in flagged)
+            check("a new large file is still flagged", "fresh.md" in flagged)
+            check("the comparison does not make the flag block", not blocked)
+
+            findings, _ = run_checks([":(glob)notes/*"], limit=10)
+            flagged = " | ".join(m for l, m in findings if l == "FLAG")
+            check("without a comparison repository every large file is flagged",
+                  all(n in flagged for n in ("kept.md", "edited.md", "fresh.md")))
+
+            empty = Path(tmp) / "empty.git"
+            _git(["init", "--bare", "-q", str(empty)])
+            findings, _ = run_checks([":(glob)notes/*"], limit=10,
+                                     compare_git_dir=str(empty))
+            flagged = " | ".join(m for l, m in findings if l == "FLAG")
+            check("a comparison repository with no commits flags every large "
+                  "file and says why",
+                  "kept.md" in flagged and any(
+                      l == "INFO" and "no commits" in m for l, m in findings))
+        finally:
+            os.chdir(cwd)
+
     # The fixture deliberately uses a small limit, so the real one is asserted
     # here rather than being taken on trust from a control that never used it.
     check("the real threshold is 25 MiB", SIZE_LIMIT == 25 * 1024 * 1024)
@@ -323,6 +457,11 @@ def main():
         description="Pre-seed gate for the personal repository (read-only).")
     ap.add_argument("--git-dir",
                     help="The personal repository's git directory")
+    ap.add_argument("--compare-git-dir",
+                    help="A repository whose HEAD the size flag compares "
+                         "against: a large file it already holds unchanged is "
+                         "reported as INFO, not flagged. Does not change the "
+                         "selection or either blocking check.")
     ap.add_argument("--self-test", action="store_true",
                     help="Prove each blocking part can fail, and that a clean "
                          "tree passes")
@@ -341,7 +480,8 @@ def main():
         print(f"No repository at {args.git_dir}; the gate did not run.")
         return 1
 
-    findings, blocked = run_checks(specs, git_dir=args.git_dir)
+    findings, blocked = run_checks(specs, git_dir=args.git_dir,
+                                   compare_git_dir=args.compare_git_dir)
 
     print("# Pre-seed gate\n")
     for level in ("FAIL", "FLAG", "PASS", "INFO"):

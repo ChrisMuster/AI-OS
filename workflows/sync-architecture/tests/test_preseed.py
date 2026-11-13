@@ -170,6 +170,75 @@ class OversizedTests(unittest.TestCase):
         self.assertEqual(preseed.SIZE_LIMIT, 25 * 1024 * 1024)
 
 
+class CapturedUnchangedTests(unittest.TestCase):
+    """The subject is 'a file the comparison repository's HEAD holds as is'.
+
+    Built the way a real capture is: a work tree and a SEPARATE bare
+    repository joined by --git-dir / --work-tree. The positive controls are the
+    load-bearing ones, because the failure that matters is a large file
+    wrongly reported as already captured, which hides it from the flag.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="preseed-known-")
+        base = Path(self._tmp.name)
+        self.root, self.gd = base / "tree", base / "personal.git"
+        for name in ("kept.md", "edited.md", "x[1].md"):
+            _write(self.root / name, name * 20)
+        self.git("init", "--bare", "-q", str(self.gd))
+        self.pair("add", "-f", "--", "kept.md", "edited.md", "x[1].md")
+        self.pair("-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-qm", "capture")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def git(self, *args):
+        proc = subprocess.run(["git", *args], cwd=self.root, capture_output=True,
+                              text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def pair(self, *args):
+        self.git("--literal-pathspecs", "--git-dir", str(self.gd),
+                 "--work-tree", str(self.root), *args)
+
+    def known(self, paths, gd=None):
+        return preseed.captured_unchanged(paths, gd or str(self.gd),
+                                          project=self.root)
+
+    def test_negative_control_an_unchanged_captured_file_is_known(self):
+        self.assertEqual(self.known(["kept.md"]), ({"kept.md"}, None))
+
+    def test_positive_control_a_changed_file_is_not_known(self):
+        _write(self.root / "edited.md", "different")
+        self.assertEqual(self.known(["edited.md", "kept.md"]),
+                         ({"kept.md"}, None))
+
+    def test_positive_control_a_new_file_is_not_known(self):
+        _write(self.root / "fresh.md", "new")
+        self.assertEqual(self.known(["fresh.md"]), (set(), None))
+
+    def test_positive_control_same_content_at_a_different_path_is_not_known(self):
+        # The comparison is per path: a copy elsewhere is a new file there.
+        _write(self.root / "copy.md", "kept.md" * 20)
+        self.assertEqual(self.known(["copy.md"]), (set(), None))
+
+    def test_glob_characters_in_a_name_are_taken_literally(self):
+        self.assertEqual(self.known(["x[1].md"]), ({"x[1].md"}, None))
+
+    def test_rejection_control_a_missing_repository_answers_nothing(self):
+        known, problem = self.known(["kept.md"], gd=str(self.root / "nope.git"))
+        self.assertEqual(known, set())
+        self.assertIn("no repository", problem)
+
+    def test_rejection_control_an_empty_repository_answers_nothing(self):
+        empty = Path(self._tmp.name) / "empty.git"
+        self.git("init", "--bare", "-q", str(empty))
+        known, problem = self.known(["kept.md"], gd=str(empty))
+        self.assertEqual(known, set())
+        self.assertIn("no commits", problem)
+
+
 # ----------------------------------------------------------------------- the CLI
 
 class PreseedSmokeTests(unittest.TestCase):

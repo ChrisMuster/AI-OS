@@ -1,6 +1,6 @@
 # Sync Architecture
 
-**Last modified:** 2026-09-02
+**Last modified:** 2026-11-13
 
 ## Purpose
 
@@ -46,6 +46,10 @@ replaces "the documents agree" as an assertion with a check that can fail.
 - `scripts/preseed.py` - the pre-seed gate, run immediately before the personal
   repository's seed commit. Rejects a secrets file and any overlap with the public
   tracked set, both blocking, and flags any selected file over 25 MiB, reporting only.
+  Given `--compare-git-dir <personal repository>`, which the capture chain passes, a
+  large file that repository's HEAD already holds unchanged is named as INFO rather
+  than flagged, so an accepted file is not re-flagged on every capture; the option
+  touches the size flag only, never the selection or the blocking checks.
   Its contract is the exit code: the seed commit is chained on it, so the commit cannot
   happen if the gate fails. That matters more here than elsewhere in the project,
   because the personal repository has no hooks at all and so carries no automatic
@@ -310,3 +314,4 @@ while any file is both publicly tracked and matched by an ignore rule.
   tracks are Category A and nothing relies on the default, so C1 was latent rather than
   live and the tightening turns no existing path red.
 - 2026-09-02 - Repaired the review baselines and added the build-authorisation gate that stops them going stale again, at the user's instruction and with their explicit override of the rule that only the AI whose name a baseline carries may refresh it. The `CODEX-*` baselines were found holding the **pre-cut** plans five days after the cut, so the documents Stage A was actually built from had never been anybody's baseline: drift read +701/-904 and +455/-680 lines, which is a whole document rewrite rather than a reviewable diff. Nothing was done wrong at the time, which is why the fix is a rule rather than more care. There was no clause saying a plan finalised for building gets frozen, the baseline moves only at a review event owned by the reviewer, the reviewer never returned for a document round, and drift is reported as information by design, so a five-day-stale baseline and a healthy mid-cycle one produced identical output. Both baselines were reset byte for byte to the personal repository's seed commit c947435, which the Stage A log entries show is the plans as they stood when that build began, and the superseded copies remain recoverable from that repository's HEAD. Drift now reads +109/-92 and +42/-5, which is the genuinely unreviewed material. `run.py` gained `--build-ready`, which requires each plan to be byte-identical to its baseline before a stage is authorised: the same measurement the consistency check already makes, at a severity that depends on the phase, which is the whole of the check. Proved by exit code rather than by prose, with `--build-ready` exiting 1 on the current tree and `--check` exiting 0 on the same tree.
+- 2026-11-13 - The pre-seed size flag stopped repeating for files already captured. `preseed.py --compare-git-dir <personal repository>` reports a large file the repository's HEAD holds unchanged as INFO instead of flagging it; new, changed or unanswerable files are still flagged, and the flag still never blocks. A separate option rather than `--git-dir`, because the capture chain runs the gate without `--git-dir` and passing it would narrow both blocking checks to new files. Detail in `scripts/CONTEXT.md` [[workflows/sync-architecture/scripts/CONTEXT]].
