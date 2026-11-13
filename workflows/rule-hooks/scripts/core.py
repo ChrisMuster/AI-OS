@@ -1132,8 +1132,22 @@ def redirect_targets(command):
 
 
 def posix_basename(arg):
-    """Program basename, handling both slash styles (e.g. /usr/bin/rm -> rm)."""
-    return arg.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    """Program name as every rule compares it: basename in either slash style,
+    lower-cased, with a trailing `.exe` removed (`/usr/bin/rm` -> `rm`,
+    `C:\\Program Files\\Git\\bin\\bash.exe` -> `bash`, `GIT.EXE` -> `git`).
+
+    The case and suffix steps close a bypass of every rule at once, found in
+    the guard-fix batch on 2026-11-13 (fix 5): Windows runs `git.exe`, `RM`
+    and a full-path `bash.exe` as `git`, `rm` and `bash`, but the rules
+    compared the name exactly, so `git.exe push --force`, `rm.exe -rf` and
+    Codex's only working route to Git Bash (`& '...\\bash.exe' -lc '...'`)
+    were allowed while their plain spellings were blocked. Folding in the
+    conservative direction is the right failure: on a case-sensitive system an
+    upper-case `RM` that is not `rm` is at worst refused, never let through.
+    Used for program names only; a file path wants its own basename.
+    """
+    base = arg.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+    return base[:-4] if base.endswith(".exe") and len(base) > 4 else base
 
 
 # Words that can sit in front of a command without being the command. Shared

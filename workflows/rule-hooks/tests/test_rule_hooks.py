@@ -18,6 +18,8 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -351,6 +353,321 @@ class TestB3PersonalData(unittest.TestCase):
         block, _ = decision_for(
             write_ctx("zz_rulehooks_sample.py", "print('hello world')"))
         self.assertIsNone(block)
+
+    def test_allow_the_two_reserved_placeholders_that_were_blocked(self):
+        """A `.invalid` test address and a one-letter home folder are
+        placeholders. Both were blocked in real work before the guard learned
+        that; the strings are assembled so this file does not carry them."""
+        content = ("ADDR = '" + "measurement" + "@" + "book-dragon.invalid"
+                   + "'\nHOME = '" + "C:/" + "Users/X" + "'\n")
+        block, _ = decision_for(write_ctx("zz_rulehooks_sample.py", content))
+        self.assertIsNone(block, block and block.reason)
+
+    def test_positive_real_looking_neighbours_still_blocked(self):
+        for content in ("A = '" + "some" + "one" + "@" + "invalid.co.uk'",
+                        "H = '" + "C:/" + "Users/" + "Xavier/thing'"):
+            with self.subTest(content=content):
+                block, _ = decision_for(
+                    write_ctx("zz_rulehooks_sample.py", content))
+                self.assertIsNotNone(block, content)
+                self.assertEqual(block.rule, "B3")
+
+
+class TestA9ComputedTargetMessage(unittest.TestCase):
+    """A9's computed-target fallback keeps blocking but says what it saw.
+
+    The verdict is unchanged on purpose: a temporary folder cannot be told
+    apart from the project by the code's text (`Path(tmp) / "C:/x"` drops
+    `tmp`, `../` climbs out). Only the message changed, so the tests pin both
+    halves: the block still happens, and the message now names a route the
+    caller can actually take.
+    """
+
+    # The command A9 blocked on 2026-11-10, verbatim from the fire-log: a
+    # test-copy build under tempfile whose path list names CONTEXT.md files.
+    REAL_COMMAND = r'''python - <<'EOF'
+import subprocess, tempfile, sys
+from pathlib import Path
+sys.stdout.reconfigure(encoding="utf-8")
+patch = Path("C:/BookDragon/orchestration-scratch/pre-a5/out-a5-r7/dry-diffs.patch").resolve()
+paths = ["workflows/review-orchestration/scripts/measure.py",
+         "workflows/review-orchestration/tests/test_measure.py",
+         "workflows/review-orchestration/scripts/CONTEXT.md",
+         "workflows/review-orchestration/tests/CONTEXT.md",
+         "workflows/review-orchestration/CONTEXT.md"]
+with tempfile.TemporaryDirectory() as tmp:
+    run = lambda *a, **k: subprocess.run(list(a), capture_output=True, text=True, encoding="utf-8", **k)
+    run("git", "init", "-q", cwd=tmp)
+    for p in paths:
+        blob = run("git", "show", f"HEAD:{p}")
+        if blob.returncode == 0:
+            f = Path(tmp) / p; f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(blob.stdout, encoding="utf-8", newline="\n")
+    args = ["git", "apply", "--unsafe-paths"] + [f"--include={p}" for p in paths] + [str(patch)]
+    r = run(*args, cwd=tmp); print("apply:", r.returncode, r.stderr[:500])
+    total = 0
+    for p in paths:
+        d = run("git", "diff", "--no-index", "--stat", "--", str(Path(tmp) / p), p)
+        print(p, "|", d.stdout.strip().splitlines()[-1] if d.stdout.strip() else "no change")
+EOF'''
+
+    def _a9(self, command):
+        block, _ = decision_for(shell_ctx(command))
+        self.assertIsNotNone(block, command)
+        self.assertEqual(block.rule, "A9")
+        return block.reason
+
+    def test_the_real_temp_copy_command_is_still_blocked_with_the_new_message(self):
+        reason = self._a9(self.REAL_COMMAND)
+        self.assertIn("computed path", reason)
+        self.assertIn("cannot tell", reason)
+        self.assertIn("script file outside the project", reason)
+        self.assertIn("CONTEXT.md", reason)
+
+    def test_positive_a_computed_project_write_is_still_blocked(self):
+        reason = self._a9(
+            "python -c \"p = 'notes.md'; open(p, 'w').write('x')\"")
+        self.assertIn("computed path", reason)
+        self.assertIn("if this edits notes.md in the project, use the Edit "
+                      "tool on it", reason)
+
+    def test_literal_target_message_is_unchanged(self):
+        reason = self._a9("python -c \"open('notes.md', 'w').write('x')\"")
+        self.assertIn("code writing notes.md", reason)
+        self.assertIn("use the Edit tool on notes.md, one call per file", reason)
+        self.assertNotIn("computed path", reason)
+
+    def test_positive_the_offered_route_passes_every_rule(self):
+        """The message's escape route - run a script file - must itself pass,
+        or the block would point at a second dead end."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "build_copy.py"
+            body = self.REAL_COMMAND.split("\n", 1)[1].rsplit("\nEOF", 1)[0]
+            script.write_text(body, encoding="utf-8", newline="\n")
+            command = "python " + script.as_posix()
+            block, _ = decision_for(shell_ctx(command))
+            self.assertIsNone(block, block and block.reason)
+
+
+class TestProgramNameSpellings(unittest.TestCase):
+    """Fix 5 of the guard-fix batch: a program's Windows spellings are the
+    program.
+
+    Every rule compared the program name exactly, so `git.exe push --force`,
+    `rm.exe -rf`, an upper-case `RM`, and Codex's only working route to Git
+    Bash (`& 'C:\\Program Files\\Git\\bin\\bash.exe' -lc '...'`, which the
+    reader saw as a program called `bash.exe` rather than a shell whose `-c`
+    string it must read) were all allowed while their plain spellings were
+    blocked. Measured before the fix: every BLOCKED command below was allowed.
+    The commands are the shapes Codex sends from PowerShell, with the `&` call
+    operator. The must-allow controls matter as much: folding the name must
+    not start refusing ordinary commands in the same spellings.
+    """
+
+    GIT_BASH = r"& 'C:\Program Files\Git\bin\bash.exe' --noprofile --norc -lc "
+    GIT_SH = r"& 'C:\Program Files\Git\bin\sh.exe' -c "
+    GIT_USR = r"C:\Program Files\Git\usr\bin" + "\\"
+
+    BLOCKED = [
+        ("A6", "rm.exe -rf workflows"),
+        ("A6", "& '" + GIT_USR + "rm.exe' -rf workflows"),
+        ("A6", "RM -rf workflows"),
+        ("A6", "git.exe push --force"),
+        ("A6", "GIT push --force"),
+        ("A3", "cat.exe AGENTS.md"),
+        ("A3", "& '" + GIT_USR + "cat.exe' AGENTS.md"),
+        ("A6", "BASH -c 'rm -rf workflows'"),
+        ("A6", GIT_BASH + "'rm -rf workflows'"),
+        ("A3", GIT_BASH + "'cat AGENTS.md'"),
+        ("A7", GIT_SH + "'echo x > .env'"),
+        ("A4", GIT_BASH + "'echo x >> LOG.md'"),
+    ]
+
+    ALLOWED = [
+        GIT_BASH + "'git status'",
+        GIT_BASH + "'python workflows/audit/scripts/run.py --read-only'",
+        "git.exe status",
+        "GIT log --oneline -5",
+        "python.exe workflows/audit/scripts/run.py --read-only",
+        "rm.exe build.tmp",
+        "rg.exe -c TODO README.md",
+    ]
+
+    def test_each_windows_spelling_is_blocked_by_the_plain_spellings_rule(self):
+        for ai in ("codex", "claude"):
+            for rule, command in self.BLOCKED:
+                with self.subTest(ai=ai, command=command):
+                    block, _ = decision_for(shell_ctx(command, ai=ai))
+                    self.assertIsNotNone(block, (ai, command))
+                    self.assertEqual(block.rule, rule, block.reason)
+
+    def test_must_allow_ordinary_commands_in_the_same_spellings(self):
+        for ai in ("codex", "claude"):
+            for command in self.ALLOWED:
+                with self.subTest(ai=ai, command=command):
+                    block, _ = decision_for(shell_ctx(command, ai=ai))
+                    self.assertIsNone(block, block and block.reason)
+
+    def test_program_name_helper(self):
+        cases = {
+            "/usr/bin/rm": "rm",
+            r"C:\Program Files\Git\bin\bash.exe": "bash",
+            "GIT.EXE": "git",
+            "Python3.EXE": "python3",
+            "bash": "bash",
+            ".exe": ".exe",
+            "notes.exe.md": "notes.exe.md",
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(core.posix_basename(word), expected)
+
+
+class TestA9MessagePerAI(unittest.TestCase):
+    """R1-2 of the guard-fix review: every A9 message names a route the
+    blocked AI can take.
+
+    Codex edits with apply_patch and has no Edit tool, and does not read
+    CLAUDE.md, so a block naming either to Codex left it no way through. A
+    `.env` target gets A7's route (the user adds the line by hand) for both
+    AIs, because A7 blocks every AI's edit of that file. The verdicts are
+    unchanged: each command here was blocked before this change and still is.
+    """
+
+    COMPUTED_MD = "python -c \"p = 'notes.md'; open(p, 'w').write('x')\""
+    LITERAL_MD = "python -c \"open('notes.md', 'w').write('x')\""
+    COMPUTED_ENV = "python -c \"p = '.env'; open(p, 'w').write('K=v')\""
+    LITERAL_ENV = "python -c \"open('.env', 'w').write('K=v')\""
+    HIDDEN_MD = "python -c \"open('notes\\x2emd', 'w').write('x')\""
+    SPLIT_MD = "python -c \"open('notes.' 'md', 'w').write('x')\""
+
+    def _a9(self, command, ai):
+        block, _ = decision_for(shell_ctx(command, ai=ai))
+        self.assertIsNotNone(block, (ai, command))
+        self.assertEqual(block.rule, "A9", (ai, command, block.reason))
+        return block.reason
+
+    def test_codex_is_never_told_to_use_the_edit_tool_or_claude_md(self):
+        for command in (self.COMPUTED_MD, self.LITERAL_MD, self.COMPUTED_ENV,
+                        self.LITERAL_ENV, self.HIDDEN_MD, self.SPLIT_MD):
+            with self.subTest(command=command):
+                reason = self._a9(command, "codex")
+                self.assertNotIn("Edit tool", reason)
+                self.assertNotIn("CLAUDE.md", reason)
+
+    def test_codex_document_route_is_apply_patch(self):
+        for command in (self.COMPUTED_MD, self.LITERAL_MD, self.HIDDEN_MD,
+                        self.SPLIT_MD):
+            with self.subTest(command=command):
+                self.assertIn("use apply_patch on", self._a9(command, "codex"))
+
+    def test_claude_document_route_is_still_the_edit_tool(self):
+        self.assertIn("use the Edit tool on notes.md, one call per file",
+                      self._a9(self.LITERAL_MD, "claude"))
+        self.assertIn("CLAUDE.md", self._a9(self.LITERAL_MD, "claude"))
+        self.assertIn("use the Edit tool on it",
+                      self._a9(self.COMPUTED_MD, "claude"))
+        for command in (self.HIDDEN_MD, self.SPLIT_MD):
+            with self.subTest(command=command):
+                self.assertIn("use the Edit tool on it",
+                              self._a9(command, "claude"))
+
+    def test_env_target_gets_the_by_hand_route_for_both_ais(self):
+        """The Edit/apply_patch route would only lead into A7's block."""
+        for ai in ("claude", "codex"):
+            for command in (self.COMPUTED_ENV, self.LITERAL_ENV):
+                with self.subTest(ai=ai, command=command):
+                    reason = self._a9(command, ai)
+                    self.assertIn("only the user changes it", reason)
+                    self.assertIn("rule A7", reason)
+                    self.assertNotIn("Edit tool on .env", reason)
+                    self.assertNotIn("apply_patch on .env", reason)
+
+    def test_positive_the_env_route_is_true_a7_blocks_each_ais_edit(self):
+        """The message says A7 blocks every AI's write to `.env`; show it,
+        so the claim is tested rather than asserted."""
+        for ai in ("claude", "codex"):
+            with self.subTest(ai=ai):
+                block, _ = decision_for(write_ctx(".env", "K=v\n", ai=ai))
+                self.assertIsNotNone(block)
+                self.assertEqual(block.rule, "A7")
+
+    def test_computed_env_write_naming_a_document_still_gets_the_env_route(self):
+        """R2-1: the `.env` advice must not depend on which name the fallback
+        happens to find first. Code writing `DOC=README.md` into `.env`
+        carries both names; both routes are given, for both AIs."""
+        command = ("python -c \"p = '.env'; "
+                   "open(p, 'w').write('DOC=README.md')\"")
+        for ai, tool in (("claude", "the Edit tool"), ("codex", "apply_patch")):
+            with self.subTest(ai=ai):
+                reason = self._a9(command, ai)
+                self.assertIn("only the user changes it", reason)
+                self.assertIn("rule A7", reason)
+                self.assertIn(f"if this edits README.md in the project, "
+                              f"use {tool} on it", reason)
+                self.assertIn("README.md and .env", reason)
+
+    def test_a_template_read_first_does_not_hide_the_env_route(self):
+        """R3-1: `.env.example` (editable) read before `.env` (by hand only)
+        is written. Every `.env`-shaped name gets its own route."""
+        command = ("python -c \"t = open('.env.example').read(); "
+                   "p = '.env'; open(p, 'w').write(t)\"")
+        for ai, tool in (("claude", "the Edit tool"), ("codex", "apply_patch")):
+            with self.subTest(ai=ai):
+                reason = self._a9(command, ai)
+                self.assertIn("only the user changes it", reason)
+                self.assertIn(f"if this edits .env.example in the project, "
+                              f"use {tool} on it", reason)
+                self.assertIn(".env.example and .env", reason)
+
+    def test_literal_writes_to_a_document_and_env_get_both_routes(self):
+        """The same first-match shape in the literal-target branch, found
+        while repairing R3-1: two literal writes, the document first, used
+        to name only the document."""
+        command = ("python -c \"open('notes.md', 'w').write('x'); "
+                   "open('.env', 'w').write('K=v')\"")
+        for ai, tool in (("claude", "the Edit tool"), ("codex", "apply_patch")):
+            with self.subTest(ai=ai):
+                reason = self._a9(command, ai)
+                self.assertIn("code writing notes.md and .env", reason)
+                self.assertIn("only the user changes it", reason)
+                self.assertIn(f"if this edits notes.md in the project, "
+                              f"use {tool} on notes.md, one call per file",
+                              reason)
+
+    def test_hidden_document_and_env_names_both_get_routes(self):
+        """The third first-match site: `_hidden_documents` returns every
+        hidden name, and the message used only the first."""
+        command = ("python -c \"open('notes\\x2emd', 'w').write('x'); "
+                   "open('\\x2eenv', 'w').write('K=v')\"")
+        reason = self._a9(command, "codex")
+        self.assertIn("document names notes.md and .env without", reason)
+        self.assertIn("use apply_patch on it", reason)
+        self.assertIn("only the user changes it", reason)
+
+    def test_repeated_names_are_listed_once(self):
+        command = ("python -c \"p = '.env'; q = '.env'; "
+                   "open(p, 'w').write('.env')\"")
+        reason = self._a9(command, "codex")
+        self.assertEqual(reason.count("only the user changes it"), 1)
+        self.assertIn("alongside the document name .env\n", reason)
+
+    def test_document_only_computed_write_message_is_unchanged(self):
+        """The control: with no `.env` name in the code, the message is the
+        single-document one, with no `.env` advice and no plural."""
+        reason = self._a9(self.COMPUTED_MD, "claude")
+        self.assertNotIn("only the user changes it", reason)
+        self.assertIn("alongside the document name notes.md\n", reason)
+        self.assertIn("because notes.md appears in the code", reason)
+
+    def test_env_example_is_an_ordinary_document_route(self):
+        """`.env.example` is the file A7 says is safe to edit, so it keeps the
+        edit-tool route rather than the by-hand one."""
+        reason = self._a9(
+            "python -c \"p = '.env.example'; open(p, 'w').write('K=')\"",
+            "codex")
+        self.assertIn("use apply_patch on it", reason)
+        self.assertNotIn("only the user changes it", reason)
 
 
 class TestA2TrialWarnOnly(unittest.TestCase):
@@ -1181,6 +1498,164 @@ class TestGroupingReachesEveryShellRule(unittest.TestCase):
                 block, _ = decision_for(shell_ctx(command))
                 self.assertIsNotNone(block, command)
                 self.assertEqual(block.rule, "A6")
+
+
+class TestA3MessagePerAI(unittest.TestCase):
+    """A3's block message names a route the blocked AI actually has.
+
+    Codex has no Read, Grep or Glob tool, so a message telling it to use them
+    left the block with no path Codex could take. **The load-bearing test is
+    the positive control**: every form the Codex message recommends is run
+    back through every rule as Codex and must pass. Without it the message
+    could recommend a command another rule then refuses, which is the same
+    dead end in a new place.
+    """
+
+    # One blocked command per dedicated program, each naming a real file.
+    BLOCKED = {
+        "cat": "cat README.md",
+        "head": "head -30 README.md",
+        "tail": "tail -n 15 README.md",
+        "grep": "grep -n TODO README.md",
+        "sed": "sed -n '5p' README.md",
+        "find": "find workflows/audit -name '*.md'",
+    }
+
+    def _block(self, command, ai):
+        block, _ = decision_for(shell_ctx(command, ai=ai))
+        self.assertIsNotNone(block, (ai, command))
+        self.assertEqual(block.rule, "A3")
+        return block.reason
+
+    def test_codex_message_names_no_claude_tool(self):
+        for prog, command in self.BLOCKED.items():
+            with self.subTest(prog=prog):
+                reason = self._block(command, "codex")
+                for claude_only in ("Read tool", "Grep tool", "Glob tool",
+                                    "CLAUDE.md"):
+                    self.assertNotIn(claude_only, reason)
+
+    def test_codex_message_names_the_powershell_or_rg_form(self):
+        expected = {"cat": "Get-Content", "head": "-TotalCount",
+                    "tail": "-Tail", "grep": "rg ", "sed": "apply_patch",
+                    "find": "rg --files"}
+        for prog, needle in expected.items():
+            with self.subTest(prog=prog):
+                self.assertIn(needle, self._block(self.BLOCKED[prog], "codex"))
+
+    def test_claude_message_is_unchanged(self):
+        expected = {"cat": "use the Read tool", "head": "use the Read tool",
+                    "tail": "use the Read tool", "grep": "use the Grep tool",
+                    "sed": "use the Read (or Edit, to change it) tool",
+                    "find": "use the Glob tool"}
+        for prog, needle in expected.items():
+            with self.subTest(prog=prog):
+                reason = self._block(self.BLOCKED[prog], "claude")
+                self.assertIn(needle, reason)
+                self.assertIn("CLAUDE.md", reason)
+
+    def test_positive_every_recommended_codex_form_passes_every_rule(self):
+        """Pull each backticked form out of the Codex message and run it."""
+        seen = 0
+        for prog, command in self.BLOCKED.items():
+            reason = self._block(command, "codex")
+            manual = reason.split("To do it manually:", 1)[1]
+            forms = re.findall(r"`([^`]+)`", manual)
+            self.assertTrue(forms, (prog, manual))
+            for form in forms:
+                runnable = form.replace("PATTERN", "TODO")
+                with self.subTest(prog=prog, form=runnable):
+                    block, _ = decision_for(shell_ctx(runnable, ai="codex"))
+                    self.assertIsNone(block, block and block.reason)
+                    seen += 1
+        self.assertGreaterEqual(seen, len(self.BLOCKED))
+
+    def test_codex_still_blocks_the_read(self):
+        """The message changed, the verdict did not."""
+        for command in self.BLOCKED.values():
+            with self.subTest(command=command):
+                self._block(command, "codex")
+
+    def test_codex_byte_check_is_the_rg_form_not_the_bash_form(self):
+        """R1-1: Codex's shell is PowerShell, where `$'\\r'` is plain text.
+
+        The Codex message must offer the ripgrep escape as its byte check and
+        must not offer the Bash `$'...'` form as something to run (it may name
+        it in prose, saying why not). Claude keeps the Bash form, which its
+        Bash tool reads as intended.
+        """
+        for prog, command in self.BLOCKED.items():
+            with self.subTest(prog=prog):
+                reason = self._block(command, "codex")
+                self.assertIn("rg -c '\\r' ", reason)
+                manual = reason.split("To do it manually:", 1)[1]
+                for form in re.findall(r"`([^`]+)`", manual):
+                    self.assertNotIn("$'", form)
+                self.assertIn("$'\\r'", self._block(command, "claude"))
+
+    def test_codex_byte_check_finds_a_carriage_return_from_powershell(self):
+        """R1-1's live control: what the offered command actually matches.
+
+        Allowing the command is not enough; it has to find the byte. The rg
+        used is the one Codex ships and puts on its own command path, found in
+        Codex's standard install folders; the test skips, saying why, where
+        neither it nor a PATH rg exists. Run through Windows PowerShell where
+        it exists, as Codex runs it, so PowerShell's quoting is under test
+        too. The Bash form is run the same way to show why it was replaced:
+        it returns "no match" on the file that has a carriage return.
+        """
+        rg = _find_rg()
+        if rg is None:
+            self.skipTest("no rg on PATH and no Codex install with its "
+                          "bundled rg.exe")
+        powershell = shutil.which("powershell")
+        tmp = Path(tempfile.mkdtemp(prefix="rule-hooks-r1-1-"))
+        crlf, lf = tmp / "crlf.txt", tmp / "lf.txt"
+        crlf.write_bytes(b"one\r\ntwo\r\n")
+        lf.write_bytes(b"one\ntwo\n")
+
+        def run(pattern_literal, path):
+            if powershell:
+                script = f"& '{rg}' -c {pattern_literal} '{path}'; exit $LASTEXITCODE"
+                argv = [powershell, "-NoProfile", "-Command", script]
+            else:
+                argv = [rg, "-c", "\\r", str(path)]
+            return subprocess.run(argv, capture_output=True, text=True,
+                                  encoding="utf-8", timeout=60)
+
+        found = run("'\\r'", crlf)
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertEqual(found.stdout.strip(), "2")
+        clean = run("'\\r'", lf)
+        self.assertEqual(clean.returncode, 1, clean.stdout + clean.stderr)
+        if powershell:
+            bash_form = run("$'\\r'", crlf)
+            self.assertEqual(bash_form.returncode, 1,
+                             "the Bash form now matches in PowerShell; R1-1's "
+                             "reason for replacing it no longer holds")
+
+
+def _find_rg():
+    """rg on PATH, else the copy Codex bundles in its standard install folders.
+
+    Paths are built from the environment, so no personal folder is written
+    here. Returns a string path or None.
+    """
+    found = shutil.which("rg")
+    if found:
+        return found
+    pattern = ("node_modules/@openai/codex/node_modules/@openai/*/vendor/*/"
+               "codex-path/rg.exe")
+    roots = []
+    if os.environ.get("LOCALAPPDATA"):
+        roots.append(Path(os.environ["LOCALAPPDATA"]) / "Volta" / "tools"
+                     / "image" / "packages" / "@openai" / "codex")
+    if os.environ.get("APPDATA"):
+        roots.append(Path(os.environ["APPDATA"]) / "npm")
+    for root in roots:
+        for hit in sorted(root.glob(pattern)):
+            return str(hit)
+    return None
 
 
 class TestA3RoundThree(unittest.TestCase):
@@ -2585,6 +3060,43 @@ class TestSubprocessContracts(unittest.TestCase):
         self.assertEqual(hook_output["permissionDecision"], "deny")
         self.assertIn("BLOCKED", hook_output["permissionDecisionReason"])
         self.assertIn(".env", hook_output["permissionDecisionReason"])
+
+    def test_codex_a3_block_names_a_codex_route_end_to_end(self):
+        """Through run.py: Codex's deny reason names Get-Content, not Read."""
+        r = self._run("codex", {
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat README.md"},
+            "cwd": str(PROJECT_ROOT)})
+        self.assertEqual(r.returncode, 0)
+        reason = json.loads(r.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"]
+        self.assertIn("Get-Content -Encoding UTF8 README.md", reason)
+        self.assertNotIn("Read tool", reason)
+        allowed = self._run("codex", {
+            "tool_name": "Bash",
+            "tool_input": {"command": "Get-Content -Encoding UTF8 README.md"},
+            "cwd": str(PROJECT_ROOT)})
+        self.assertEqual(allowed.returncode, 0)
+        self.assertEqual(allowed.stdout.strip(), "")
+
+    def test_codex_git_bash_wrapper_is_denied_end_to_end(self):
+        """Fix 5 through run.py, as the live Codex hook sees it: the command
+        inside Codex's full-path Git Bash call is read and denied."""
+        wrapper = TestProgramNameSpellings.GIT_BASH
+        r = self._run("codex", {
+            "tool_name": "Bash",
+            "tool_input": {"command": wrapper + "'rm -rf workflows'"},
+            "cwd": str(PROJECT_ROOT)})
+        self.assertEqual(r.returncode, 0)
+        payload = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(payload["permissionDecision"], "deny")
+        self.assertIn("rm -rf", payload["permissionDecisionReason"])
+        allowed = self._run("codex", {
+            "tool_name": "Bash",
+            "tool_input": {"command": wrapper + "'git status'"},
+            "cwd": str(PROJECT_ROOT)})
+        self.assertEqual(allowed.returncode, 0)
+        self.assertEqual(allowed.stdout.strip(), "")
 
     def test_codex_block_apply_patch_command_field(self):
         r = self._run("codex", {

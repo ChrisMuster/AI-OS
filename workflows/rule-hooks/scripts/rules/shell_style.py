@@ -170,6 +170,32 @@ _TOOL_FOR = {
     "grep": "Grep", "sed": "Read (or Edit, to change it)", "find": "Glob",
 }
 
+# Codex has no Read, Grep or Glob tool: its shell is PowerShell and its file
+# editor is apply_patch. Naming Claude's tools to Codex left the block with no
+# path Codex could actually take, which a hard block is not allowed to do. Each
+# form below is pinned by a test that runs it back through every rule as Codex
+# and requires it to pass, so the message can never recommend something the
+# hooks then refuse. `{file}` is the file the blocked command named.
+_CODEX_FORM_FOR = {
+    "cat": "`Get-Content -Encoding UTF8 {file}`",
+    "head": "`Get-Content -Encoding UTF8 -TotalCount 20 {file}`",
+    "tail": "`Get-Content -Encoding UTF8 -Tail 20 {file}`",
+    "grep": "`rg PATTERN {file}`",
+    "sed": ("`Get-Content -Encoding UTF8 {file}` to read it, or apply_patch "
+            "to change it"),
+    "find": "`rg --files {file}`",
+}
+
+# The byte-level check offered to Codex (R1-1 of the guard-fix review). The
+# allowance A3 gives a Bash `$'\r'` pattern is no use to Codex: its shell is
+# PowerShell, which passes `$'\r'` on as literal text, so the search finds
+# nothing and a file with carriage returns reads as clean. Ripgrep interprets
+# `\r` and `\t` itself, and PowerShell's single quotes pass them through
+# untouched, so this form finds the byte in either shell. A test runs it
+# against a real CRLF file. Moving this to a Python or MCP check is part of the
+# "One way for both AIs" backlog item.
+_CODEX_BYTE_CHECK = "`rg -c '\\r' {file}` (or `'\\t'` for tabs)"
+
 
 def check_forward_slashes(ctx):
     """A2 (trial): a path-shaped backslash in the command -> warn.
@@ -850,6 +876,20 @@ def check_dedicated_tools(ctx):
                     f"stays measurable."
                 ))
             continue
+        if ctx.ai_id == "codex":
+            form = _CODEX_FORM_FOR.get(prog, "`Get-Content -Encoding UTF8 {file}`")
+            return Decision.block(A3_ID, format_block(
+                f"`{prog}` reading {files[0]} from the shell",
+                f"Book Dragon reads files through the prescribed file "
+                f"routes rather than the POSIX read commands, so that every "
+                f"read and write passes the same PreToolUse checks. Going "
+                f"around them is how a personal name reached a tracked file "
+                f"on 2026-09-02.",
+                f"use {form.format(file=files[0])}. If this is a byte-level "
+                f"check, use {_CODEX_BYTE_CHECK.format(file=files[0])}: "
+                f"ripgrep reads the escape itself, so it finds the byte from "
+                f"PowerShell, where the Bash form $'\\r' is plain text and "
+                f"matches nothing."))
         tool = _TOOL_FOR.get(prog, "Read/Grep/Glob")
         return Decision.block(A3_ID, format_block(
             f"`{prog}` reading {files[0]} from the shell",

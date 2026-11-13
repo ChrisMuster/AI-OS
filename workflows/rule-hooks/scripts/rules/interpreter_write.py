@@ -64,8 +64,64 @@ from core import (
     Decision, effective_argv, format_block, heredoc_bodies, nested_commands,
     posix_basename, split_segments,
 )
+from .env_protect import _is_env_target
 
 A9_ID = "A9"
+
+
+def _edit_tool(ai_id):
+    """The file-edit tool the blocked AI actually has (R1-2 of the guard-fix
+    review): Codex edits with apply_patch and has no Edit tool, so a block that
+    named Edit to Codex offered it no route."""
+    return "apply_patch" if ai_id == "codex" else "the Edit tool"
+
+
+def _edit_route(ai_id, target, per_file=False, ref=None):
+    """What to do instead of the blocked write to `target`.
+
+    A `.env` target gets A7's route rather than an edit tool, because A7
+    blocks every AI's edit of that file, so naming an edit tool sent the caller
+    from one block into another.
+    """
+    if _is_env_target(target.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]):
+        return (f"{target} holds credentials and only the user changes it "
+                f"(rule A7 blocks every AI's write to it): give the user the "
+                f"variable name and value and they add the line themselves, "
+                f"or put a placeholder in `.env.example`, which is safe to "
+                f"edit")
+    return (f"use {_edit_tool(ai_id)} on {ref or target}"
+            + (", one call per file" if per_file else ""))
+
+
+def _distinct(names):
+    """`names` in first-seen order with repeats dropped, case-folded as
+    Windows reads a filename."""
+    seen, out = set(), []
+    for name in names:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            out.append(name)
+    return out
+
+
+def _join_names(names):
+    """`a`, `a and b`, `a, b and c`."""
+    return names[0] if len(names) == 1 else (
+        ", ".join(names[:-1]) + " and " + names[-1])
+
+
+def _routes_for(ai_id, names, edits_phrase, per_file, ref):
+    """One route per name, so no name's advice depends on which was found
+    first (R2-1 and R3-1 of the guard-fix review: taking the first match let
+    a document name, then a `.env.example`, hide a `.env` target's by-hand
+    route). `edits_phrase` prefixes each clause when there is more than one,
+    or when the caller always wants the condition stated."""
+    clauses = []
+    for name in names:
+        route = _edit_route(ai_id, name, per_file=per_file, ref=ref)
+        clauses.append(f"if this edits {name} in the project, {route}"
+                       if edits_phrase or len(names) > 1 else route)
+    return "; ".join(clauses)
 
 # Matched on the stem so a version suffix counts: `python3.11` and `node20` run
 # the same code `python3` would. A wrapper in front (`env python3 -c ...`) is
@@ -947,19 +1003,23 @@ def check(ctx):
         # Asked before the write shapes, because it does not depend on them:
         # see `_hidden_documents` for why a spelling that hides the name can
         # also hide the write.
-        hidden = _hidden_documents(chunk)
+        # `_hidden_documents` returns None for code Python cannot parse
+        # (perl, ruby); a crash here is an allow, so None must stay falsy.
+        hidden = _distinct(_hidden_documents(chunk) or [])
         if hidden:
             return Decision.block(A9_ID, format_block(
                 f"inline {posix_basename(interpreters[0][0])} code that builds "
-                f"the document name {hidden[0]} without writing it out",
+                f"the document name{'s' if len(hidden) > 1 else ''} "
+                f"{_join_names(hidden)} without writing it out",
                 "Python assembles this string from pieces, escapes or "
                 "comments, so the command's text never spells the name it "
                 "produces. A name no reader of the command can see is refused "
                 "whether it is written or read, because a spelling that hides "
                 "the name can also hide the write.",
-                "write the filename as a single literal, spelled out in full. "
-                "If it names a project document, use the Edit tool on it "
-                "instead."))
+                f"write the filename as a single literal, spelled out in full. "
+                f"If it names a project document, "
+                f"{_routes_for(ctx.ai_id, hidden, False, False, 'it')} "
+                f"instead."))
 
     writes, splits = _writes(code)
     if not writes:
@@ -978,16 +1038,18 @@ def check(ctx):
             "command contains. The shape is refused rather than assembled, "
             "because assembling it means matching Python's own lexer exactly "
             "and any difference between the two is a way through.",
-            "write the filename as a single literal. If it names a project "
-            "document, use the Edit tool on it instead."))
+            f"write the filename as a single literal. If it names a project "
+            f"document, use {_edit_tool(ctx.ai_id)} on it instead (a `.env` "
+            f"file is changed by the user by hand, never by an AI)."))
 
     if all(target is not None for target in writes):
         # Every write names its target literally, so the question can be asked
         # of the targets rather than of the surrounding text.
-        documents = [t for t in writes if _is_document(t)]
+        documents = _distinct([t for t in writes if _is_document(t)])
         if not documents:
             return None
-        target = documents[0]
+        target = _join_names(documents)
+        routes = _routes_for(ctx.ai_id, documents, False, True, None)
     else:
         # At least one write computes its target - a variable, an f-string, a
         # join - so it cannot be read here. Fall back to the older, blunter
@@ -997,16 +1059,59 @@ def check(ctx):
         # A wrong block costs one retry against a message naming the right
         # tool; a wrong allow costs what the rule was written to prevent.
         # The fallback reads the interpreter's code, not the whole command.
-        match = _MD_RE.search(code) or _ENV_RE.search(code)
-        if not match:
+        # Both kinds of name are looked for, not the first found (R2-1 of the
+        # guard-fix review): a computed `.env` write whose value merely names
+        # a document (`DOC=README.md`) matched the markdown pattern first, so
+        # the message offered the document's edit route and never said `.env`
+        # is the user's to change by hand. Whichever names appear, each gets
+        # its own route, since the code cannot say which one is the target.
+        # Every `.env`-shaped name is kept, not the first (R3-1): a template
+        # read first (`.env.example`, which A7 lets an AI edit) otherwise hid
+        # the protected `.env` written after it. Document names keep the
+        # first only, since every document gets the same route.
+        md_match = _MD_RE.search(code)
+        names = _distinct(([md_match.group(0)] if md_match else [])
+                          + [m.group(0) for m in _ENV_RE.finditer(code)])
+        if not names:
             return None
-        target = match.group(0)
+        target = _join_names(names)
+        routes = _routes_for(ctx.ai_id, names, True, True, "it")
+        # Its own message, because the literal-target one below asserts the
+        # code writes `target`, which here is only a name found in the text.
+        # A write into a temporary copy (a test fixture built under
+        # `tempfile`) lands here too, and telling that caller to "use the Edit
+        # tool on" a file it never meant to touch offered no route at all.
+        # The temporary folder is deliberately NOT recognised as safe:
+        # `Path(tmp) / "C:/x"` discards `tmp`, and `../` climbs out of it, so
+        # the code's text cannot prove where the write lands. The route
+        # offered instead is one the rule already allows by construction: a
+        # script FILE is not inline code, so A9 never reads it.
+        return Decision.block(A9_ID, format_block(
+            f"inline {posix_basename(interpreters[0][0])} code that writes to "
+            f"a computed path, alongside the document name{'s' if len(names) > 1 else ''} {target}",
+            "A9 cannot tell from the command's text where this write lands: "
+            "the target is a variable, a join or an f-string. It blocked "
+            f"because {target} appear{'' if len(names) > 1 else 's'} in the "
+            f"code, and a computed path that "
+            f"reaches a project document goes around {_edit_tool(ctx.ai_id)} "
+            "and the personal-data check that guards it. That is how a "
+            "personal name reached a publicly tracked CONTEXT.md on "
+            "2026-09-02.",
+            f"{routes}. If the write genuinely goes to a temporary "
+            f"copy (a test fixture, a scratch folder), save the code as a "
+            f"script file outside the project, in the session scratchpad or "
+            f"a temp folder, and run it with `python <that file>`: a script "
+            f"file is not inline code, so this rule does not apply to it."))
+    # The CLAUDE.md citation is Claude's alone: Codex does not read that file,
+    # so citing it to Codex named a rule Codex was never given (R1-2).
+    prescribed = (" CLAUDE.md prescribes the Edit tool for modifying files."
+                  if ctx.ai_id != "codex" else "")
     return Decision.block(A9_ID, format_block(
         f"inline {posix_basename(interpreters[0][0])} code writing {target}",
-        "Editing a project document through an interpreter goes around the "
-        "Edit tool, and so around the personal-data check that guards it. That "
-        "is how a personal name reached a publicly tracked CONTEXT.md on "
-        "2026-09-02. CLAUDE.md prescribes the Edit tool for modifying files.",
-        f"use the Edit tool on {target}, one call per file. If the change "
+        f"Editing a project document through an interpreter goes around "
+        f"{_edit_tool(ctx.ai_id)}, and so around the personal-data check that "
+        f"guards it. That is how a personal name reached a publicly tracked "
+        f"CONTEXT.md on 2026-09-02.{prescribed}",
+        f"{routes}. If the change "
         f"genuinely cannot be expressed as an edit, say so and ask rather than "
         f"scripting around it."))
