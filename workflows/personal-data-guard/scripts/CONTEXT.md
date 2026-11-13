@@ -1,6 +1,6 @@
 # Scripts
 
-**Last modified:** 2026-10-07
+**Last modified:** 2026-11-13
 
 ## Purpose
 Holds the personal-data-guard implementation. `run.py` is both a CLI and an importable module: it discovers committable files via git, derives the user's personal markers at runtime from `USER.md` [[USER]] and `.env`, and classifies each text file for emails, personal home paths, the user's name/username, and an optional denylist of personal nouns. The script source is generic - every real marker is read at runtime from local gitignored sources, never baked in - so it never carries personal data and never flags itself.
@@ -38,6 +38,7 @@ python workflows/personal-data-guard/scripts/run.py --check [--json]
 - File discovery depends on `git ls-files`; outside a checkout the script scans nothing and emits one INFO note.
 - Detectors are heuristic. The home-path detector only treats a captured segment as a username if it looks like a real account name (`_is_real_username`), so regex fragments in other scripts' source (for example `/home/[A-Za-z` in a path pattern) are not mistaken for a leak; an unusual layout could still be missed or, rarely, mis-flagged.
 - Email and username allowlists (`ALLOWLIST_EMAIL_DOMAINS`, `PLACEHOLDER_USERS`) are denylist-style: a new placeholder convention not yet listed could produce a false positive until added.
+- Two placeholder rules are general rather than listed. An address whose LAST domain label is a reserved top-level name (`RESERVED_EMAIL_TLDS`: `invalid`, `test`, `example`, `localhost`, from RFC 2606 / 6761) is allowed, since no mailbox under one can belong to anyone; a registrable domain that merely contains one of those words as an inner label is still caught. And a one-character home-folder username is a placeholder (a test fixture's one-letter folder). That second rule could in principle hide a real one-letter account in a home path, but the OS-username check matches the current account name literally and does not go through `_is_real_username`, so the account running the guard is still caught; another person's one-letter account would not be.
 
 ## Revision History
 - 2026-06-25 - Initial creation. Read-only check script with ASCII-safe, runtime-sourced markers; git-scoped discovery; placeholder allowlists for emails and path usernames.
@@ -45,3 +46,4 @@ python workflows/personal-data-guard/scripts/run.py --check [--json]
 - 2026-09-23 - Dependencies line says Python 3.13+, following the project floor raised from 3.9 to 3.13. No behaviour change.
 - 2026-10-07 - Findings gained `file` and `kind` (orchestrator isolation S2): `Finding` became a tuple subclass carrying both, so callers that unpack or compare three items are unchanged, and `--json` adds them to each hit in a file. Run-level INFO notes carry neither, since they are about no file and fit none of the five kinds. Messages unchanged. Contents and Inputs updated; tested in `tests/test_json_fields.py`.
 - 2026-10-07 - Project-root override (orchestrator isolation S3): `run.py` gained `project_root()`, reading `BOOK_DRAGON_ROOT` (a bad value exits 2); the denylist, `USER.md` and `.env` follow the root with the files scanned. Inputs updated; tested in `tests/test_root_override.py`. Then, from code review R9-1 at the user's option A (decision 24), `--json` reports `scanned`, so a caller knows the scan did not run without reading a message.
+- 2026-11-13 - Reserved placeholders stop being flagged, after the guard blocked a measurement test address under `.invalid` and a test fixture's one-letter home folder. `_email_allowed` accepts an address whose last domain label is in `RESERVED_EMAIL_TLDS`, and `_is_real_username` treats a one-character segment as a placeholder. Known Issues records both rules and the one-letter rule's limit; tested in `tests/test_personal_data_guard.py`.

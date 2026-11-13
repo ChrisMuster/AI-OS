@@ -20,7 +20,10 @@ import run  # noqa: E402
 # otherwise flag its own test fixtures (the same trick encoding-guard uses to
 # avoid flagging its own corruption signatures).
 FAKE_USER = "j" + "faketon"
-FAKE_EMAIL = "jane" + "@" + "realmail.test"
+# A registrable-looking domain, not a reserved one: `.test` was used here until
+# reserved top-level names became placeholders, which made this fixture a
+# placeholder too and the "must be caught" tests meaningless.
+FAKE_EMAIL = "jane" + "@" + "realmail.co"
 OTHER_EMAIL = "some" + "one" + "@" + "gmail.com"
 ALT_EMAIL = "x" + "@" + "y.co"
 
@@ -78,6 +81,71 @@ class TestEmailAllowlist(unittest.TestCase):
     def test_real_email_not_allowed(self):
         self.assertFalse(run._email_allowed(FAKE_EMAIL))
         self.assertFalse(run._email_allowed(OTHER_EMAIL))
+
+
+class TestReservedPlaceholders(unittest.TestCase):
+    """Reserved domains and one-letter home folders are placeholders.
+
+    Added after the guard blocked a measurement test address under `.invalid`
+    and a test fixture home path with a one-letter username. **The positive
+    controls carry the weight**: each relaxation is pinned against the nearest
+    real-looking case that must still be caught.
+    """
+
+    def test_reserved_top_level_names_allowed(self):
+        for tld in ("invalid", "test", "example", "localhost"):
+            for addr in ("measurement" + "@" + "book-dragon." + tld,
+                         "t" + "@" + "example." + tld,
+                         "Someone" + "@" + "Host." + tld.upper()):
+                with self.subTest(addr=addr):
+                    self.assertTrue(run._email_allowed(addr), addr)
+
+    def test_positive_reserved_word_as_inner_label_still_caught(self):
+        """Only the LAST label counts: these are registrable domains."""
+        for addr in ("some" + "one" + "@" + "invalid.co.uk",
+                     "some" + "one" + "@" + "test.org.uk",
+                     "some" + "one" + "@" + "localhost.io",
+                     "some" + "one" + "@" + "my-invalid.com",
+                     "some" + "one" + "@" + "mail.testing"):
+            with self.subTest(addr=addr):
+                self.assertFalse(run._email_allowed(addr), addr)
+
+    def test_positive_real_email_still_caught(self):
+        for addr in (OTHER_EMAIL, FAKE_EMAIL):
+            f = run.scan_text("doc.md", f"mail {addr} now", MARKERS)
+            self.assertTrue(any(s == "FAIL" and "email" in m for s, _, m in f),
+                            addr)
+
+    def test_single_letter_home_folder_is_placeholder(self):
+        for line in ("C:/" + "Users/X/fixture", "C:\\" + "Users\\x\\fixture",
+                     "/" + "home/a/project", "/" + "Users/Q/thing"):
+            with self.subTest(line=line):
+                f = run.scan_text("f.md", line, {"name_terms": [],
+                                                 "denylist": []})
+                self.assertEqual([x for x in f if "home path" in x[2]], [])
+
+    def test_positive_two_letter_and_longer_home_folders_still_caught(self):
+        for seg in ("Xa", "Xavier", FAKE_USER):
+            line = "C:/" + "Users/" + seg + "/thing"
+            with self.subTest(seg=seg):
+                f = run.scan_text("f.md", line, {"name_terms": [],
+                                                 "denylist": []})
+                self.assertTrue(any("personal home path" in m
+                                    for _, _, m in f), line)
+
+    def test_positive_one_letter_os_username_still_caught(self):
+        """A real one-letter account is still reported by the OS-username
+        check, which does not go through the home-path placeholder rule."""
+        markers = {"name_terms": [], "denylist": [], "os_user": "Q"}
+        f = run.scan_text("f.md", "C:/" + "Users/Q/thing", markers)
+        self.assertTrue(any(s == "FAIL" and "OS username" in m
+                            for s, _, m in f))
+
+    def test_the_two_strings_that_were_wrongly_blocked_now_pass(self):
+        text = ("address " + "measurement" + "@" + "book-dragon.invalid"
+                + " and path " + "C:/" + "Users/X")
+        f = run.scan_text("f.py", text, {"name_terms": [], "denylist": []})
+        self.assertEqual(f, [])
 
 
 class TestHomePathDetection(unittest.TestCase):

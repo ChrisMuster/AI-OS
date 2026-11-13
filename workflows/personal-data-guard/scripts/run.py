@@ -153,6 +153,14 @@ ALLOWLIST_EMAILS = {
 # Local-part fragments that mark a placeholder address regardless of domain.
 PLACEHOLDER_EMAIL_HINTS = ("example", "your", "placeholder", "user@", "name@")
 
+# Top-level names reserved by RFC 2606 / RFC 6761 so they can never be
+# registered: no mailbox under them can belong to anyone. Matched against the
+# address's LAST label only, so a registrable domain that merely contains one
+# of these words as an inner label (an `invalid` subdomain under `.co.uk`, say)
+# is still caught. Added after the guard blocked a measurement test address
+# under `.invalid`, chosen precisely because it cannot be real.
+RESERVED_EMAIL_TLDS = {"invalid", "test", "example", "localhost"}
+
 
 def _word_re(term: str) -> re.Pattern:
     """Word-boundary, case-insensitive matcher for a literal personal term."""
@@ -166,7 +174,13 @@ _USERNAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*\Z")
 
 
 def _is_real_username(seg: str) -> bool:
+    # A single character is treated as a placeholder (a one-letter home folder
+    # in a test fixture). No real account is let through by this alone: the
+    # OS-username check in scan_text matches the current account name literally
+    # and does not go through this function, so a real one-letter account is
+    # still reported there.
     return (
+        len(seg) > 1 and
         bool(_USERNAME_RE.match(seg))
         and not seg.startswith("<")
         and seg.lower() not in PLACEHOLDER_USERS
@@ -272,6 +286,8 @@ def _email_allowed(addr):
         return True
     domain = low.rsplit("@", 1)[-1]
     if domain in ALLOWLIST_EMAIL_DOMAINS:
+        return True
+    if domain.rsplit(".", 1)[-1] in RESERVED_EMAIL_TLDS:
         return True
     return any(hint in low for hint in PLACEHOLDER_EMAIL_HINTS)
 

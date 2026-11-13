@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import run  # noqa: E402
 
 FAKE_USER = "j" + "faketon"
-FAKE_EMAIL = "jane" + "@" + "realmail.test"
+# Registrable-looking, not reserved: `.test` is now a placeholder domain.
+FAKE_EMAIL = "jane" + "@" + "realmail.co"
 NO_MARKERS = {"name_terms": [], "denylist": []}
 
 # (kind, text that triggers only it, the markers it needs, the message as the
