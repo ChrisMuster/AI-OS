@@ -449,6 +449,192 @@ EOF'''
             self.assertIsNone(block, block and block.reason)
 
 
+class TestA9CommandLineNames(unittest.TestCase):
+    """A9's computed-target fallback searches the command line as well as the
+    code (backlog item, 2026-11-13, the user's option A, with environment
+    prefixes included as option 1).
+
+    A program that takes its target from `sys.argv[1]` or `os.environ["F"]`
+    writes a file whose name is an argument or an `F=notes.md` prefix, never
+    code, and the fallback searched only the code, so every one of these was
+    allowed. Each blocking case is asserted for both AIs. The controls hold
+    the widening to its intended width: only the command line of an
+    interpreter that carries inline code, and only once a write with an
+    unreadable target has been found.
+    """
+
+    ARGV_WRITE = 'import sys\nopen(sys.argv[1], "w", encoding="utf-8").write("x")\n'
+    ENV_WRITE = 'import os\nopen(os.environ["F"], "w", encoding="utf-8").write("x")\n'
+
+    def _verdict(self, command, ai):
+        block, _ = decision_for(shell_ctx(command, ai=ai))
+        return block
+
+    def _blocks(self, command, name):
+        for ai in ("claude", "codex"):
+            block = self._verdict(command, ai)
+            self.assertIsNotNone(block, f"{ai}: {command!r}")
+            self.assertEqual(block.rule, "A9", f"{ai}: {command!r}")
+            self.assertIn(name, block.reason, f"{ai}: {command!r}")
+            self.assertIn("computed path", block.reason)
+
+    def _allows(self, command):
+        for ai in ("claude", "codex"):
+            block = self._verdict(command, ai)
+            self.assertIsNone(block, f"{ai}: {block and block.reason}")
+
+    # --- must block -------------------------------------------------------
+
+    def test_a_heredoc_program_given_a_document_argument(self):
+        self._blocks("python - notes.md <<'EOF'\n" + self.ARGV_WRITE + "EOF",
+                     "notes.md")
+
+    def test_an_argument_written_after_the_heredoc_delimiter(self):
+        """`python - <<'EOF' notes.md` hands notes.md to the program, though
+        the text before `<<` ends at the operator."""
+        self._blocks("python - <<'EOF' notes.md\n" + self.ARGV_WRITE + "EOF",
+                     "notes.md")
+
+    def test_a_dot_env_argument_gets_the_by_hand_route(self):
+        command = "python - .env <<'EOF'\n" + self.ARGV_WRITE + "EOF"
+        self._blocks(command, ".env")
+        for ai in ("claude", "codex"):
+            self.assertIn("only the user changes it",
+                          self._verdict(command, ai).reason)
+
+    def test_a_dash_c_program_given_a_document_argument(self):
+        self._blocks(
+            "python -c 'import sys; open(sys.argv[1], \"w\").write(\"x\")' "
+            "notes.md", "notes.md")
+
+    def test_path_write_text_on_an_argument(self):
+        self._blocks(
+            "python - CONTEXT.md <<'EOF'\nimport sys, pathlib\n"
+            "pathlib.Path(sys.argv[1]).write_text('x')\nEOF", "CONTEXT.md")
+
+    def test_node_given_a_document_argument(self):
+        self._blocks(
+            "node -e 'require(\"fs\").writeFileSync(process.argv[1], \"x\")' "
+            "notes.md", "notes.md")
+
+    def test_an_environment_assignment_in_front(self):
+        self._blocks("F=notes.md python - <<'EOF'\n" + self.ENV_WRITE + "EOF",
+                     "notes.md")
+
+    def test_an_env_wrapper_assignment_in_front(self):
+        self._blocks("env F=notes.md python - <<'EOF'\n" + self.ENV_WRITE
+                     + "EOF", "notes.md")
+
+    def test_the_same_inside_a_shell_dash_c_string(self):
+        # Single quotes in the python, since a double quote would end the
+        # double-quoted `bash -c` string and the specimen would not be the
+        # command it claims to be.
+        self._blocks("bash -c \"F=notes.md python - <<'EOF'\n"
+                     + self.ENV_WRITE.replace('"', "'") + "EOF\"", "notes.md")
+
+    def test_an_attached_dash_c_with_a_document_argument(self):
+        self._blocks(
+            "python -c'import sys; open(sys.argv[1], \"w\").write(\"x\")' "
+            "notes.md", "notes.md")
+
+    def test_r1_1_a_second_heredoc_gets_its_own_arguments(self):
+        """Two heredoc commands opening with the same words: each body is
+        paired with its own command, so the second's `notes.md`, written
+        after its delimiter, is read (R1-1)."""
+        self._blocks("python - <<'EOF'\nprint(1)\nEOF\n"
+                     "python - <<'EOF' notes.md\n" + self.ARGV_WRITE + "EOF",
+                     "notes.md")
+
+    def test_r1_2_a_prefix_on_a_wrapping_shell(self):
+        env_write = self.ENV_WRITE.replace('"', "'")
+        self._blocks("F=notes.md bash -c \"python - <<'EOF'\n" + env_write
+                     + "EOF\"", "notes.md")
+        self._blocks("env F=notes.md bash -c \"python - <<'EOF'\n" + env_write
+                     + "EOF\"", "notes.md")
+
+    def test_r1_2_an_export_earlier_in_the_same_command(self):
+        self._blocks("export F=notes.md; python - <<'EOF'\n" + self.ENV_WRITE
+                     + "EOF", "notes.md")
+
+    def test_r1_2_a_bare_assignment_earlier_in_the_same_command(self):
+        self._blocks("F=.env; python - <<'EOF'\n" + self.ENV_WRITE + "EOF",
+                     ".env")
+
+    # --- must allow -------------------------------------------------------
+
+    def test_control_r1_2_an_assignment_beside_inline_code_with_no_computed_write(self):
+        """Assignments are read only by the computed-target fallback, so a
+        document named in one is ignored when no write needs it."""
+        self._allows("DOC=README.md; python - <<'EOF'\nprint('hello')\nEOF")
+        self._allows("export DOC=README.md; python -c "
+                     "\"open('out.json', 'w').write('x')\"")
+
+    def test_r1_1_each_heredoc_is_paired_with_its_own_command(self):
+        """Asked of the collector directly. The fallback pools every program
+        in the command, as its search of the code always has, so a verdict
+        cannot show WHICH command's words were taken; the words can. The
+        first-match lookup returned the first command's words twice and
+        never `out.json`."""
+        from rules.interpreter_write import _inline_parts
+        from core import split_segments
+        command = ("python - <<'EOF' notes.md\nprint(1)\nEOF\n"
+                   "python - <<'EOF' out.json\n" + self.ARGV_WRITE + "EOF")
+        _, words = _inline_parts(command, split_segments(command))
+        self.assertEqual([w for w in words if "." in w], ["notes.md", "out.json"])
+
+    def test_control_a_non_document_argument(self):
+        self._allows("python - data.json <<'EOF'\n" + self.ARGV_WRITE + "EOF")
+
+    def test_control_a_saved_script_given_a_document_argument(self):
+        self._allows("python render.py notes.md")
+
+    def test_control_a_harmless_prefix_with_a_computed_write(self):
+        self._allows("PYTHONPATH=. python -c 'import sys; "
+                     "open(sys.argv[1], \"w\").write(\"x\")' out.json")
+
+    def test_control_code_that_only_reads_a_document_argument(self):
+        """No write at all, so the fallback is never reached."""
+        self._allows("python - README.md <<'EOF'\nimport sys\n"
+                     "print(open(sys.argv[1], encoding='utf-8').read()[:80])\n"
+                     "EOF")
+
+    def test_control_a_literal_non_document_write_beside_a_document_argument(self):
+        """Every write names its target, so the target decides: the
+        command line is consulted only when a target cannot be read."""
+        self._allows("python - notes.md <<'EOF'\nimport sys\n"
+                     "open('out.json', 'w').write(sys.argv[1])\nEOF")
+
+    def test_control_a_saved_scripts_argument_beside_inline_code(self):
+        """Only an inline-code interpreter's command line is searched: the
+        saved script's `notes.md` is outside A9's scope."""
+        self._allows("python -c 'import sys; open(sys.argv[1], \"w\")' "
+                     "out.json ; python render.py notes.md")
+
+    def test_control_only_an_option_word_is_taken_for_attached_code(self):
+        """The code is left out of the searched words, as itself (`-c CODE`)
+        or attached to its option (`-cCODE`). An ordinary argument that only
+        ENDS with the code's characters is kept. Asked of the helper directly,
+        because no realistic command has a document argument ending in a
+        whole write call, so no end-to-end specimen could tell the two apart."""
+        from rules.interpreter_write import _command_line_words
+        self.assertEqual(
+            _command_line_words(["python", "-c", "md", "notes.md"], ["md"]),
+            ["python", "-c", "notes.md"])
+        self.assertEqual(
+            _command_line_words(["python", "-cmd", "notes.md"], ["md"]),
+            ["python", "notes.md"])
+
+    def test_positive_the_temp_copy_message_is_unchanged(self):
+        """The batch's positive control: the temporary-copy case still blocks
+        with the computed-target message and its script-file route."""
+        block = self._verdict(TestA9ComputedTargetMessage.REAL_COMMAND,
+                              "claude")
+        self.assertIsNotNone(block)
+        self.assertEqual(block.rule, "A9")
+        self.assertIn("script file outside the project", block.reason)
+        self.assertIn("CONTEXT.md", block.reason)
+
+
 class TestProgramNameSpellings(unittest.TestCase):
     """Fix 5 of the guard-fix batch: a program's Windows spellings are the
     program.

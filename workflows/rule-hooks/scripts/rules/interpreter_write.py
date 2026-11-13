@@ -56,6 +56,20 @@ command carrying any write whose target cannot be read falls back to the older
 test. The fail directions are not symmetrical: a wrong block costs one retry
 against a message naming the right tool, and a wrong allow costs what happened
 on 2026-09-02.
+
+**That fallback searches the interpreter's command line as well as its code,
+since 2026-11-13.** A program reading its target from `sys.argv[1]` or
+`os.environ["F"]` names the file in an argument (`python - notes.md <<EOF`) or
+an assignment in front (`F=notes.md python - <<EOF`), never in the code, so a
+search of the code alone allowed exactly those writes, `.env` included. The
+command line read is that of an interpreter carrying inline code, plus every
+`NAME=value` word anywhere in the command, because a wrapping shell's prefix,
+an `export` and a bare assignment all reach the program too. All of it is read
+only once a write with an unreadable target has been found, so a saved
+script's arguments and a literal non-document write stay outside it. Three
+routes stay out of reach, being invisible in the one command a hook sees: a
+name piped in on stdin, an assignment made in an earlier, separate command,
+and a name read from a file.
 """
 import ast
 import re
@@ -691,8 +705,74 @@ def _inline_code(command, segments):
     return "\n".join(_inline_chunks(command, segments))
 
 
-def _inline_chunks(command, segments, _depth=0):
-    """The interpreter code carried in the command text, one entry per program.
+def _inline_chunks(command, segments):
+    """The interpreter code carried in the command text, one entry per program."""
+    return _inline_parts(command, segments)[0]
+
+
+def _command_line_words(argv, code):
+    """Every word of an inline-code interpreter's command except its code.
+
+    That is the program's arguments (`notes.md` in `python - notes.md`) and
+    anything in front of the interpreter, such as an environment assignment
+    (`F=notes.md python - ...`, `env F=notes.md python - ...`). A program that
+    takes its target from `sys.argv[1]` or `os.environ["F"]` writes a file
+    whose name sits HERE rather than in the code, so the computed-target
+    fallback, which only searched the code, found no document name and allowed
+    the write. These words feed that fallback and nothing else: an option
+    value such as `-W ignore` is searched too, which is harmless, because only
+    a `.md` or `.env` name can make the fallback fire.
+
+    A word carrying the code is left out, whether it IS the code (`-c CODE`)
+    or is an option ending with it (the attached `-cCODE`), so the code is not
+    searched twice. Only an option word can carry attached code, so an
+    ordinary argument that merely ends with the same characters as a short
+    code string is kept: dropping it would drop a name the fallback needs.
+    """
+    pieces = [piece for piece in code if piece]
+    return [word for word in argv
+            if not any(word == piece
+                       or (word.startswith("-") and word.endswith(piece))
+                       for piece in pieces)]
+
+
+# A shell assignment word, `NAME=value`. Bounded like every pattern here.
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,100}=")
+
+
+def _assignment_words(segments):
+    """Every `NAME=value` word anywhere in the command, at any depth.
+
+    A program reading `os.environ["F"]` gets `F` from an assignment, and the
+    assignment need not sit on the interpreter's own command (R1-2 of this
+    change's review): it can prefix a wrapping shell (`F=notes.md bash -c
+    "python ..."`), be exported (`export F=notes.md; python ...`), or stand
+    alone (`F=notes.md; python ...`). All three are in the command text a
+    hook sees, and all three are the same word shape, so the shape is what is
+    collected rather than a list of the ways to make one. `split_segments`
+    already carries a shell's `-c` string and a substitution in as segments
+    of their own, so one pass over it reaches every depth.
+
+    The cost is a pooled search, the same trade the code search already
+    makes: an unrelated `DOC=README.md` elsewhere in a command that also
+    carries a computed write is blocked. Only the computed-target fallback
+    reads these, so a command with no such write is never affected.
+    """
+    return [word for argv in segments for word in argv
+            if _ASSIGNMENT_RE.match(word)]
+
+
+def _inline_parts(command, segments, _depth=0):
+    """`(chunks, words)`: the inline interpreter code, one entry per program,
+    and the other words on the command lines that carry it.
+
+    The words are collected in this same walk rather than by a second one,
+    because two walks over the same command are free to disagree about which
+    interpreter carries code, and this rule's history is mostly made of that
+    shape. They come only from an interpreter that carries inline code, so in
+    `python -c "..." ; python render.py notes.md` the saved script's argument
+    is not counted: a saved script is outside this rule's scope.
+
 
     Kept apart rather than only joined because `_hidden_documents` asks the
     parser about each program separately: two programs joined with a newline
@@ -713,18 +793,42 @@ def _inline_chunks(command, segments, _depth=0):
     python's script. Mutation testing found this, after the first control
     written for it turned out to pass through an earlier return.
     """
-    chunks = []
-    for argv in _interpreter_argvs(segments):
+    chunks, words = [], []
+    for argv in segments:
+        effective = effective_argv(argv)
+        if not effective or not _is_interpreter(effective[0]):
+            continue
         # The shell concatenates, so `python -c'code'` arrives as one word;
         # the option reader takes the rest of such a word as the code.
-        chunks.extend(_read_interpreter_options(argv)[0])
+        code = _read_interpreter_options(effective)[0]
+        chunks.extend(code)
+        if code:
+            # The raw argv, not the effective one: the effective argv has had
+            # the `F=notes.md` assignment in front stripped off.
+            words.extend(_command_line_words(argv, code))
+    # Heredocs and segments both come in command order, so each heredoc is
+    # paired with the next segment at or after the previous pairing that begins
+    # with its opener's words. Taking the FIRST matching segment every time
+    # (R1-1 of this change's review) gave every `python - <<EOF` the first
+    # such command's words, so a second program's `notes.md` was never read.
+    search_from = 0
     for prefix, body in heredoc_bodies(command):
         opener = split_segments(prefix)
         if not opener:
             continue
-        owner = effective_argv(opener[-1])
+        head = opener[-1]
+        position = next((index for index in range(search_from, len(segments))
+                         if segments[index][:len(head)] == head), None)
+        if position is not None:
+            search_from = position + 1
+        owner = effective_argv(head)
         if owner and _is_interpreter(owner[0]) and _takes_stdin_as_code(owner):
             chunks.append(body)
+            # The text before `<<` ends at the operator, but a word after the
+            # delimiter is still this command's: `python - <<'EOF' notes.md`
+            # hands `notes.md` to the program. The paired segment carries it.
+            full = segments[position] if position is not None else head
+            words.extend(_command_line_words(full, []))
     # A heredoc opened INSIDE a shell's `-c` string is invisible at the outer
     # level, correctly, because the `<<` sits inside quotes there. It has to be
     # looked for at the inner level instead, or `bash -c "python - <<'PY' ...
@@ -735,10 +839,12 @@ def _inline_chunks(command, segments, _depth=0):
                 inner = split_segments(carried)
                 if inner is None:
                     continue
-                chunks.extend(chunk for chunk in
-                              _inline_chunks(carried, inner, _depth + 1)
+                inner_chunks, inner_words = _inline_parts(
+                    carried, inner, _depth + 1)
+                chunks.extend(chunk for chunk in inner_chunks
                               if chunk.strip())
-    return chunks
+                words.extend(inner_words)
+    return chunks, words
 
 
 def _clean_target(target):
@@ -994,7 +1100,7 @@ def check(ctx):
     if not interpreters:
         return None
 
-    chunks = _inline_chunks(ctx.command, segments)
+    chunks, words = _inline_parts(ctx.command, segments)
     code = "\n".join(chunks)
     if not code.strip():
         return None
@@ -1069,9 +1175,16 @@ def check(ctx):
         # read first (`.env.example`, which A7 lets an AI edit) otherwise hid
         # the protected `.env` written after it. Document names keep the
         # first only, since every document gets the same route.
-        md_match = _MD_RE.search(code)
+        # The command line around the code is searched too: a program that
+        # takes its target from `sys.argv[1]` or `os.environ["F"]` writes a
+        # file whose name is an argument or an `F=notes.md` prefix, never
+        # code, and searching the code alone allowed exactly that write.
+        # Assignments anywhere in the command count too (R1-2), since a
+        # variable the program reads can be set outside its own command.
+        searched = "\n".join([code] + words + _assignment_words(segments))
+        md_match = _MD_RE.search(searched)
         names = _distinct(([md_match.group(0)] if md_match else [])
-                          + [m.group(0) for m in _ENV_RE.finditer(code)])
+                          + [m.group(0) for m in _ENV_RE.finditer(searched)])
         if not names:
             return None
         target = _join_names(names)
@@ -1090,9 +1203,10 @@ def check(ctx):
             f"inline {posix_basename(interpreters[0][0])} code that writes to "
             f"a computed path, alongside the document name{'s' if len(names) > 1 else ''} {target}",
             "A9 cannot tell from the command's text where this write lands: "
-            "the target is a variable, a join or an f-string. It blocked "
+            "the target is a variable, a join, an f-string, or an argument "
+            "or environment variable the program reads. It blocked "
             f"because {target} appear{'' if len(names) > 1 else 's'} in the "
-            f"code, and a computed path that "
+            f"code or on its command line, and a computed path that "
             f"reaches a project document goes around {_edit_tool(ctx.ai_id)} "
             "and the personal-data check that guards it. That is how a "
             "personal name reached a publicly tracked CONTEXT.md on "
