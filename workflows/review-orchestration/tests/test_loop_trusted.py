@@ -429,7 +429,12 @@ class CommandLineTests(LoopCase):
         self.assertIn("ended clean", out)
 
     def test_rejection_a_refused_run_exits_3_and_other_ends_exit_1(self):
-        self.h.readings = [reading(95)]
+        # run.py loads the shipped settings itself, and the shipped ceiling is the
+        # user's to change (anything above 0 and at most 100), so the refusing reading
+        # is 100%, at or above every ceiling the file may hold. It was 95%, which
+        # refused only while the shipped value was at most 95 (found by running the
+        # suites with the file at 100, 2026-11-14).
+        self.h.readings = [reading(100)]
         code, out = self.call(*self.RUN, "--item", "demo", "--git-dir",
                               str(self.personal))
         self.assertEqual(code, 3)

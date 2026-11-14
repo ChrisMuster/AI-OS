@@ -565,8 +565,16 @@ class SettingsTests(unittest.TestCase):
         path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
         return path
 
-    def test_positive_the_shipped_file_loads_at_80(self):
-        self.assertEqual(settings.load_settings()["usage_ceiling_percent"], 80)
+    def test_positive_the_shipped_file_loads_with_a_valid_ceiling(self):
+        """The shipped ceiling is the user's setting, changed by editing the file
+        (the 2026-10-18 rule: today's limits live in settings so they can be
+        raised without a code change), so it is checked for validity rather than
+        pinned. Pinning it made every ceiling change a test change, and on
+        2026-10-03 it refused a run that had edited the file. The built-in
+        default is pinned below, since that one is code."""
+        ceiling = settings.load_settings()["usage_ceiling_percent"]
+        self.assertTrue(0 < ceiling <= 100, ceiling)
+        self.assertEqual(settings.DEFAULT_USAGE_CEILING, 80)
         self.assertEqual(settings.load_settings()["max_turns"],
                          {"builder": 80, "reviewer": 200})
         self.assertEqual(settings.load_settings()["usage_probe_model"],
@@ -640,7 +648,7 @@ class SettingsTests(unittest.TestCase):
     def test_positive_the_shipped_file_is_plain_json(self):
         raw = (WORKFLOW / "config" / "settings.json").read_bytes()
         self.assertNotIn(b"\r", raw)
-        self.assertEqual(json.loads(raw)["usage_ceiling_percent"], 80)
+        self.assertIn("usage_ceiling_percent", json.loads(raw))
 
 
 class RoleSettingsTests(unittest.TestCase):

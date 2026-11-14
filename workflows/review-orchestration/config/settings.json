@@ -1,5 +1,5 @@
 {
-  "usage_ceiling_percent": 80,
+  "usage_ceiling_percent": 95,
   "max_turns": {"builder": 80, "reviewer": 200},
   "usage_probe_model": "claude-haiku-5-5",
   "round_caps": {

@@ -821,6 +821,11 @@ class LoopCase(unittest.TestCase):
         # A run's resolved settings carry its roles; these tests build with Claude unless
         # a test names the builder (the chunk (d) short plan, 11.1).
         self.settings = settings_mod.assign_roles(settings_mod.load_settings(), "claude")
+        # The ceiling these tests' readings are written against (85% stops, 30% does
+        # not). The shipped ceiling is the user's setting and changes by hand (95 for
+        # the A5 measurement, 2026-11-13), so the tests carry their own rather than
+        # borrowing it, the same reason test_limits no longer pins the shipped file.
+        self.settings["usage_ceiling_percent"] = 80
 
     def start(self, cap=3, inject=None, wait=False, item="demo"):
         settings = json.loads(json.dumps(self.settings))

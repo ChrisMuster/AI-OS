@@ -312,8 +312,14 @@ class Base(unittest.TestCase):
                            "model": "claude-opus-5-5"}],
             "scan_targets": measure.scan_targets(self.world.live, git_dir),
             "sessions": {}, "codex_start_credits": dict(CREDITS), "credits_read": True}
+        # The ceiling these tests' readings are written against, carried here rather
+        # than borrowed from the shipped file, which is the user's to change (R1-1 of
+        # the 2026-11-13 ceiling review: a 95% stop case passed only while the
+        # shipped value was at most 95).
+        settings = settings_mod.load_settings()
+        settings["usage_ceiling_percent"] = 80
         return measure.Measurement(
-            folder, progress, settings_mod.load_settings(), root=self.world.live,
+            folder, progress, settings, root=self.world.live,
             frozen=self.frozen, world=self.world,
             fixtures={"replays": replays or replays_fixture(),
                       "planted": planted or planted_set()},
