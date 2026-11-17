@@ -452,15 +452,19 @@ def _check_actions(entries, open_labels, allowed, who):
 # The intent checker's reply (plan 10.6 item 2; the keys and the status wording are the
 # builder's choice). Every field required and nothing else allowed, as every reply
 # schema here is. ``lines`` holds one entry per Goal and Constraint line, in the
-# brief's order, naming the line by its ``number`` and its ``opening`` words
-# (``OPENING_WORDS`` of them, or the whole line if shorter) rather than repeating it:
-# a checker copying whole lines dropped a sentence twice in the A4 proof run, and the
-# opening words catch a verdict given under the wrong number. ``unasked_changes`` and
+# brief's order, naming the line by its ``number`` and its ``opening`` words rather
+# than repeating it: a checker copying whole lines dropped a sentence twice in the A4
+# proof run, and the opening words catch a verdict given under the wrong number. The
+# prompt asks for ``OPENING_WORDS`` of them; the parser accepts any start of the line,
+# word for word, of at least ``MIN_OPENING_WORDS`` (or the whole line if shorter),
+# since a Claude checker in the A6 run of 2026-11-17 counted words differently and gave
+# six or seven on 26 of 27 lines, twice. ``unasked_changes`` and
 # ``undelivered`` are the two lists, each item with its evidence. The final check's
 # reply also lists ``files_reviewed`` (``intent_schema(final=True)``).
 MET, NOT_MET, CANNOT_TELL = "met", "not met", "cannot tell"
 INTENT_STATUSES = (MET, NOT_MET, CANNOT_TELL)
 OPENING_WORDS = 8
+MIN_OPENING_WORDS = 5
 _INTENT_TEXT = {"type": "string"}
 _EVIDENCED = {"type": "object", "additionalProperties": False,
               "required": ["item", "evidence"],
@@ -502,6 +506,16 @@ def opening(text):
     return " ".join(str(text).split()[:OPENING_WORDS])
 
 
+def opening_matches(given, text):
+    """Whether ``given`` names the line ``text``: its words, runs of whitespace
+    collapsed, are the line's first words exactly, at least ``MIN_OPENING_WORDS`` of
+    them, or the whole line where it is shorter than that. A longer start of the line,
+    up to the whole of it, is accepted too."""
+    words = str(given).split()
+    line = str(text).split()
+    return len(words) >= min(MIN_OPENING_WORDS, len(line)) and words == line[:len(words)]
+
+
 def _review_path(path):
     """A path as the build reviewer's coverage check reads it (``loop.Run._covered``)."""
     return path.strip().replace("\\", "/").removeprefix("./")
@@ -512,8 +526,9 @@ def parse_intent_reply(reply, expected_lines, changed_files=None):
 
     ``expected_lines`` are the Goal and Constraint line texts in the brief's order
     (``brief.intent_lines``). Every one must have exactly one entry, in that order: the
-    numbers run 1 to N once each, and each entry's ``opening`` is that line's
-    ``opening`` once runs of whitespace are collapsed; nothing else may be there. Every
+    numbers run 1 to N once each, and each entry's ``opening`` is a start of that line
+    (``opening_matches``: at least ``MIN_OPENING_WORDS`` words exactly, runs of
+    whitespace collapsed); nothing else may be there. Every
     evidence and every list item must be non-blank text, and a status one of
     ``INTENT_STATUSES``. With ``changed_files`` given (the final check), the reply must
     hold ``files_reviewed`` naming every one, by the build reviewer's rule.
@@ -567,10 +582,11 @@ def parse_intent_reply(reply, expected_lines, changed_files=None):
                          f"Constraint lines one entry each, numbered 1 to "
                          f"{len(expected)} in order: it {detail}")
     for entry, text in zip(entries, expected_lines):
-        if _collapsed(entry["opening"]) != opening(text):
+        if not opening_matches(entry["opening"], text):
             raise ReplyError(f"{who}: line {entry['number']}'s opening "
                              f"{_collapsed(entry['opening'])!r} is not the start of "
-                             f"that line, which opens {opening(text)!r}")
+                             f"that line, at least its first {MIN_OPENING_WORDS} words "
+                             f"exactly; the line opens {opening(text)!r}")
     for key in ("unasked_changes", "undelivered"):
         items = reply[key]
         if not isinstance(items, list):

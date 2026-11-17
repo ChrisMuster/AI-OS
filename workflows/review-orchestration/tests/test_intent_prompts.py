@@ -41,6 +41,7 @@ class TemplateTests(unittest.TestCase):
                 self.assertIn("an `opening` that does not match the start of the line "
                               "with that number is refused", flat)
                 self.assertEqual(sr.OPENING_WORDS, 8)
+                self.assertEqual(sr.MIN_OPENING_WORDS, 5)
         final = (PROMPTS / "intent-final.md").read_text(encoding="utf-8")
         self.assertIn("files_reviewed", final)
 

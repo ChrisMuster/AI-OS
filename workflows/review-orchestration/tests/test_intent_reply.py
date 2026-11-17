@@ -142,20 +142,67 @@ class ReplyTests(unittest.TestCase):
 
     def test_rejection_a_wrong_opening(self):
         for opening in ("The check exists.", "The check is", "check is built.",
-                        "No new dependency is added to the requirements files,",
-                        "No new dependency is added to the", ""):
+                        "No new dependency is added to the requirement",
+                        "No new dependency is added to the requirements file",
+                        "No new dependency added to the requirements",
+                        "new dependency is added to the requirements files,", ""):
             with self.subTest(opening):
                 value = reply()
-                index = 1 if opening.startswith("No") else 0
+                index = 1 if "dependency" in opening else 0
                 value["lines"][index]["opening"] = opening
                 self.refused(value)
 
-    def test_rejection_the_whole_line_copied_where_it_is_longer(self):
-        # A copied line longer than eight words is not its opening: the rule is the
-        # opening words exactly, so a reply in the old form is refused, not half-read.
+    def test_rejection_an_opening_shorter_than_the_minimum(self):
+        # Fewer than MIN_OPENING_WORDS words of a longer line is refused even when
+        # every word is right, and the refusal says what is needed.
+        self.assertEqual(sr.MIN_OPENING_WORDS, 5)
+        for opening in ("No new dependency is", "No new", "No"):
+            with self.subTest(opening):
+                value = reply()
+                value["lines"][1]["opening"] = opening
+                message = self.refused(value)
+                self.assertIn("at least its first 5 words exactly", message)
+        # A line of exactly five words must be given whole.
+        five = ["The report lists each one."]
+        value = reply(lines=five)
+        value["lines"][0]["opening"] = "The report lists each"
+        self.refused(value, lines=five)
+
+    def test_positive_any_start_of_at_least_five_words_is_accepted(self):
+        # The prompt asks for eight words, but a checker counting words differently
+        # gave six or seven (the A6 run of 2026-11-17): any start of the line, word for
+        # word, from five words to the whole line, names it.
+        for count in range(5, len(LINES[1].split()) + 1):
+            with self.subTest(count=count):
+                value = reply()
+                value["lines"][1]["opening"] = " ".join(LINES[1].split()[:count])
+                result = sr.parse_intent_reply(value, LINES)
+                self.assertEqual(result["lines"][1]["line"], LINES[1])
+
+    def test_positive_the_whole_line_copied_where_it_is_longer(self):
+        # A copied line longer than eight words is a start of itself, so it names the
+        # line; the old whole-line reply form is still refused by its keys.
         value = reply()
         value["lines"][1]["opening"] = LINES[1]
-        self.refused(value)
+        sr.parse_intent_reply(value, LINES)
+
+    def test_positive_the_openings_the_a6_checker_gave_are_accepted(self):
+        # Three of the brief lines and the openings a Claude intent checker gave for
+        # them in run 20261117-092906-84fd, refused then as not eight words.
+        lines = ["`workflows/review-orchestration/scripts/crossreview.py` is built as "
+                 "10.12 says: one command is one round.",
+                 "The review brief is read as 10.12 \"The review brief\" says.",
+                 "Standard library, the installed `claude_agent_sdk` and `openai_codex`, "
+                 "and the project's existing modules only."]
+        given = ["`workflows/review-orchestration/scripts/crossreview.py` is built as "
+                 "10.12 says:",
+                 "The review brief is read as 10.12",
+                 "Standard library, the installed `claude_agent_sdk` and"]
+        value = reply(lines=lines)
+        for item, text in zip(value["lines"], given):
+            item["opening"] = text
+        result = sr.parse_intent_reply(value, lines)
+        self.assertEqual([e["line"] for e in result["lines"]], lines)
 
     def test_rejection_the_old_reply_form(self):
         value = {"lines": [{"line": t, "status": "met", "evidence": "seen"}
