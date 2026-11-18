@@ -97,6 +97,9 @@ _CODEX_TOOL_ITEMS = frozenset({"commandExecution", "fileChange", "webSearch",
                                "imageGeneration", "imageView"})
 
 REVIEWER_TOOLS = ("Read", "Grep", "Glob")
+PROBE_TOOL = "mcp__probes__run_probe"
+PROBE_SERVER = "probes"
+PROBE_TIMEOUT_SECONDS = 150
 STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 REVIEWER_REFUSAL = "Refused by the orchestrator: the reviewer is read-only."
 
@@ -1192,7 +1195,7 @@ class CodexReviewer:
     wants = ("frozen_dir",)
 
     def __init__(self, model, effort, *, cwd, frozen_dir=None, codex_factory=None,
-                 python=None):
+                 python=None, probe_settings=None):
         if frozen_dir is None:
             raise ProviderError("a Codex reviewer needs the run's frozen folder, whose "
                                 "tripwire its shell's Python processes load")
@@ -1202,6 +1205,7 @@ class CodexReviewer:
         self.frozen_dir = Path(frozen_dir)
         self._python = python or sys.executable
         self._codex_factory = codex_factory
+        self.probe_settings = Path(probe_settings) if probe_settings is not None else None
         # What the last launch read back and relied on, for the run record (live
         # check 4b); set only once every check of the launch has passed.
         self.launch_record = None
@@ -1247,6 +1251,15 @@ class CodexReviewer:
         tripwire = self.frozen_dir / "tripwire"
         wire = _quotable(tripwire)
         base = (PLUGINS_OFF, APPS_OFF, f'shell_environment_policy.set.PYTHONPATH="{wire}"')
+        if self.probe_settings is not None:
+            python = _quotable(self._python)
+            script = _quotable(Path(__file__).with_name("probe_server.py"))
+            setting = _quotable(self.probe_settings)
+            probe = (f'mcp_servers.{PROBE_SERVER}={{command="{python}", '
+                     f'args=["{script}", "{setting}"], '
+                     f'tool_timeout_sec={PROBE_TIMEOUT_SECONDS}, '
+                     'default_tools_approval_mode="approve"}')
+            base = (*base, probe)
         first = self._open(base)
         try:
             listed = CodexBuilder._hooks(first._client._request_raw(
@@ -1256,7 +1269,8 @@ class CodexReviewer:
             first.close()
         # Decision 35: every server that counts is switched off by name; the reviewer
         # allows none.
-        off = servers_off(first_servers)
+        off = servers_off(first_servers,
+                          allowed=(PROBE_SERVER,) if self.probe_settings else ())
         state = _hooks_state({key: "{enabled=false}" for key in _project_hook_keys(listed)})
         codex = self._open((*base, *off, state) if state else (*base, *off))
         try:
@@ -1269,9 +1283,18 @@ class CodexReviewer:
             problems = [f"the project's {h.get('eventName')} hook ({h.get('matcher')!r}) "
                         "is not switched off" for h in hooks
                         if h.get("source") == "project" and h.get("enabled") is not False]
-            extra = counting_servers(servers)
+            extra = counting_servers(servers,
+                                     allowed=(PROBE_SERVER,) if self.probe_settings else ())
             if extra:
                 problems.append("an MCP server is in force: " + ", ".join(extra))
+            if self.probe_settings is not None:
+                shown = [s for s in server_record(servers) if s["name"] == PROBE_SERVER]
+                if len(shown) != 1 or shown[0]["tools"] != ["run_probe"] or shown[0]["toolsError"]:
+                    problems.append("probes must offer exactly run_probe")
+                entry = (((config or {}).get("config") or {}).get("mcp_servers") or {}).get(PROBE_SERVER)
+                wanted = [script, setting]
+                if not isinstance(entry, dict) or entry.get("command") != python or entry.get("args") != wanted or entry.get("default_tools_approval_mode") != "approve":
+                    problems.append("probes command, args or approval setting differ from launch")
             policy = ((config or {}).get("config") or {}).get("shell_environment_policy")
             given = ((policy or {}).get("set") or {}).get("PYTHONPATH")
             if given != wire:
@@ -1358,13 +1381,14 @@ class ClaudeReviewer:
     wants = ("usage",)
 
     def __init__(self, model, effort, *, cwd, usage=None, client_factory=None,
-                 max_turns=None):
+                 max_turns=None, probe_settings=None):
         self.model = model
         self.effort = effort
         self.cwd = str(cwd)
         self.usage = usage if usage is not None else limits.ClaudeUsage()
         self.max_turns = DEFAULT_MAX_TURNS["reviewer"] if max_turns is None else max_turns
         self._client_factory = client_factory
+        self.probe_settings = Path(probe_settings) if probe_settings is not None else None
         self.stderr = []
         self.refusals = []
         # Every call the callback judged, as {"tool", "id", "decision"}, and the
@@ -1384,7 +1408,8 @@ class ClaudeReviewer:
         # claims none (as R49-2 for the builder).
         judged = {"tool": name, "id": tool_use_id, "decision": PENDING}
         self.callback_calls.append(judged)
-        if name == STRUCTURED_OUTPUT_TOOL:
+        if name == STRUCTURED_OUTPUT_TOOL or (self.probe_settings is not None
+                                             and name == PROBE_TOOL):
             judged["decision"] = "allow"
             return {}
         reason = read_rules(name, tool_input) if name in REVIEWER_TOOLS else REVIEWER_REFUSAL
@@ -1415,12 +1440,18 @@ class ClaudeReviewer:
         hooks = {"PreToolUse": [HookMatcher(matcher=None, hooks=[self.pre_tool_use])]}
         # No MCP server and no settings-file hook (plan 7.6 item 4); its read rules stay
         # in its own callback.
+        servers = {}
+        if self.probe_settings is not None:
+            servers = {PROBE_SERVER: {"command": sys.executable,
+                       "args": [str(Path(__file__).with_name("probe_server.py")),
+                                str(self.probe_settings)]}}
         return ClaudeAgentOptions(cwd=self.cwd, model=self.model, effort=self.effort,
                                   permission_mode="default",
-                                  allowed_tools=list(REVIEWER_TOOLS), hooks=hooks,
+                                  allowed_tools=list(REVIEWER_TOOLS) +
+                                  ([PROBE_TOOL] if self.probe_settings else []), hooks=hooks,
                                   output_format={"type": "json_schema", "schema": schema},
                                   max_turns=self.max_turns, stderr=self.stderr.append,
-                                  mcp_servers={}, strict_mcp_config=True,
+                                  mcp_servers=servers, strict_mcp_config=True,
                                   settings=CLAUDE_NO_HOOKS)
 
     def review(self, prompt, schema):
@@ -1440,6 +1471,26 @@ class ClaudeReviewer:
         await client.connect()
         messages, result, init_model = [], None, None
         try:
+            if self.probe_settings is not None:
+                for attempt in range(6):
+                    status = await client.get_mcp_status()
+                    entries = status.get("mcpServers") if isinstance(status, dict) else None
+                    if not isinstance(entries, list):
+                        raise ProviderError("Claude MCP status needs an mcpServers list")
+                    matched = [s for s in entries if (s.get("name") if isinstance(s, dict)
+                                                      else getattr(s, "name", None)) == PROBE_SERVER]
+                    if len(matched) != 1:
+                        raise ProviderError("probes is missing from Claude MCP status")
+                    shown = matched[0]
+                    state = shown.get("status") if isinstance(shown, dict) else getattr(shown, "status", None)
+                    if state != "pending" or attempt == 5:
+                        break
+                    await asyncio.sleep(0.2)
+                tools = shown.get("tools") if isinstance(shown, dict) else getattr(shown, "tools", None)
+                names = [t.get("name") if isinstance(t, dict) else getattr(t, "name", t)
+                         for t in (tools or [])]
+                if state != "connected" or names != ["run_probe"]:
+                    raise ProviderError("probes is not connected with exactly run_probe")
             await client.query(with_marker(prompt))
             async for message in client.receive_response():
                 messages.append(jsonable(message))

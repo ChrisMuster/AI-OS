@@ -1005,6 +1005,8 @@ def next_step_name(run):
     paid-usage permission: the build loop's, or in the planning half the planning
     step's (``planning.next_step_name``; the two planners are one step,
     ``planners``)."""
+    if getattr(run, "cross_review_round", False):
+        return "review"
     if before_approval(run.state):
         import planning  # planning imports this module, so it is imported late
         return planning.next_step_name(run)
@@ -1102,6 +1104,110 @@ def _preflight_readings(providers_, codex, claude):
     return [reading for provider, reading in ((limits.CODEX, codex),
                                               (limits.CLAUDE, claude))
             if provider in providers_]
+
+
+def apply_preflight(state, reading, credits, *, note_codex, user_resume,
+                    allow_paid, grant_paid=None):
+    """Record the checked preflight in a run or a review round."""
+    state.pop("paid_usage_pending", None)
+    state["credits"] = credits
+    note_codex(reading)
+    state["claude_unknown_reset_resume"] = bool(
+        user_resume and _paid_overage(_last_claude(state))
+        and _last_claude(state).resets_at is None)
+    if allow_paid and grant_paid is not None:
+        grant_paid(reading)
+
+
+def usage_preflight(state, settings, step, *, read_codex, note_codex, now,
+                    root, frozen_dir=None, allow_paid=False, user_resume=False,
+                    dry_run=False, grant_paid=None, environ=None, check_usage=True,
+                    unchanged_note=""):
+    """The request-free usage preflight shared by a run and one review round."""
+    try:
+        reading = read_codex(root, frozen_dir)
+    except Exception as exc:
+        raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: {exc}"]) from exc
+    sandboxed = sandbox_refusal(reading, environ)
+    if sandboxed is not None:
+        raise RunRefused([sandboxed + unchanged_note])
+    saved = _effective_last(state, now(), user_resume=user_resume)
+    provider = step_provider(settings, step)
+    if check_usage:
+        _preflight_usage(_preflight_readings((provider,), reading, saved),
+                         settings["usage_ceiling_percent"], allow_paid=allow_paid)
+    credits = credit_snapshot(reading)
+    reason = None if allow_paid or provider != limits.CODEX else untrackable(credits)
+    if reason is not None:
+        raise RunRefused([f"Codex credits cannot be tracked: {reason} "
+                          f"({reading.summary()}){unchanged_note}"])
+    if not dry_run:
+        apply_preflight(state, reading, credits, note_codex=note_codex,
+                        user_resume=user_resume, allow_paid=allow_paid,
+                        grant_paid=grant_paid)
+    return reading, saved, credits
+
+
+async def usage_envelope(state, settings, step, provider, *, claude_usage,
+                         before_step, body, finish, read_codex, note_codex,
+                         root, save):
+    """One step's usage boundary, shared by a run and a conversation round.
+
+    ``body`` and ``finish`` are the caller's work and record decisions. Permission and
+    temporary ceiling state are cleared on every exit, including a failed reading.
+    """
+    permitted = _permits(state.get("paid_usage_pending"), step)
+    claude_usage.paid_allowed = permitted
+    try:
+        try:
+            stop = await asyncio.to_thread(before_step, step, provider)
+        except Exception as exc:
+            state.pop("paid_usage_pending", None)
+            finish(sr.ERROR, {"step": step, "error": "the usage reading before the "
+                              f"step failed: {type(exc).__name__}: {exc}"})
+            return sr.ERROR
+        if stop is not None:
+            state.pop("paid_usage_pending", None)
+            if provider == limits.CLAUDE:
+                state["claude_unknown_reset_resume"] = False
+            finish(sr.USAGE_LIMIT, stop)
+            return sr.USAGE_LIMIT
+        claude_usage.step_ceiling = (
+            settings["usage_ceiling_percent"]
+            if provider == limits.CLAUDE and (step == "build" or step.startswith("fix"))
+            else None)
+        try:
+            await body()
+        except limits.UsageLimitError as exc:
+            state.pop("paid_usage_pending", None)
+            claude_usage.paid_allowed = False
+            paid = getattr(exc, "paid_usage", None)
+            finish(sr.USAGE_LIMIT, {"step": step, "provider": exc.provider,
+                                    "detail": exc.detail, "resets_at": exc.resets_at,
+                                    "paid_usage": ("paid overage" in exc.detail
+                                                   if paid is None else bool(paid))}, True)
+            return sr.USAGE_LIMIT
+        except Exception as exc:
+            state.pop("paid_usage_pending", None)
+            claude_usage.paid_allowed = False
+            finish(sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"}, True)
+            return sr.ERROR
+        return None
+    finally:
+        state.pop("paid_usage_pending", None)
+        if provider == limits.CLAUDE:
+            state["claude_unknown_reset_resume"] = False
+        claude_usage.paid_allowed = False
+        claude_usage.step_ceiling = None
+        if permitted and state["status"] == sr.RUNNING:
+            try:
+                fresh = note_codex(read_codex(root, state.get("frozen_dir")))
+                state["credits"] = credit_snapshot(fresh)
+            except Exception as exc:
+                state["credits"] = None
+                state.setdefault("paid_usage_notes", []).append(
+                    f"credit reading after {step} failed: {type(exc).__name__}: {exc}")
+            save()
 
 
 # ---------------------------------------------------------- claiming a run (item 5)
@@ -1813,29 +1919,8 @@ class Run:
 
     async def take(self, step):
         provider = step_provider(self.settings, step)
-        permitted = _permits(self.state.get("paid_usage_pending"), step)
-        self.claude_usage.paid_allowed = permitted
-        try:
-            stop = await asyncio.to_thread(self.before_step, step, provider)
-        except Exception as exc:  # the reading itself failed: the step never started
-            self.state.pop("paid_usage_pending", None)
-            self.end(sr.ERROR, {"step": step, "error": "the usage reading before the "
-                                f"step failed: {type(exc).__name__}: {exc}"})
-            return
-        if stop is not None:
-            self.state.pop("paid_usage_pending", None)
-            if provider == limits.CLAUDE:
-                self.state["claude_unknown_reset_resume"] = False
-            self.end(sr.USAGE_LIMIT, stop)
-            return
-        # The ceiling during a step (plan 10.10 item 7): a Claude builder's build and
-        # fix steps only, whose session a resume continues; the watch skips it when
-        # the step is permitted paid usage.
-        self.claude_usage.step_ceiling = (
-            self.settings["usage_ceiling_percent"]
-            if provider == limits.CLAUDE and (step == "build" or step.startswith("fix"))
-            else None)
-        try:
+
+        async def body():
             if step == "build":
                 await self.build()
             elif step == INTENT_FINAL:
@@ -1844,42 +1929,17 @@ class Run:
                 await asyncio.to_thread(self.review, int(step.split("-R")[1]))
             else:
                 await self.fix(int(step.split("-R")[1]))
-        except limits.UsageLimitError as exc:
-            if step != INTENT_FINAL:  # an intent step leaves no builder work behind
+
+        def finish(reason, evidence, interrupted=False):
+            if interrupted and step != INTENT_FINAL:
                 self._interrupted(step)
-            self.state.pop("paid_usage_pending", None)
-            self.claude_usage.paid_allowed = False
-            paid = getattr(exc, "paid_usage", None)
-            self.end(sr.USAGE_LIMIT, {"step": step, "provider": exc.provider,
-                                      "detail": exc.detail, "resets_at": exc.resets_at,
-                                      "paid_usage": ("paid overage" in exc.detail
-                                                     if paid is None else bool(paid))})
-        except Exception as exc:  # a provider, a check or a reply failed
-            if step != INTENT_FINAL:
-                self._interrupted(step)
-            self.state.pop("paid_usage_pending", None)
-            self.claude_usage.paid_allowed = False
-            self.end(sr.ERROR, {"step": step, "error": f"{type(exc).__name__}: {exc}"})
-        finally:
-            self.state.pop("paid_usage_pending", None)
-            # A plain resume's allowance for an unknown-reset overage reading is the
-            # first Claude step's (plan 10.10 item 7), so a Codex step in between keeps
-            # it (code review R3-2).
-            if provider == limits.CLAUDE:
-                self.state["claude_unknown_reset_resume"] = False
-            self.claude_usage.paid_allowed = False
-            self.claude_usage.step_ceiling = None
-            if permitted and self.state["status"] == sr.RUNNING:
-                # A permitted step establishes the next Codex credit comparison.
-                try:
-                    fresh = self.note_codex(self.deps.read_codex(
-                        self.root, self.state.get("frozen_dir")))
-                    self.state["credits"] = credit_snapshot(fresh)
-                except Exception as exc:  # a later step will stop on a missing snapshot
-                    self.state["credits"] = None
-                    self.state.setdefault("paid_usage_notes", []).append(
-                        f"credit reading after {step} failed: {type(exc).__name__}: {exc}")
-                self.save()
+            self.end(reason, evidence)
+
+        await usage_envelope(self.state, self.settings, step, provider,
+                             claude_usage=self.claude_usage,
+                             before_step=self.before_step, body=body, finish=finish,
+                             read_codex=self.deps.read_codex,
+                             note_codex=self.note_codex, root=self.root, save=self.save)
 
     def _interrupted(self, step):
         """Record what a step left behind when it did not complete.
@@ -1970,25 +2030,25 @@ class Run:
         return codex, self.claude_usage.reading()
 
     def before_step(self, step, provider):
-        """None if the step may start, else the evidence for a ``usage-limit`` stop.
+        stop, self._probe_for_step, self._codex_before_step = self.usage_before_step(
+            self.state, self.settings, step, provider, claude_usage=self.claude_usage,
+            read_codex=self.deps.read_codex, note_codex=self.note_codex,
+            probe_claude=self.deps.probe_claude, now=self.deps.now, root=self.root)
+        return stop
 
-        A step is stopped only by the readings of ``provider``, the provider it uses,
-        for the ceiling, a reported limit and paid usage alike (plan 10.10 items 1, 3
-        and 8, A3 chunk 3). Codex is still read live before every step and Claude's
-        reading taken, and both are recorded with the step; the probe is sent only
-        before a Claude step. The two planners, a step using both, are checked one
-        provider after the other (``planning.planners``)."""
-        self._probe_for_step = None
-        self._codex_before_step = None
-        permitted = _permits(self.state.get("paid_usage_pending"), step)
-        codex = self.note_codex(self.deps.read_codex(self.root,
-                                                     self.state.get("frozen_dir")))
-        self._codex_before_step = _codex_segment_reading(codex, self.deps.now(),
-                                                         "before-step")
-        last = _effective_last(self.state, self.deps.now(),
-                               user_resume=bool(self.state.get("claude_unknown_reset_resume")))
-        if not self.state.get("claude_last_reading"):
-            shared = self.claude_usage.reading()
+
+    @staticmethod
+    def usage_before_step(state, settings, step, provider, *, claude_usage,
+                          read_codex, note_codex, probe_claude, now, root):
+        """The shared reading immediately before one step, including a Claude probe."""
+        probe_info = None
+        permitted = _permits(state.get("paid_usage_pending"), step)
+        codex = note_codex(read_codex(root, state.get("frozen_dir")))
+        codex_info = _codex_segment_reading(codex, now(), "before-step")
+        last = _effective_last(state, now(),
+                               user_resume=bool(state.get("claude_unknown_reset_resume")))
+        if not state.get("claude_last_reading"):
+            shared = claude_usage.reading()
             if shared.source != limits.UNAVAILABLE:
                 last = shared
         claude = last
@@ -1996,50 +2056,51 @@ class Run:
         stop = None
         if provider == limits.CLAUDE:
             # A known overage is checked before a paid request can be sent.
-            stop = _usage_stop([last], self.settings["usage_ceiling_percent"],
+            stop = _usage_stop([last], settings["usage_ceiling_percent"],
                                allow_paid=permitted)
         if stop is None and provider == limits.CLAUDE:
             seen = []
             def received(event):
                 seen.append(event)
-                self.claude_usage.observe(event)
+                claude_usage.observe(event)
             try:
-                probe = self.deps.probe_claude(self.settings["usage_probe_model"],
-                                               self.state["frozen_dir"], received)
+                probe = probe_claude(settings["usage_probe_model"],
+                                     state["frozen_dir"], received)
             except Exception:
                 if seen:
-                    latest = self.claude_usage.reading()
+                    latest = claude_usage.reading()
                     detail = {"tokens": None, "usage": None,
-                              "model": self.settings["usage_probe_model"],
+                              "model": settings["usage_probe_model"],
                               "probe_event": True}
                     if _paid_overage(latest) and not _paid_overage(last) and not permitted:
                         detail["probe_on_overage"] = True
-                    self.state.setdefault("readings", []).append({
+                    state.setdefault("readings", []).append({
                         "step": step, "codex": codex.summary(),
                         "codex_windows": _codex_windows(codex),
                         "claude": latest.summary(), "usage_probe": detail})
                 raise
             claude = probe.reading
-            self._probe_for_step = {"tokens": probe.tokens, "usage": probe.usage,
-                                    "model": probe.model, "probe_event": bool(probe.events)}
+            probe_info = {"tokens": probe.tokens, "usage": probe.usage,
+                          "model": probe.model, "probe_event": bool(probe.events)}
             if (_paid_overage(claude) and not _paid_overage(last)
                     and not permitted):
-                self._probe_for_step["probe_on_overage"] = True
-            self.state["claude_unknown_reset_resume"] = False
+                probe_info["probe_on_overage"] = True
+            state["claude_unknown_reset_resume"] = False
         entry = {"step": step, "codex": codex.summary(),
                  "codex_windows": _codex_windows(codex), "claude": claude.summary()}
         if probe is not None:
-            entry["usage_probe"] = dict(self._probe_for_step)
-        self.state.setdefault("readings", []).append(entry)
-        ceiling = self.settings["usage_ceiling_percent"]
+            entry["usage_probe"] = dict(probe_info)
+        state.setdefault("readings", []).append(entry)
+        ceiling = settings["usage_ceiling_percent"]
         if stop is None and provider == limits.CODEX:
             # The Codex rules, shared with the watch during a Codex builder's step
             # (plan 10.10 item 7, R71-1), so the two cannot drift apart.
-            return codex_stop(codex, step, permitted=permitted, ceiling=ceiling,
-                              state=self.state)
+            return (codex_stop(codex, step, permitted=permitted, ceiling=ceiling,
+                               state=state), probe_info, codex_info)
         if stop is None:
             stop = _usage_stop([claude], ceiling, allow_paid=permitted)
-        return _stop_evidence(step, stop) if stop is not None else None
+        return (_stop_evidence(step, stop) if stop is not None else None,
+                probe_info, codex_info)
 
     # -------------------------------------------------------------- builder
 
@@ -3454,35 +3515,19 @@ def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True)
         raise RunRefused(["--allow-paid cannot be used with --wait"])
     _refuse_if_claimed(run)
     seen = _claim_mark(run.state)
-    try:
-        reading = run.deps.read_codex(run.root, run.state.get("frozen_dir"))
-    except Exception as exc:
-        raise RunRefused([f"the Codex usage reading failed: {type(exc).__name__}: "
-                          f"{exc}"]) from exc
-    sandboxed = sandbox_refusal(reading)
-    if sandboxed is not None:
-        raise RunRefused([f"{sandboxed}; the run is unchanged"])
     # A paid-overage reading with an unknown reset counts as reset only for a plain
     # resume the user started; a --resume --wait refuses on it (plan 10.10 items 5 and
     # 7, R44-1).
     plain = user_started and not run.wait
-    saved = _effective_last(run.state, run.deps.now(), user_resume=plain)
-    # Only the next step's provider is checked (item 8, A3 chunk 3).
-    step_providers = (step_provider(run.settings, run.next_step()),)
     # --wait resumes only after a step reported its reset. Another window can
     # remain high; let before_step record that stop and its later reset so the
     # automatic wait can continue. User-started resumes still check here.
-    if user_started:
-        _preflight_usage(_preflight_readings(step_providers, reading, saved),
-                         run.settings["usage_ceiling_percent"], allow_paid=allow_paid)
-    credits = credit_snapshot(reading)
-    # Untrackable credits refuse only a resume whose next step uses Codex; otherwise the
-    # snapshot is recorded as read and stops the first later Codex step (item 3, R42-2).
-    reason = (None if allow_paid or limits.CODEX not in step_providers
-              else untrackable(credits))
-    if reason is not None:
-        raise RunRefused([f"Codex credits cannot be tracked: {reason} "
-                          f"({reading.summary()}); the run is unchanged"])
+    reading, saved, credits = usage_preflight(
+        run.state, run.settings, run.next_step(), read_codex=run.deps.read_codex,
+        note_codex=run.note_codex, now=run.deps.now, root=run.root,
+        frozen_dir=run.state.get("frozen_dir"), allow_paid=allow_paid,
+        user_resume=plain, dry_run=True, check_usage=user_started,
+        unchanged_note="; the run is unchanged")
     if dry_run:
         _, note = _docker_at_start(run.deps, True)
         cap = (_build_rounds(run) + rounds if rounds is not None
@@ -3535,19 +3580,14 @@ def _resume_claimed(run, *, rounds, allow_paid, user_started, plain, reading, cr
         docker.setdefault("events", []).append(
             _docker_event("resume", note.replace("this run", "this resume")))
         sr.continue_run(run.state)
-        # A permission belongs to one attempt, including a failed attempt. Old run
-        # records may still carry a pending value from before that was enforced.
-        run.state.pop("paid_usage_pending", None)
         if rounds is not None:
             # N more of the build's own rounds; labels carry on from the planning half.
             run.state["round_cap"] = _build_rounds(run) + rounds
-        run.state["credits"] = credits
-        run.note_codex(reading)
-        run.state["claude_unknown_reset_resume"] = bool(
-            plain and _paid_overage(_last_claude(run.state))
-            and _last_claude(run.state).resets_at is None)
-        if allow_paid:
-            _grant_paid(run, reading)
+        # A permission belongs to one attempt, including a failed attempt. Old run
+        # records may still carry a pending value from before that was enforced.
+        apply_preflight(run.state, reading, credits, note_codex=run.note_codex,
+                        user_resume=plain, allow_paid=allow_paid,
+                        grant_paid=lambda current: _grant_paid(run, current))
         # The log line first, then the state: a log that cannot be written refuses the
         # resume with nothing saved, rather than leaving a run saved as running that the
         # next resume would refuse (the R30 exception-path audit).

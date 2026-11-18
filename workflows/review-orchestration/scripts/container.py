@@ -90,14 +90,16 @@ def _start(argv, **options):
     return subprocess.run(argv, **options)
 
 
-def docker(args, timeout=None, raise_timeout=False):
+def docker(args, timeout=None, raise_timeout=False, merged_stream=False):
     """Run ``docker <args>`` on the host. The one place a Docker command is run.
 
     A command past its ``timeout`` is a ``ContainerError`` naming the command and the
     limit (code review R11-1), unless ``raise_timeout``: ``run_in_container`` takes
     the timeout itself, since it must then stop the container by name."""
     try:
-        return _start(["docker", *args], capture_output=True, encoding="utf-8",
+        output = ({"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
+                  if merged_stream else {"capture_output": True})
+        return _start(["docker", *args], **output, encoding="utf-8",
                       errors="replace", timeout=timeout, env=_host_env())
     except OSError as exc:
         raise ContainerError(f"docker could not be run: {exc}") from exc
@@ -913,7 +915,7 @@ def docker_failed(code, err):
     return code == DOCKER_RUN_FAILED and bool(_DOCKER_OWN_ERROR.search(err or ""))
 
 
-def run_in_container(copy, argv, image, timeout=RUN_TIMEOUT):
+def run_in_container(copy, argv, image, timeout=RUN_TIMEOUT, *, merged_stream=False):
     """Run ``argv`` (a list, never a shell string) in the image over ``copy``,
     offline. Returns (exit code, stdout, stderr). A run past ``timeout`` is
     killed and raises ``ContainerError``."""
@@ -926,7 +928,8 @@ def run_in_container(copy, argv, image, timeout=RUN_TIMEOUT):
                "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", f"{docker_path(copy)}:/work",
                image, *argv]
     try:
-        result = docker(command, timeout=timeout, raise_timeout=True)
+        result = docker(command, timeout=timeout, raise_timeout=True,
+                        **({"merged_stream": True} if merged_stream else {}))
     except subprocess.TimeoutExpired as exc:
         # Stopped only if Docker says so (code review R11-2): a kill that fails or
         # does not answer leaves a container that may still be running, named here.
@@ -940,4 +943,4 @@ def run_in_container(copy, argv, image, timeout=RUN_TIMEOUT):
         raise ContainerError(f"the container command ran past {timeout} s and could "
                              f"not be stopped; container {name} may still be running "
                              f"(stop it with: docker kill {name})") from exc
-    return result.returncode, result.stdout, result.stderr
+    return result.returncode, result.stdout, result.stderr if not merged_stream else ""

@@ -1,11 +1,12 @@
 # Review Orchestration - Prompts
 
-**Last modified:** 2026-11-11
+**Last modified:** 2026-11-18
 
 ## Purpose
-Holds the text the review-orchestration workflow gives to people and to the AIs it runs: the run brief template, the prompts for the planners, the synthesiser and the plan reviewer of the planning half, with the synthesiser's revision, the builder's first pass, its fix passes and the reviewer, the intent checker's two prompts (A4), the measurement's judge prompt (A5), and the parts of those prompts that differ by which AI holds the role.
+Holds the text the review-orchestration workflow gives to people and to the AIs it runs: the run brief template, the prompts for the planners, the synthesiser and the plan reviewer of the planning half, with the synthesiser's revision, the builder's first pass, its fix passes and the reviewer, the intent checker's two prompts (A4), the measurement's judge prompt (A5), the conversation cross-review prompt (A6), and the parts of those prompts that differ by which AI holds the role.
 
 ## Contents
+- cross-review.md - `workflows/review-orchestration/prompts/cross-review.md` [[workflows/review-orchestration/prompts/cross-review]] - The conversation review prompt (plan 10.12), rendered by `scripts/crossreview.py` with the round, repair instruction, provider tool rule, whole brief and packet, exact mechanical results, changed-file list and diff. It names the closed reply's classes and realistic consequence rule, and that `reraises` may name only a label in the round's own packet.
 - brief.md - `workflows/review-orchestration/prompts/brief.md` [[workflows/review-orchestration/prompts/brief]] - The run brief template: a usage comment (since 2026-11-11 also asking for the work to be sized so its build fits one five-hour usage window where it allows, split into chunks otherwise, the plan report's size estimate being the check, plan 10.2), then the seven required headings in order, each followed only by an HTML comment saying what goes there. The Acceptance checks comment says each check must be on both builders' verification lists, and since A4 the Out of scope comment says what plan 10.2 says: a path written in backticks there is checked by the script at both intent checks if it names a file or folder that exists when the run starts, one that names nothing being listed in the plan report as not checked, and the rest of the section is read by the intent checker only. The checker refuses it as shipped, six sections empty, which is the proof that an unfilled brief cannot start a run; `tests/test_brief.py` asserts exactly that refusal.
 - builder.md - `workflows/review-orchestration/prompts/builder.md` [[workflows/review-orchestration/prompts/builder]] - The builder's first-pass prompt: the run's rules (edit paths, maintenance obligations with every LOG.md entry written `Actor: Biblio` whichever AI builds, the builder's tool rules), the brief and, since A3 chunk 3, the approved merged plan in a section of its own after the brief. Fields `$edit_paths`, `$tool_rules`, `$brief`, `$plan`.
 - builder-tools-claude.md - `workflows/review-orchestration/prompts/builder-tools-claude.md` [[workflows/review-orchestration/prompts/builder-tools-claude]] - A Claude builder's tool rules (since S7): run checks only with the check helper's `run_check`, in an offline container over a clean copy, the shell not available; its verification commands; a LOG.md entry written with the edit tools, its time from the helper's `get_timestamp`; a Grep call carrying the `glob` option refused, with `path` or `type` to use instead; no git commands and no Biblio Tools tools. Field `$verify_commands`.
@@ -23,10 +24,10 @@ Holds the text the review-orchestration workflow gives to people and to the AIs 
 - reviewer.md - `workflows/review-orchestration/prompts/reviewer.md` [[workflows/review-orchestration/prompts/reviewer]] - The reviewer's prompt: the triage rule, what to check, the brief, the mechanical results, since A3 chunk 3 the approved merged plan after the brief, the prior findings with the builder's actions, the changed files (each to be listed in `files_reviewed`), the exact lines the orchestrator's own checks wrote, and the diff, or where to read it when it is too large. Fields `$round`, `$brief`, `$plan`, `$mechanical`, `$prior`, `$changed_files`, `$check_written`, `$diff`, `$reviewer_tools`.
 
 ## Inputs
-None. The template is copied by hand and filled in with the user; the prompts are filled in by `workflows/review-orchestration/scripts/loop.py` [[workflows/review-orchestration/scripts/CONTEXT]].
+None. The template is copied by hand and filled in with the user; the run prompts are filled in by `workflows/review-orchestration/scripts/loop.py` [[workflows/review-orchestration/scripts/CONTEXT]], and `cross-review.md` by `scripts/crossreview.py`.
 
 ## Outputs
-None. A filled brief lives with its run, never here, and so does every filled prompt, in the run's transcripts.
+None. A filled brief lives with its run, never here. A filled run prompt lives in its transcript, and a filled cross-review prompt lives in the round record.
 
 ## Steps
 1. Copy `brief.md` to the run's brief path; do not edit it in place.
@@ -34,6 +35,7 @@ None. A filled brief lives with its run, never here, and so does every filled pr
 3. Append LOG.md with a completion or failure entry when the template or a prompt is changed.
 
 ## Dependencies
+- `workflows/review-orchestration/scripts/crossreview.py` [[workflows/review-orchestration/scripts/CONTEXT]] - fills `cross-review.md` for one conversation round; `test_crossreview.py` checks its rendered size and fields.
 - `workflows/review-orchestration/scripts/brief.py` [[workflows/review-orchestration/scripts/CONTEXT]] - the checker whose rules the template's comments describe.
 - `workflows/review-orchestration/scripts/loop.py` [[workflows/review-orchestration/scripts/CONTEXT]] - fills the prompts with `string.Template`, so a field is written `$name` and a literal dollar sign `$$`; a field missing from a prompt, or one the loop does not supply, fails loudly.
 - `workflows/review-orchestration/scripts/stopreasons.py` [[workflows/review-orchestration/scripts/CONTEXT]] - the action names and the fenced json block `fix.md` asks for, and the reviewer schema `reviewer.md` describes.
@@ -52,9 +54,7 @@ None. A filled brief lives with its run, never here, and so does every filled pr
 - `builder-tools-codex.md` shows the `Get-Content` form literally as well as in the read list; a change to that line of `config/codex-read-commands.txt` must change the example too. A test checks the example is accepted by the read list.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-11-10.
-- 2026-10-01 - `reviewer.md` now gives the exact lines the orchestrator's checks wrote, not whole files, and says any other change in those files is the builder's (R5-2).
-- 2026-10-02 - Stage A2, chunk (d): the builder and fix prompts take `$tool_rules` and the reviewer prompt `$reviewer_tools`, each filled in by the provider holding the role; added `builder-tools-claude.md`, `builder-tools-codex.md`, `reviewer-tools-claude.md` and `reviewer-tools-codex.md`. A Claude builder's and a Codex reviewer's wording is as it was.
+Earlier history archived to LOG.md on 2026-11-18.
 - 2026-10-04 - `builder-tools-codex.md` shows the one `Get-Content` form a Codex builder may read with, both encodings set, and why (a fix from the chunk (d) proof run, whose reads came back garbled).
 - 2026-10-08 - `brief.md`'s usage comment and Steps name the starter, `start.py --check-brief`, since a brief check now goes through it (orchestrator isolation S6a, code review R18-2).
 - 2026-10-11 - Orchestrator isolation stage S7: both builders' tool rules send every check through the check helper's `run_check` (Claude's clock is the helper's `get_timestamp`, and the shell and Biblio Tools are gone; Codex's list now holds the read-only audit and verifier); `reviewer-tools-codex.md` tells the Codex reviewer to run no project code (decision 34).
@@ -67,3 +67,5 @@ Earlier history archived to LOG.md on 2026-11-10.
 - 2026-11-02 - By hand, the user's fix A from the A4 proof run: `intent-first.md` and `intent-final.md` ask for each line's number and first eight words instead of the whole line, and say a mismatched opening is refused. Contents and Known Issues updated. The two oldest Revision History entries were archived to LOG.md.
 - 2026-11-10 - A5: added `judge.md`, the measurement's judge prompt (plan 10.8 item 3). Purpose, Contents, Dependencies and Known Issues updated. The oldest Revision History entry was archived to LOG.md.
 - 2026-11-11 - By hand, the usage changes' part (d2): `brief.md`'s usage comment asks for the work to be sized to one five-hour usage window, split into chunks otherwise, the plan report's size estimate being the check (plan 10.2, 10.10 item 10). Contents updated. The oldest Revision History entry was archived to LOG.md.
+- 2026-11-17 - A6: added `cross-review.md`, the one conversation review prompt, with the scope, repair, probe limits, check claims, full evidence and closed reply rules in plan 10.12's order. Purpose, Contents, Inputs, Outputs and Dependencies updated; oldest entry archived to LOG.md.
+- 2026-11-18 - By hand, from Codex code review R11-1 at the user's choice: `cross-review.md`'s reply rules say `reraises` may name only a label in the round's own packet, and a finding from another packet (an orchestrated run's) still not fixed is a new finding naming its label in its text, so a by-hand finish's first round cannot end `error` on a run label. Contents updated. Then, from R12-1 at the user's option A, it tells the reviewer to read any other packet the brief names and check that packet's findings and dated repairs. The oldest Revision History entry was archived to LOG.md.
