@@ -27,6 +27,10 @@ project goes through here (orchestrator isolation plan 7.0 items 2 and 3, stage 
   start.py --measure --resume <id>  Runs the measurement's trusted measure.py after the
   start.py --measure --score <id>   same id and hook.json checks as a resume, with no
                                     bytecode written.
+  start.py --review <brief> ...     A conversation review round (plan 10.12, A6), or
+                                    its build gate: no committed-tree check and no
+                                    frozen folder, since a round reviews the live tree
+                                    as it stands; runs the project's crossreview.py.
 
 A start or brief check also refuses a ``BOOK_DRAGON_ROOT`` naming any project but this
 one, since run.py would work on the project it names, which nothing here checked; for a
@@ -55,6 +59,7 @@ FROZEN_PARENT = "book-dragon-orchestration"
 TRUSTED_RUN_PY = ("trusted", "workflows", "review-orchestration", "scripts", "run.py")
 MEASURE_PY = "workflows/review-orchestration/scripts/measure.py"
 TRUSTED_MEASURE_PY = ("trusted", "workflows", "review-orchestration", "scripts", "measure.py")
+CROSSREVIEW_PY = "workflows/review-orchestration/scripts/crossreview.py"
 # The run-record form (runrecord.RUN_ID), restated: the starter imports nothing.
 RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 # The only code the brief checker loads (plan 7.0 item 2).
@@ -64,7 +69,7 @@ ROOT_ENV = "BOOK_DRAGON_ROOT"
 USAGE = ("usage: start.py --run <brief> ... | --check-brief <brief> | "
          "--resume <run-id> ... | --stop <run-id> ... | --approve <run-id> ... | "
          "--amend <run-id> <revised-brief> ... | --measure ... | "
-         "--measure --resume <id> | --measure --score <id>")
+         "--measure --resume <id> | --measure --score <id> | --review <review-brief> ...")
 # The modes that act on an existing run through its trusted copy (plan 7.0 item 3, and
 # A3's approve and amend, plan 10.3 step 8).
 TRUSTED_MODES = ("--resume", "--stop", "--approve", "--amend")
@@ -171,6 +176,11 @@ def command_for(argv, root=ROOT, temp_root=None, python=None, environ=None):
         check_root_override(root, environ)
         check_committed(root)
         return [python, str(Path(root) / MEASURE_PY), *argv]
+    if mode == "--review":
+        # A round reviews the live tree as it stands (plan 10.12): the root override
+        # check only, no committed-tree check and no frozen folder.
+        check_root_override(root, environ)
+        return [python, str(Path(root) / CROSSREVIEW_PY), *argv]
     if mode == "--run":
         check_root_override(root, environ)
         check_committed(root)
@@ -203,6 +213,10 @@ def main(argv=None, *, root=ROOT, temp_root=None, python=None, runner=subprocess
                                     and argv[1:2] in (["--resume"], ["--score"])):
         # The trusted copy writes no bytecode cache in its frozen folder (code review
         # R20-1); it also turns that off itself, so this is a second layer.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if argv[0] == "--review":
+        # A round and its read-only build gate write no bytecode cache into the
+        # project's scripts folder (cross-review R1-1 of the A6 hand entries).
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     return runner(command, cwd=str(root), env=env).returncode
 

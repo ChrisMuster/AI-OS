@@ -1185,6 +1185,12 @@ def run_round(args, *, root=ROOT, deps=None):
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
+    try:
+        # The round runs as the starter's child, so the starter's own reconfigure
+        # does not reach it; a reviewer's text must print as UTF-8, not cp1252.
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
     if os.environ.get(MARKER) != "1":
         print(f"Start through the starter: {STARTER} <review-brief> "
               "--reviewer claude|codex --git-dir <personal repository>")

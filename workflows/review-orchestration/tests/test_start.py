@@ -376,6 +376,62 @@ class MeasureTests(StarterCase):
         self.assertIn("--measure --score <id>", start.USAGE)
 
 
+class ReviewTests(StarterCase):
+    """The ``--review`` form (plan 10.12, A6), added to the starter by hand: the live
+    crossreview.py, with no committed-tree check and no frozen folder."""
+
+    LIVE = "workflows/review-orchestration/scripts/crossreview.py"
+    ARGS = ["--review", "memory/demo_review_brief.md", "--reviewer", "codex",
+            "--git-dir", "C:/personal.git"]
+
+    def test_positive_review_runs_the_live_crossreview_py_on_a_dirty_tree(self):
+        # Uncommitted work is what a round reviews, so a dirty tree is not refused.
+        (self.root / self.LIVE).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / self.LIVE).write_bytes(b"# uncommitted\n")
+        (self.root / "brief.md").write_bytes(b"changed\n")
+        self.assertEqual(self.handed(self.ARGS),
+                         [str(self.python), str(self.root / self.LIVE), *self.ARGS])
+
+    def test_rejection_review_with_a_root_override_for_another_project(self):
+        other = self.root.parent / "other-project"
+        other.mkdir()
+        self.refused(self.ARGS, "BOOK_DRAGON_ROOT",
+                     environ={"PATH": "x", "BOOK_DRAGON_ROOT": str(other)})
+
+    def test_positive_review_asks_for_no_bytecode_whatever_the_caller_set(self):
+        # The child's environment, not the caller's, turns the cache off (R1-1).
+        for environ in ({"PATH": "x"}, {"PATH": "x", "PYTHONDONTWRITEBYTECODE": ""}):
+            with self.subTest(environ=environ):
+                self.assertEqual(self.main(self.ARGS, environ), 0)
+                (command, cwd, env), = self.calls
+                self.calls = []
+                self.assertEqual(env.get("PYTHONDONTWRITEBYTECODE"), "1")
+
+    def test_negative_review_stays_off_the_trusted_route(self):
+        self.assertNotIn("--review", start.TRUSTED_MODES)
+        self.assertIn("--review <review-brief>", start.USAGE)
+
+    def test_positive_the_starter_enters_the_real_crossreview_py(self):
+        # End to end over the real script, reading only: through the starter,
+        # crossreview.py is entered (it refuses a brief that does not exist) instead
+        # of printing the starter command, as a direct start does.
+        seen = []
+        def runner(command, cwd=None, env=None):
+            done = subprocess.run(command, cwd=cwd, env=env, capture_output=True,
+                                  encoding="utf-8", errors="replace", timeout=120)
+            seen.append(done)
+            return done
+        # The caller sets no PYTHONDONTWRITEBYTECODE: the starter must (R1-1).
+        environ = {k: v for k, v in os.environ.items()
+                   if k not in (start.ROOT_ENV, "PYTHONDONTWRITEBYTECODE")}
+        code = start.main(["--review", "memory/no_such_review_brief.md", "--build-ready",
+                           "--git-dir", "unused.git"], root=PROJECT,
+                          python=sys.executable, runner=runner, environ=environ)
+        self.assertEqual(code, 3, seen[0].stdout + seen[0].stderr)
+        self.assertIn("refused:", seen[0].stdout)
+        self.assertNotIn("Start through the starter", seen[0].stdout)
+
+
 class StandaloneTests(unittest.TestCase):
 
     def test_positive_the_starter_imports_only_the_standard_library(self):

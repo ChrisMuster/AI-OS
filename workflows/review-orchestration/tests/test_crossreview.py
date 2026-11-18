@@ -2358,6 +2358,28 @@ class EntryTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("entered stub before step 1", result.stdout)
 
+    def test_reviewer_text_prints_as_utf8_whatever_the_child_encoding(self):
+        # The round runs as the starter's child, whose stdout on Windows is cp1252
+        # unless the round reconfigures it; a reviewer's arrow must not crash the
+        # result line, and every reviewer character must reach the caller as UTF-8.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "a" / "b" / "c"
+            root.mkdir(parents=True)
+            (root / "crossreview.py").write_bytes((SCRIPTS / "crossreview.py").read_bytes())
+            stub = ("import importlib.util\n"
+                    "spec=importlib.util.spec_from_file_location('copy', 'crossreview.py')\n"
+                    "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)\n"
+                    "module.run_round=lambda args: (print('findings: a \\u2192 b, the child\\u2019s') or 2)\n"
+                    "raise SystemExit(module.main(['--review','brief.md','--reviewer','codex',"
+                    "'--git-dir','personal.git']))\n")
+            (root / "stub.py").write_text(stub, encoding="utf-8", newline="\n")
+            result = subprocess.run([sys.executable, "stub.py"], cwd=root,
+                env={**os.environ, crossreview.MARKER: "1", "PYTHONIOENCODING": "cp1252"},
+                capture_output=True)
+            self.assertEqual(result.returncode, 2, result.stderr.decode("utf-8", "replace"))
+            expected = f"findings: a {chr(0x2192)} b, the child{chr(0x2019)}s"
+            self.assertIn(expected.encode("utf-8"), result.stdout)
+
     def test_gate_refuses_every_round_option(self):
         for extra in ("--reviewer codex", "--round 2", "--base abc",
                       "--allow-paid", "--reset-confirmed", "--dry-run"):

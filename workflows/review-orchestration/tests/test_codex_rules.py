@@ -1257,7 +1257,8 @@ class RunRuleHookTests(unittest.TestCase):
 class ProjectRulesFileTests(unittest.TestCase):
     """The project's Codex rules entry for starting, resuming, stopping, approving and
     amending a run (the chunk (d) short plan, 11.1; A3 chunk 1 for the last two, added
-    by hand) and for a measurement's three forms (A5, added by hand), checked with ``codex execpolicy check`` from the binary
+    by hand), for a measurement's three forms (A5, added by hand) and for a conversation
+    review round and its build gate (A6, added by hand), checked with ``codex execpolicy check`` from the binary
     the pinned ``openai-codex`` installs. That command matches plain tokens only and
     does not unwrap the ``powershell.exe -Command`` wrapper Codex uses on Windows, so
     these tests cannot show the wrapped form; a live Codex matching it is fact 17 of the
@@ -1289,7 +1290,12 @@ class ProjectRulesFileTests(unittest.TestCase):
                      ("--measure",),
                      ("--measure", "--git-dir", "C:/BookDragon/personal-work.git"),
                      ("--measure", "--resume", "20261110-000000-abcd"),
-                     ("--measure", "--score", "20261110-000000-abcd")):
+                     ("--measure", "--score", "20261110-000000-abcd"),
+                     # A6's review round and its build gate share the one --review rule.
+                     ("--review", "memory/demo_review_brief.md", "--reviewer", "claude",
+                      "--git-dir", "C:/BookDragon/personal-work.git"),
+                     ("--review", "memory/demo_review_brief.md", "--build-ready",
+                      "--git-dir", "C:/BookDragon/personal-work.git")):
             with self.subTest(argv=argv):
                 result = self.check("python", self.STARTER, *argv)
                 self.assertEqual(result.get("decision"), "allow", result)
@@ -1305,6 +1311,8 @@ class ProjectRulesFileTests(unittest.TestCase):
                         "BRIEF.md"),
                        ("python", "workflows/review-orchestration/scripts/measure.py",
                         "--measure"),
+                       ("python", "workflows/review-orchestration/scripts/crossreview.py",
+                        "--review", "memory/demo_review_brief.md"),
                        ("python", "workflows/audit/scripts/run.py", "--run"),
                        ("python", "-c", "print(1)"),
                        ("py", self.STARTER, "--run", "BRIEF.md")):
@@ -1313,7 +1321,7 @@ class ProjectRulesFileTests(unittest.TestCase):
                 self.assertEqual(result.get("matchedRules"), [], result)
                 self.assertNotIn("decision", result)
 
-    MODES = ("--run", "--resume", "--stop", "--approve", "--amend", "--measure")
+    MODES = ("--run", "--resume", "--stop", "--approve", "--amend", "--measure", "--review")
 
     def rules_in(self, text):
         """Every ``prefix_rule`` call in ``text`` as ``(pattern tokens, decision)``,
@@ -1338,7 +1346,7 @@ class ProjectRulesFileTests(unittest.TestCase):
     def test_rejection_a_rule_outside_the_expected_set_is_seen_whatever_its_spacing(self):
         # The positive control for the check above (code review R27-1): each planted
         # rule, in the spacing Codex also accepts, makes the file's rules differ from
-        # the six expected.
+        # the seven expected.
         text = self.RULES.read_text(encoding="utf-8")
         expected = sorted((("python", self.STARTER, mode), "allow") for mode in self.MODES)
         self.assertEqual(sorted(self.rules_in(text)), expected)
