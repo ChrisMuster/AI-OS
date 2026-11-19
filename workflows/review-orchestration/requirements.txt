@@ -4,5 +4,5 @@
 #   .venv/Scripts/python -m pip install -r workflows/review-orchestration/requirements.txt
 # (on macOS / Linux: .venv/bin/python). Pinned exactly, because both SDKs change
 # their interfaces between releases and the engine is tested against these.
-claude-agent-sdk==0.2.159
-openai-codex==0.157.0
+claude-agent-sdk==0.2.185
+openai-codex==0.170.0

@@ -1,6 +1,6 @@
 # Codex Rules
 
-**Last modified:** 2026-11-18
+**Last modified:** 2026-11-19
 
 ## Purpose
 Project-scoped Codex rules files: commands an interactive Codex session in this project may run outside its sandbox without an approval prompt. Codex reads every `*.rules` file here when the project is trusted.
@@ -19,7 +19,7 @@ N/A. This is a configuration directory, not a workflow.
 
 ## Dependencies
 - `workflows/review-orchestration/` [[workflows/review-orchestration/CONTEXT]] - the starter the rules name; `tests/test_codex_rules.py` checks the rules file with `codex execpolicy check`.
-- Codex's rules support (`prefix_rule`, documented at developers.openai.com/codex/rules) in the `codex-cli` the project uses (0.157.0 when written).
+- Codex's rules support (`prefix_rule`, documented at developers.openai.com/codex/rules) in the `codex-cli` the project uses (0.157.0 when written; 0.170.0, bundled with `openai-codex` 0.170.0, since 2026-11-19).
 
 ## Known Issues
 - Measured on one machine and one Codex version (2026-10-04, the review-orchestration decision log, "Probes for fixes 5 and 1, and the live rules turn"): a live Codex applies a rule to the PowerShell-wrapped form it issues commands in on Windows, an allowed command runs outside the sandbox, and a `;`-joined command does not inherit the allow. `codex execpolicy check` does not unwrap the wrapper, so it cannot show the first of these; the test checks plain tokens only.
@@ -33,3 +33,4 @@ N/A. This is a configuration directory, not a workflow.
 - 2026-10-18 - Two `prefix_rule` entries added by the user by hand, for `start.py --approve` and `--amend` (review orchestration A3 chunk 1, which no run may add, decision 33), and the file's opening comment names all five modes. Contents and Known Issues updated. Then, from Codex review R27-2 and at the user's word for this one edit, the comment's fourth line says the starter resumes, stops, approves or amends from the run's trusted copy.
 - 2026-11-10 - A sixth `prefix_rule`, for `start.py --measure` (review orchestration A5, the hand entry no run may add, decision 33), added at the user's word; the opening comment names the measurement. Contents and Known Issues updated.
 - 2026-11-18 - A seventh `prefix_rule`, for `start.py --review` (review orchestration A6, the hand entry no run may add, decision 33), added at the user's word; the opening comment names the review round. Contents and Known Issues updated. Then, from the second live cross-review round (R2-1), the comment and Contents say `--review` is the one allowed mode that runs uncommitted code, with no committed-tree check and no trusted copy.
+- 2026-11-19 - Dependencies name `codex-cli` 0.170.0, which the review-orchestration SDK upgrade brings; no rule changed.

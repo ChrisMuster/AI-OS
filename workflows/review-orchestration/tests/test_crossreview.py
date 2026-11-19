@@ -2205,6 +2205,44 @@ class ReviewerOptionTests(Fixture):
         self.assertEqual(len(queried), 1)
         self.assertEqual(statuses, [])
 
+    def test_claude_probe_pending_past_the_old_six_polls_is_waited_for(self):
+        """Claude Code 2.1.328 reported the probes server pending for about 1.5 s
+        (2026-11-19): a server still pending after the six polls the check once made,
+        then connected, is accepted; one pending at every poll is refused before the
+        query, having been polled exactly PROBE_CONNECT_POLLS times."""
+        import asyncio
+        for pending, accepted in ((10, True), (providers.PROBE_CONNECT_POLLS, False)):
+            statuses = ["pending"] * pending + ["connected"]
+            polls, queried, slept = [], [], []
+            class Fake:
+                async def connect(self):
+                    pass
+                async def get_mcp_status(self):
+                    state = statuses.pop(0)
+                    polls.append(state)
+                    return {"mcpServers": [{"name": "probes", "status": state,
+                        "tools": [{"name": "run_probe"}] if state == "connected" else []}]}
+                async def query(self, prompt):
+                    queried.append(prompt)
+                async def receive_response(self):
+                    if False:
+                        yield None
+                async def disconnect(self):
+                    pass
+            async def no_wait(seconds):
+                slept.append(seconds)
+            reviewer = providers.ClaudeReviewer("model", "high", cwd=self.root,
+                client_factory=lambda **kw: Fake(), probe_settings=self.root / "probe.json")
+            expected = "without a result" if accepted else "exactly run_probe"
+            with self.subTest(pending=pending), mock.patch.object(
+                    providers.asyncio, "sleep", side_effect=no_wait), \
+                    self.assertRaisesRegex(providers.ProviderError, expected):
+                asyncio.run(reviewer._review("review", {"type": "object"}))
+            self.assertEqual(len(queried), 1 if accepted else 0)
+            self.assertEqual(len(polls), pending + 1 if accepted
+                             else providers.PROBE_CONNECT_POLLS)
+            self.assertTrue(all(s == providers.PROBE_CONNECT_POLL_SECONDS for s in slept))
+
     def test_container_merged_stream_option_is_off_by_default(self):
         seen = []
         def fake(args, **kwargs):

@@ -89,8 +89,9 @@ _CODEX_MESSAGE_ITEMS = frozenset({"userMessage", "agentMessage", "reasoning"})
 # Items that are neither, passed without a hook decision because they hold no command,
 # file or tool for a hook to judge (plan 10.3, chunk 2's first follow-on): in
 # openai-codex 0.157.0 a `contextCompaction` item holds only `id` and `type`, and a
-# `plan` item only `id`, `text` and `type`. Run 20261019-160323-3f96 was stopped by a
-# compaction in a long thread. Every other kind not listed here still ends the turn.
+# `plan` item only `id`, `text` and `type`; 0.170.0 adds only `startedAtMs` and
+# `completedAtMs` to each. Run 20261019-160323-3f96 was stopped by a compaction in a
+# long thread. Every other kind not listed here still ends the turn.
 _CODEX_NO_TOOL_ITEMS = frozenset({"contextCompaction", "plan"})
 _CODEX_TOOL_ITEMS = frozenset({"commandExecution", "fileChange", "webSearch",
                                "mcpToolCall", "dynamicToolCall", "collabAgentToolCall",
@@ -100,6 +101,13 @@ REVIEWER_TOOLS = ("Read", "Grep", "Glob")
 PROBE_TOOL = "mcp__probes__run_probe"
 PROBE_SERVER = "probes"
 PROBE_TIMEOUT_SECONDS = 150
+# How long a Claude reviewer waits for its probes server to leave `pending` before the
+# review (counted in polls, so a test that replaces the sleep runs at once). Claude Code
+# 2.1.328, bundled with claude-agent-sdk 0.2.185, reported the server `pending` and then
+# `connected` about 1.5 s later (measured 2026-11-19), past the earlier six polls of
+# 0.2 s; 30 s leaves room for a slow start and still fails a server that never connects.
+PROBE_CONNECT_POLL_SECONDS = 0.25
+PROBE_CONNECT_POLLS = 120
 STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 REVIEWER_REFUSAL = "Refused by the orchestrator: the reviewer is read-only."
 
@@ -1472,7 +1480,7 @@ class ClaudeReviewer:
         messages, result, init_model = [], None, None
         try:
             if self.probe_settings is not None:
-                for attempt in range(6):
+                for attempt in range(PROBE_CONNECT_POLLS):
                     status = await client.get_mcp_status()
                     entries = status.get("mcpServers") if isinstance(status, dict) else None
                     if not isinstance(entries, list):
@@ -1483,9 +1491,9 @@ class ClaudeReviewer:
                         raise ProviderError("probes is missing from Claude MCP status")
                     shown = matched[0]
                     state = shown.get("status") if isinstance(shown, dict) else getattr(shown, "status", None)
-                    if state != "pending" or attempt == 5:
+                    if state != "pending" or attempt == PROBE_CONNECT_POLLS - 1:
                         break
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(PROBE_CONNECT_POLL_SECONDS)
                 tools = shown.get("tools") if isinstance(shown, dict) else getattr(shown, "tools", None)
                 names = [t.get("name") if isinstance(t, dict) else getattr(t, "name", t)
                          for t in (tools or [])]
