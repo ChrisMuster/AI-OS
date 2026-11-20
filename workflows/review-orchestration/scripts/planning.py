@@ -1273,7 +1273,8 @@ def resume(run, dry_run=False, *, allow_paid=False, rounds=None, user_started=Tr
             print(f"[DRY RUN] would resume run {run_id}, paused {sr.AWAITING_USER}: the "
                   "revised brief's edit paths were read, the four approval checks passed "
                   "over them and the brief passes the check; both planners would plan "
-                  f"again from it ({reading.summary()}; Codex credits {credits})."
+                  f"again from it ({reading.summary()}; Codex credits {credits}; "
+                  f"{_dry_saved_claude(run, plain)})."
                   + (" --allow-paid would permit the planners only."
                      if allow_paid else "") + " Nothing was changed.", file=sys.stderr)
             return None
@@ -1312,7 +1313,8 @@ def resume(run, dry_run=False, *, allow_paid=False, rounds=None, user_started=Tr
         where = f"ended {last}" if status == sr.ENDED else "interrupted while running"
         if dry_run:
             print(f"[DRY RUN] would resume run {run_id} ({where}) in its planning "
-                  f"half at {nxt}; {reading.summary()}; Codex credits {credits}"
+                  f"half at {nxt}; {reading.summary()}; Codex credits {credits}; "
+                  f"{_dry_saved_claude(run, plain)}"
                   + (f"; {rounds} more plan-review round(s)" if rounds else "")
                   + ("; --allow-paid would permit that step only"
                      if allow_paid else "") + ". Nothing was changed.", file=sys.stderr)
@@ -1335,6 +1337,16 @@ def resume(run, dry_run=False, *, allow_paid=False, rounds=None, user_started=Tr
                                           else "") + ")"])
 
 
+def _dry_saved_claude(run, plain):
+    """A planning resume dry run's Claude part, as a build resume's dry run gives it
+    (plan 10.10 item 7; R4-2 of the early-reset review): the saved reading as the
+    preflight sees it, whether the probe before the next Claude step decides, and that
+    live Claude usage was not read."""
+    saved = loop._effective_last(run.state, run.deps.now(), user_resume=plain)
+    return (f"{saved.summary()}{'' if run.wait else loop.probe_decides_note(saved)}; "
+            "live Claude usage was not read")
+
+
 def _resumed(run, reading, credits, *, allow_paid, rounds, plain):
     """A planning resume's changes to the state, under its claim: the fresh Codex
     reading and credit snapshot, a permission left from an earlier attempt cleared and
@@ -1345,8 +1357,10 @@ def _resumed(run, reading, credits, *, allow_paid, rounds, plain):
     run.note_codex(reading)
     state.pop("paid_usage_pending", None)
     last = loop._last_claude(state)
+    # Paid overage or a rejection alike (plan 10.10 item 7; R4-1 of the early-reset
+    # review), as loop.apply_preflight sets it for a build resume.
     state["claude_unknown_reset_resume"] = bool(
-        plain and loop._paid_overage(last) and last.resets_at is None)
+        plain and loop._limit_reported(last) and last.resets_at is None)
     if rounds is not None:
         planning["round_cap"] = planning.get("review_rounds", 0) + rounds
     if allow_paid:

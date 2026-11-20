@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1648,6 +1649,125 @@ class RoundFlowTests(Fixture):
                          ["capture", "probe", "review", "capture"])
         self.assertIn("unknown reset",
                       self.latest_record()["preflight_reading"]["claude_saved"])
+
+    # Plan 10.10 item 7, "A saved reading that is only high" (the early-reset item,
+    # 2026-11-19): a saved `reported` reading never refuses a round's step 4; the probe
+    # before the session decides, and a probe with no usable reading falls back to it.
+
+    def saved_round(self, reading):
+        old = self.root / "workflows/review-orchestration/runs/review-old"
+        old.mkdir()
+        (old / "round.json").write_text(json.dumps({
+            "item": "other_item", "kind": "code",
+            "started_at": "2026-11-17T09:00:00+00:00",
+            "usage": {"claude_last_reading": dict(
+                reading, read_at="2026-11-17T09:00:00+00:00")}}),
+            encoding="utf-8", newline="\n")
+
+    def probe_reading(self, calls, reading):
+        def probe(model, cwd, received):
+            calls.append(("probe", None))
+            return SimpleNamespace(reading=reading, tokens=1, usage={}, model=model,
+                                   events=[])
+        return probe
+
+    def test_saved_high_reading_reaches_the_session_when_the_probe_reads_low(self):
+        # The incident: a saved 80% from an earlier round, an early reset, a probe at 1%.
+        import limits
+        self.saved_round({"source": limits.REPORTED, "reason": None, "percent": 99,
+                          "window": "seven_day", "resets_at": 4_000_000_000})
+        args = self.args()
+        args.reviewer = "claude"
+        deps, calls = self.deps()
+        deps.probe_claude = self.claude_probe(calls)
+        self.assertEqual(crossreview.run_round(args, root=self.root, deps=deps), 0)
+        self.assertEqual([c[0] for c in calls if c[0] in ("capture", "probe", "review")],
+                         ["capture", "probe", "review", "capture"])
+
+    def test_saved_high_reading_passes_a_claude_dry_run(self):
+        import limits
+        self.saved_round({"source": limits.REPORTED, "reason": None, "percent": 99,
+                          "window": "seven_day", "resets_at": 4_000_000_000})
+        args = self.args(dry=True)
+        args.reviewer = "claude"
+        deps, calls = self.deps()
+        deps.probe_claude = lambda *a: self.fail("dry run sent a Claude probe")
+        self.assertEqual(crossreview.run_round(args, root=self.root, deps=deps), 0)
+
+    def test_saved_high_reading_and_an_unusable_probe_stop_on_the_saved_figure(self):
+        import limits
+        self.saved_round({"source": limits.REPORTED, "reason": None, "percent": 99,
+                          "window": "seven_day", "resets_at": 4_000_000_000})
+        for reason in ("no event", "the rate-limit events carried no utilisation"):
+            with self.subTest(reason=reason):
+                args = self.args()
+                args.reviewer = "claude"
+                deps, calls = self.deps()
+                deps.probe_claude = self.probe_reading(calls, limits.Reading(
+                    limits.CLAUDE, limits.UNAVAILABLE, reason=reason))
+                self.assertEqual(crossreview.run_round(args, root=self.root, deps=deps),
+                                 1)
+                self.assertNotIn("review", [name for name, _ in calls])
+                data = self.latest_record()
+                self.assertEqual(data["stop"], "usage-limit")
+                self.assertIn("99", data["evidence"]["reading"])
+                self.assertEqual(data["usage"]["claude_last_reading"]["percent"], 99)
+
+    def test_reset_confirmed_with_an_unusable_probe_stops_on_the_saved_limit(self):
+        # R2-1: the override lets the probe out but is not proof of a reset.
+        import limits
+        for reason in ("using paid overage", "rate-limit status is rejected"):
+            with self.subTest(reason=reason):
+                runs = self.root / "workflows/review-orchestration/runs"
+                for old in runs.glob("review-*"):
+                    shutil.rmtree(old)
+                self.saved_round({"source": limits.LIMIT_REPORTED, "reason": reason,
+                                  "percent": 100, "resets_at": None})
+                args = self.args()
+                args.reviewer = "claude"
+                args.reset_confirmed = True
+                deps, calls = self.deps()
+                deps.probe_claude = self.probe_reading(calls, limits.Reading(
+                    limits.CLAUDE, limits.UNAVAILABLE, reason="no event"))
+                self.assertEqual(crossreview.run_round(args, root=self.root, deps=deps),
+                                 1)
+                self.assertIn("probe", [name for name, _ in calls])
+                self.assertNotIn("review", [name for name, _ in calls])
+                data = self.latest_record()
+                self.assertEqual(data["stop"], "usage-limit")
+                self.assertIn(reason, data["evidence"]["reading"])
+
+    def test_reset_confirmed_lets_a_round_past_a_rejection_with_an_unknown_reset(self):
+        # R1-3: a rejection with no reset time is cleared by the user's word, as
+        # paid overage is, and a usable probe lets the round go on.
+        import limits
+        self.saved_round({"source": limits.LIMIT_REPORTED,
+                          "reason": "rate-limit status is rejected",
+                          "percent": 100, "resets_at": None})
+        args = self.args()
+        args.reviewer = "claude"
+        deps, calls = self.deps()
+        deps.probe_claude = self.claude_probe(calls)
+        with self.assertRaisesRegex(crossreview.Refused, "usage preflight"):
+            crossreview.run_round(args, root=self.root, deps=deps)
+        args.reset_confirmed = True
+        deps, calls = self.deps()
+        deps.probe_claude = self.claude_probe(calls)
+        self.assertEqual(crossreview.run_round(args, root=self.root, deps=deps), 0)
+        self.assertEqual([c[0] for c in calls if c[0] in ("capture", "probe", "review")],
+                         ["capture", "probe", "review", "capture"])
+
+    def test_an_event_with_no_figure_keeps_the_saved_reading(self):
+        # R1-4: RoundUsage.note_claude_event, as Run.note_claude_event.
+        import limits
+        saved = {"source": limits.REPORTED, "percent": 80, "read_at": 1}
+        state = {"claude_last_reading": dict(saved)}
+        usage = crossreview.RoundUsage(state, {}, self.root)
+        usage.note_claude_event(limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                                               reason="no utilisation"))
+        self.assertEqual(state["claude_last_reading"], saved)
+        usage.note_claude_event(limits.Reading(limits.CLAUDE, limits.REPORTED, percent=1))
+        self.assertEqual(state["claude_last_reading"]["percent"], 1)
 
     def test_plan_round_given_base_diffs_from_it(self):
         args = self.args()

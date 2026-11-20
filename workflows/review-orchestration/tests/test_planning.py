@@ -464,6 +464,8 @@ class QuestionTests(PlanningCase):
             self.assertIsNone(planning.resume(self.load(run.state["run_id"]),
                                               dry_run=True))
         self.assertIn("[DRY RUN] would resume run", err.getvalue())
+        # The saved Claude reading is given too (R4-2 of the early-reset review).
+        self.assertIn("live Claude usage was not read", err.getvalue())
         self.assertEqual((self.record(run), self.outside()), before)
 
     def test_positive_run_py_resume_routes_a_planning_run_to_its_planning_half(self):

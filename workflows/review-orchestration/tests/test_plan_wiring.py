@@ -226,7 +226,10 @@ class ProviderRuleTests(WiringCase):
         run.state["claude_last_reading"] = saved_claude(percent=95, resets_at=2_000_000)
         stop = run.before_step("build", "claude")
         self.assertEqual(stop["provider"], "claude")
-        self.assertEqual(self.h.probe_calls, [], "a known stop sends no probe")
+        # A saved reading that is only high is checked by the probe (plan 10.10 item 7);
+        # this probe gives no usable reading, so the saved 95% stops the step.
+        self.assertEqual(len(self.h.probe_calls), 1)
+        self.assertIn("ceiling", stop["detail"])
 
     def test_positive_a_resume_into_a_codex_review_is_not_refused_on_claudes_reading(self):
         run = self.built(inject="review-R1")  # the build ran; the review is next
@@ -331,6 +334,185 @@ class PaidPlanningTests(WiringCase):
 # ------------------------------------------------------------ --resume --wait
 
 
+class SavedHighReadingTests(WiringCase):
+    """10.10 item 7, "A saved reading that is only high" (the early-reset item,
+    2026-11-19): a saved Claude ``reported`` reading refuses only a ``--resume --wait``
+    preflight and never stops a step before its probe; a probe with no usable reading
+    is judged on the saved reading, uncleared where the unknown-reset override cleared
+    it (R2-1); a ``limit-reported`` reading keeps every earlier rule."""
+
+    def low(self):
+        return limits.Reading(limits.CLAUDE, limits.REPORTED, percent=1,
+                              window="five_hour", resets_at=self.h.clock + 600)
+
+    def saved_high(self, run, resets=None):
+        run.state["claude_last_reading"] = saved_claude(
+            percent=95, resets_at=resets or self.h.clock + 600)
+        run.save()
+
+    def test_positive_a_plain_resume_lets_it_through_and_the_probe_decides(self):
+        run = self.built(inject="build")
+        self.saved_high(run)
+        again = self.load(run.state["run_id"])
+        loop.resume(again)  # not refused at the preflight
+        self.assertEqual(self.h.probe_calls, [])
+        self.h.probe_readings.append(self.low())
+        self.assertIsNone(again.before_step("build", "claude"))
+        self.h.probe_readings.append(limits.Reading(
+            limits.CLAUDE, limits.REPORTED, percent=90, window="five_hour",
+            resets_at=self.h.clock + 600))
+        stop = again.before_step("fix-R1", "claude")
+        self.assertIn("90", stop["reading"])
+        self.assertEqual(len(self.h.probe_calls), 2)
+
+    def test_positive_a_plain_resume_dry_run_says_the_probe_decides(self):
+        run = self.built(inject="build")
+        self.saved_high(run)
+        code, out = self.call("--resume", run.state["run_id"], "--dry-run")
+        self.assertEqual(code, 0, out + self.err)
+        self.assertIn("the probe before the next Claude step decides", self.err)
+        self.assertEqual(self.h.probe_calls, [])
+
+    def test_rejection_a_resume_wait_still_waits_on_it(self):
+        run = self.built(inject="build")
+        self.saved_high(run)
+        code, out = self.call("--resume", run.state["run_id"], "--wait",
+                              deps=self.waking_deps())
+        self.assertEqual(self.h.slept, [600 + loop.WAIT_MARGIN_SECONDS], out + self.err)
+
+    def test_positive_an_approval_with_and_without_wait_lets_it_through(self):
+        for wait in (False, True):
+            with self.subTest(wait=wait):
+                self.setUp()
+                run = self.planning_run()
+                pause_planned(run)
+                self.saved_high(run)
+                again = loop.load(run.state["run_id"], root=self.root,
+                                  deps=self.h.deps(), log_path=self.log,
+                                  runs_dir=self.runs, wait=wait)
+                with redirect_stderr(io.StringIO()):
+                    loop.approve(again)
+                self.assertEqual(runrecord.read_state(run.run_dir)["status"],
+                                 sr.RUNNING)
+                self.assertEqual(self.h.probe_calls, [])
+
+    def test_rejection_a_planning_resume_with_wait_judges_it(self):
+        run = self.planning_run()
+        self.saved_high(run)
+        again = loop.load(run.state["run_id"], root=self.root, deps=self.h.deps(),
+                          log_path=self.log, runs_dir=self.runs, wait=True)
+        with self.assertRaises(loop.UsageRefused):
+            loop._approval_reading(again, providers_=("claude",))
+        loop._approval_reading(again, providers_=("claude",), waiting=False)
+
+    def test_rejection_an_unusable_probe_stops_on_the_saved_figure(self):
+        run = self.built(inject="build")
+        self.saved_high(run)
+        again = self.load(run.state["run_id"])
+        for reason in ("no event", "the rate-limit events carried no utilisation"):
+            with self.subTest(reason=reason):
+                self.h.probe_readings.append(limits.Reading(
+                    limits.CLAUDE, limits.UNAVAILABLE, reason=reason))
+                stop = again.before_step("build", "claude")
+                self.assertIn("ceiling", stop["detail"])
+                self.assertEqual(again.state["claude_last_reading"]["percent"], 95)
+                self.assertEqual(again.state["readings"][-1]["usage_probe"]
+                                 ["no_usable_reading"], reason)
+
+    def test_rejection_after_the_override_an_unusable_probe_stops_on_the_limit(self):
+        # R2-1: the unknown-reset override lets the probe out; an empty probe after it
+        # stops on the original saved reading, paid overage or a rejection alike.
+        for reason in (OVERAGE, "rate-limit status is rejected"):
+            for probe in ("no event", "the rate-limit events carried no utilisation"):
+                with self.subTest(reason=reason, probe=probe):
+                    self.setUp()
+                    run = self.built(inject="build")
+                    run.state["claude_last_reading"] = saved_claude(
+                        "limit-reported", 100, reason)
+                    run.save()
+                    again = self.load(run.state["run_id"])
+                    loop.resume(again)
+                    self.assertTrue(again.state["claude_unknown_reset_resume"])
+                    self.h.probe_readings.append(limits.Reading(
+                        limits.CLAUDE, limits.UNAVAILABLE, reason=probe))
+                    stop = again.before_step("build", "claude")
+                    self.assertIn(reason, stop["detail"])
+                    self.assertEqual(len(self.h.probe_calls), 1)
+                    self.assertNotIn("probe_on_overage",
+                                     again.state["readings"][-1]["usage_probe"])
+
+    def test_positive_a_rejection_with_an_unknown_reset_clears_for_a_plain_resume(self):
+        # R1-3: as paid overage; a --resume --wait refuses on it with no probe.
+        run = self.built(inject="build")
+        run.state["claude_last_reading"] = saved_claude(
+            "limit-reported", 100, "rate-limit status is rejected")
+        run.save()
+        code, out = self.call("--resume", run.state["run_id"], "--wait",
+                              deps=self.waking_deps())
+        self.assertEqual(code, run_py.REFUSED, out)
+        self.assertEqual((self.h.slept, self.h.probe_calls), ([], []))
+        self.h.probe_readings.append(self.low())
+        code, out = self.call("--resume", run.state["run_id"])
+        self.assertEqual(code, 0, out + self.err)
+        self.assertEqual(len(self.h.probe_calls), 1)
+
+    def stopped_before_synthesis(self):
+        """A planning run stopped before its synthesis, a Claude step, by the probe."""
+        run = self.planning_run()
+        self.h.probe_readings = [self.low(), limits.Reading(
+            limits.CLAUDE, limits.REPORTED, percent=95, resets_at=self.h.clock + 60)]
+        asyncio.run(planning.advance(run))
+        self.assertEqual(run.state["stop_reasons"][-1]["evidence"]["step"], "synthesis")
+        self.h.probe_readings = []
+        return run
+
+    def test_positive_a_planning_resume_clears_a_rejection_with_an_unknown_reset(self):
+        # R4-1 of the early-reset review: the planning half sets the unknown-reset
+        # allowance on the same test as a build resume.
+        run = self.stopped_before_synthesis()
+        run.state["claude_last_reading"] = saved_claude(
+            "limit-reported", 100, "rate-limit status is rejected")
+        run.save()
+        again = self.load(run.state["run_id"])
+        planning.resume(again)
+        self.assertTrue(again.state["claude_unknown_reset_resume"])
+        calls = len(self.h.probe_calls)
+        self.h.probe_readings.append(self.low())
+        self.assertIsNone(again.before_step("synthesis", "claude"))
+        self.assertEqual(len(self.h.probe_calls), calls + 1)
+
+    def test_positive_a_planning_resume_dry_run_says_the_probe_decides(self):
+        # R4-2: both planning-resume dry runs give the saved Claude reading and say the
+        # probe decides, as a build resume's does.
+        run = self.stopped_before_synthesis()
+        self.saved_high(run)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            planning.resume(self.load(run.state["run_id"]), dry_run=True)
+        self.assertIn("Claude usage 95%", err.getvalue())
+        self.assertIn("the probe before the next Claude step decides", err.getvalue())
+        self.assertIn("live Claude usage was not read", err.getvalue())
+
+    def test_negative_a_passed_known_reset_and_an_empty_probe_let_the_step_run(self):
+        run = self.built(inject="build")
+        run.state["claude_last_reading"] = saved_claude(
+            "limit-reported", 100, OVERAGE, self.h.clock - 1)
+        run.save()
+        again = self.load(run.state["run_id"])
+        self.assertIsNone(again.before_step("build", "claude"))
+        self.assertEqual(len(self.h.probe_calls), 1)
+
+    def test_negative_an_event_with_no_figure_keeps_the_saved_reading(self):
+        run = self.built(inject="build")
+        self.saved_high(run)
+        saved = dict(run.state["claude_last_reading"])
+        run.note_claude_event(limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                                             reason="no utilisation"))
+        self.assertEqual(run.state["claude_last_reading"], saved)
+        run.note_claude_event(self.low())
+        self.assertEqual(run.state["claude_last_reading"]["percent"], 1)
+
+
 class WaitTests(WiringCase):
     """10.10 item 5: a user-started ``--resume --wait`` waits at its preflight, in both
     halves; a plain ``--resume`` is refused as before."""
@@ -433,7 +615,11 @@ class WaitTests(WiringCase):
         self.assertEqual((self.h.slept, self.h.probe_calls), ([], []), "no probe sent")
         self.assertEqual(self.record(run.run_dir), before)
         # A plain resume is the user's word that the allowance has reset: it goes on to
-        # the probe before the build, which reads the live figure.
+        # the probe before the build, which reads the live figure (here a usable low
+        # one; an empty probe would stop the build on the saved overage, R2-1).
+        self.h.probe_readings.append(limits.Reading(
+            limits.CLAUDE, limits.REPORTED, percent=1, window="five_hour",
+            resets_at=self.h.clock + 600))
         code, out = self.call("--resume", run.state["run_id"])
         self.assertEqual(code, 0, out)
         self.assertEqual(len(self.h.probe_calls), 1)
@@ -450,6 +636,11 @@ class WaitTests(WiringCase):
         self.assertTrue(again.state["claude_unknown_reset_resume"])
         self.h.reviews = [[finding()], []]
         self.h.builder_script = [reply(actions(("R1-1", "fixed")))]
+        # The fix's probe reads a usable low figure; an empty one would stop the fix on
+        # the saved overage (R2-1 of the early-reset review).
+        self.h.probe_readings.append(limits.Reading(
+            limits.CLAUDE, limits.REPORTED, percent=1, window="five_hour",
+            resets_at=self.h.clock + 600))
         asyncio.run(again.advance())
         self.assertEqual(self.reason(again), sr.CLEAN,
                          again.state["stop_reasons"][-1])

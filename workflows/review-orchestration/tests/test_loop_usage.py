@@ -47,7 +47,11 @@ class UsageGuardTests(LoopCase):
         run.state["claude_last_reading"] = dict(saved)
         run.before_step("build", "claude")
         self.assertEqual(run.state["claude_last_reading"], saved)
-        self.assertIn("not reported", run.state["readings"][-1]["claude"])
+        # A probe with no usable reading judges its step on the saved one (plan 10.10
+        # item 7, R1-2 of the early-reset review), and records why.
+        self.assertEqual(run.state["readings"][-1]["claude"],
+                         loop._last_claude(run.state).summary())
+        self.assertIn("no_usable_reading", run.state["readings"][-1]["usage_probe"])
 
     def test_rejection_known_overage_stops_without_a_probe(self):
         run = self.prepared()
@@ -76,6 +80,10 @@ class UsageGuardTests(LoopCase):
         self.assertIsNotNone(run.before_step("build", "claude"))
         self.assertEqual(self.h.probe_calls, [])
         run.state["claude_unknown_reset_resume"] = True
+        # The override lets the probe go out; its usable low reading lets the step run.
+        self.h.probe_readings.append(limits.Reading(
+            limits.CLAUDE, limits.REPORTED, percent=1, window="five_hour",
+            resets_at=2000000))
         self.assertIsNone(run.before_step("build", "claude"))
         self.assertEqual(len(self.h.probe_calls), 1)
         self.assertIsNotNone(run.before_step("fix-R1", "claude"))
@@ -98,6 +106,9 @@ class UsageGuardTests(LoopCase):
         run.save()
         loop.resume(run)
         self.assertTrue(run.state["claude_unknown_reset_resume"])
+        self.h.probe_readings.append(limits.Reading(
+            limits.CLAUDE, limits.REPORTED, percent=1, window="five_hour",
+            resets_at=2000000))
         self.assertIsNone(run.before_step("build", "claude"))
         self.assertEqual(len(self.h.probe_calls), 1)
 

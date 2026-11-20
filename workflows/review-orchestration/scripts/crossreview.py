@@ -776,8 +776,12 @@ class RoundUsage:
                             encoding="utf-8", newline="\n")
 
     def note_claude_event(self, reading):
+        import limits
         import loop
-        self.state["claude_last_reading"] = loop._reading_record(reading, time.time())
+        # As Run.note_claude_event: an event with no usable figure never replaces the
+        # saved reading (plan 10.10 item 7, R1-4 of the early-reset review).
+        if reading.source != limits.UNAVAILABLE:
+            self.state["claude_last_reading"] = loop._reading_record(reading, time.time())
         self.save()
 
     def _keep_codex_five_hour(self, reading):
@@ -998,7 +1002,9 @@ def run_round(args, *, root=ROOT, deps=None):
         print(f"[DRY RUN] R{round_no}; checks: {'; '.join(checks)}; "
               f"diff {len(diff)} characters; prompt {len(prompt)} characters; "
               f"Docker running: {deps.docker_running()}; image: {image.get('would')}; "
-              f"{reading.summary()}; {saved.summary()}; live Claude usage was not read")
+              f"{reading.summary()}; {saved.summary()}"
+              f"{loop.probe_decides_note(saved) if reviewer == 'claude' else ''}; "
+              "live Claude usage was not read")
         return 0
     # Step 7: the first capture. Nothing between this and the reviewer launch writes
     # reviewed source. A capture failure has no round record and no session.

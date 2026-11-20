@@ -612,6 +612,43 @@ def _paid_overage(reading):
             and reading.reason == "using paid overage")
 
 
+def _limit_reported(reading):
+    """A Claude reading that refuses a preflight and stops a step before its probe:
+    paid overage, or a ``rejected`` status (plan 10.10 item 7)."""
+    return reading.provider == limits.CLAUDE and reading.source == limits.LIMIT_REPORTED
+
+
+def _preflight_claude(saved, *, waiting):
+    """The saved Claude reading as a preflight judges it (plan 10.10 item 7, "A saved
+    reading that is only high"). A ``reported`` one is judged unread unless the
+    preflight waits (a user-started ``--resume --wait``), since it cannot see a reset
+    made since it was read and the probe before the Claude step reads the live figure.
+    Only the check sees this; ``claude_last_reading`` is not changed."""
+    if waiting or saved.provider != limits.CLAUDE or saved.source != limits.REPORTED:
+        return saved
+    return limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
+                          reason=f"the saved reading ({saved.summary()}) is checked by "
+                                 "the probe before the Claude step")
+
+
+def probe_decides_note(saved):
+    """What a dry run adds after a saved Claude reading the preflight left to the probe
+    (plan 10.10 item 7): a ``reported`` one, which the real command lets through."""
+    if saved.provider == limits.CLAUDE and saved.source == limits.REPORTED:
+        return " (the probe before the next Claude step decides)"
+    return ""
+
+
+def _no_usable_probe(state, now, last):
+    """What a Claude step is judged on when its probe gave no usable reading (plan 10.10
+    item 7): the saved reading, uncleared where the unknown-reset override cleared it
+    (R2-1 of the early-reset review), still cleared where its known reset has passed;
+    ``last`` where nothing is saved."""
+    if not state.get("claude_last_reading"):
+        return last
+    return _effective_last(state, now)
+
+
 def _usage_stop(readings, ceiling, *, allow_paid=False):
     """Paid permission lifts the margin and overage stops, not hard refusals."""
     if allow_paid:
@@ -970,14 +1007,15 @@ class CodexWatch:
 
 def _effective_last(state, now, *, user_resume=False):
     """Claude's saved reading as a check sees it. A known reset that has passed clears
-    it. A paid-overage reading with an unknown reset is cleared only for a plain resume
-    the user started (``user_resume``), never for ``--resume --wait`` (plan 10.10 items
-    5 and 7, R44-1): the caller passes ``user_resume`` false for a waiting resume."""
+    it. A ``limit-reported`` reading (paid overage or ``rejected``) with an unknown
+    reset is cleared only for a plain resume the user started (``user_resume``), never
+    for ``--resume --wait`` (plan 10.10 items 5 and 7, R44-1, and R1-3 of the
+    early-reset review): the caller passes ``user_resume`` false for a waiting resume."""
     reading = _last_claude(state)
     if reading.resets_at is not None and reading.resets_at <= now:
         return limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
                               reason="the saved usage reset has passed")
-    if _paid_overage(reading):
+    if _limit_reported(reading):
         if reading.resets_at is None and user_resume:
             return limits.Reading(limits.CLAUDE, limits.UNAVAILABLE,
                                   reason="the user resumed after an unknown reset")
@@ -1113,7 +1151,7 @@ def apply_preflight(state, reading, credits, *, note_codex, user_resume,
     state["credits"] = credits
     note_codex(reading)
     state["claude_unknown_reset_resume"] = bool(
-        user_resume and _paid_overage(_last_claude(state))
+        user_resume and _limit_reported(_last_claude(state))
         and _last_claude(state).resets_at is None)
     if allow_paid and grant_paid is not None:
         grant_paid(reading)
@@ -1122,8 +1160,10 @@ def apply_preflight(state, reading, credits, *, note_codex, user_resume,
 def usage_preflight(state, settings, step, *, read_codex, note_codex, now,
                     root, frozen_dir=None, allow_paid=False, user_resume=False,
                     dry_run=False, grant_paid=None, environ=None, check_usage=True,
-                    unchanged_note=""):
-    """The request-free usage preflight shared by a run and one review round."""
+                    unchanged_note="", waiting=False):
+    """The request-free usage preflight shared by a run and one review round.
+    ``waiting`` is true for a user-started ``--resume --wait`` alone, the one preflight
+    that judges a saved Claude ``reported`` reading (plan 10.10 item 7)."""
     try:
         reading = read_codex(root, frozen_dir)
     except Exception as exc:
@@ -1134,7 +1174,8 @@ def usage_preflight(state, settings, step, *, read_codex, note_codex, now,
     saved = _effective_last(state, now(), user_resume=user_resume)
     provider = step_provider(settings, step)
     if check_usage:
-        _preflight_usage(_preflight_readings((provider,), reading, saved),
+        _preflight_usage(_preflight_readings((provider,), reading,
+                                             _preflight_claude(saved, waiting=waiting)),
                          settings["usage_ceiling_percent"], allow_paid=allow_paid)
     credits = credit_snapshot(reading)
     reason = None if allow_paid or provider != limits.CODEX else untrackable(credits)
@@ -1988,7 +2029,10 @@ class Run:
     # --------------------------------------------------------------- usage
 
     def note_claude_event(self, reading):
-        self.state["claude_last_reading"] = _reading_record(reading, self.deps.now())
+        # An event with no usable figure never replaces the saved reading (plan 10.10
+        # item 7, R1-4 of the early-reset review).
+        if reading.source != limits.UNAVAILABLE:
+            self.state["claude_last_reading"] = _reading_record(reading, self.deps.now())
         if self._segment is not None:
             _note_five_hour(self._segment, reading)
         # Persist before another model request can run, including when the current
@@ -2054,8 +2098,9 @@ class Run:
         claude = last
         probe = None
         stop = None
-        if provider == limits.CLAUDE:
-            # A known overage is checked before a paid request can be sent.
+        if provider == limits.CLAUDE and _limit_reported(last):
+            # A known overage or rejection is checked before a request can be sent; a
+            # saved reading that is only high is left to the probe (plan 10.10 item 7).
             stop = _usage_stop([last], settings["usage_ceiling_percent"],
                                allow_paid=permitted)
         if stop is None and provider == limits.CLAUDE:
@@ -2082,8 +2127,14 @@ class Run:
             claude = probe.reading
             probe_info = {"tokens": probe.tokens, "usage": probe.usage,
                           "model": probe.model, "probe_event": bool(probe.events)}
+            if claude.source == limits.UNAVAILABLE:
+                # No usable reading: the step is judged on the saved one (item 7).
+                probe_info["no_usable_reading"] = claude.reason
+                claude = _no_usable_probe(state, now(), last)
+            # A fallback reading is the saved one, not something the probe found, so it
+            # never marks the probe as sent into overage.
             if (_paid_overage(claude) and not _paid_overage(last)
-                    and not permitted):
+                    and not permitted and "no_usable_reading" not in probe_info):
                 probe_info["probe_on_overage"] = True
             state["claude_unknown_reset_resume"] = False
         entry = {"step": step, "codex": codex.summary(),
@@ -3527,7 +3578,7 @@ def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True)
         note_codex=run.note_codex, now=run.deps.now, root=run.root,
         frozen_dir=run.state.get("frozen_dir"), allow_paid=allow_paid,
         user_resume=plain, dry_run=True, check_usage=user_started,
-        unchanged_note="; the run is unchanged")
+        unchanged_note="; the run is unchanged", waiting=user_started and run.wait)
     if dry_run:
         _, note = _docker_at_start(run.deps, True)
         cap = (_build_rounds(run) + rounds if rounds is not None
@@ -3537,8 +3588,9 @@ def resume(run, rounds=None, dry_run=False, allow_paid=False, user_started=True)
         print(f"[DRY RUN] would resume run {run.state['run_id']} ({where}) from its "
               f"last completed step {run.state['step']}; "
               f"next step {run.next_step()}; round cap {cap}; Codex credits {credits}; "
-              f"{reading.summary()}; {saved.summary()}; live Claude usage was not "
-              f"read; {note}. Nothing was changed."
+              f"{reading.summary()}; {saved.summary()}"
+              f"{'' if run.wait else probe_decides_note(saved)}; live Claude usage "
+              f"was not read; {note}. Nothing was changed."
               + (" --allow-paid would permit the next step only."
                  if allow_paid else ""), file=sys.stderr)
         return
@@ -3772,7 +3824,7 @@ def approval_problems(run, edit_paths):
 
 
 def _approval_reading(run, *, allow_paid=False, providers_=None, user_resume=False,
-                      check=True):
+                      check=True, waiting=None):
     """The Codex reading and credit snapshot an approval, or a resume in the planning
     half, takes before any change, so the next before-step check compares against a
     snapshot taken then rather than at a start that may be days old. Read-only.
@@ -3782,7 +3834,13 @@ def _approval_reading(run, *, allow_paid=False, providers_=None, user_resume=Fal
     Codex's reading where that step uses Codex, ``claude_last_reading`` where it uses
     Claude. Untrackable credits refuse only where it uses Codex; otherwise the snapshot
     is recorded as read. ``check`` false (an automatic ``--wait`` resume) makes no
-    usage check, as the build's automatic resume makes none."""
+    usage check, as the build's automatic resume makes none. ``waiting`` (by default a
+    checked ``--wait``, which is a user-started ``--resume --wait`` in the planning
+    half) is the one case that judges a saved Claude ``reported`` reading; an approval
+    passes false, its ``--wait`` being for later stops (plan 10.10 item 7, R1-5 of the
+    early-reset review)."""
+    if waiting is None:
+        waiting = bool(check and run.wait)
     step_providers = next_providers(run) if providers_ is None else tuple(providers_)
     try:
         reading = run.deps.read_codex(run.root, run.state.get("frozen_dir"))
@@ -3794,7 +3852,8 @@ def _approval_reading(run, *, allow_paid=False, providers_=None, user_resume=Fal
         raise RunRefused([f"{sandboxed}; nothing was changed"])
     saved = _effective_last(run.state, run.deps.now(), user_resume=user_resume)
     if check:
-        _preflight_usage(_preflight_readings(step_providers, reading, saved),
+        _preflight_usage(_preflight_readings(step_providers, reading,
+                                             _preflight_claude(saved, waiting=waiting)),
                          run.settings["usage_ceiling_percent"], allow_paid=allow_paid)
     credits = credit_snapshot(reading)
     reason = (None if allow_paid or limits.CODEX not in step_providers
@@ -3852,12 +3911,14 @@ def approve(run, dry_run=False, allow_paid=False):
                                      "and a new run"])
     # The next step is the build, on the builder's provider alone (plan 10.10 item 8).
     reading, credits = _approval_reading(
-        run, allow_paid=allow_paid, providers_=(run.settings["roles"]["builder"],))
+        run, allow_paid=allow_paid, providers_=(run.settings["roles"]["builder"],),
+        waiting=False)
     if dry_run:
         print(f"[DRY RUN] the four approval checks passed over the approved edit paths "
               f"{', '.join(edit_paths)} ({reading.summary()}; Codex credits {credits}; "
-              f"{_effective_last(run.state, run.deps.now()).summary()}; live Claude "
-              "usage was not read). "
+              f"{_effective_last(run.state, run.deps.now()).summary()}"
+              f"{probe_decides_note(_effective_last(run.state, run.deps.now()))}; "
+              "live Claude usage was not read). "
               "A real approval would start Docker if it is not running and prepare the "
               "check image, append the started entry to the workflow LOG.md and write "
               f"the review packet memory/{run.state['item']}_review_packet.md, each "
