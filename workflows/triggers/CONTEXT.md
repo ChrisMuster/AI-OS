@@ -1,6 +1,6 @@
 # Triggers
 
-**Last modified:** 2026-07-07
+**Last modified:** 2026-11-20
 
 ## Purpose
 A single, AI-agnostic registry of the natural-language phrases that trigger Book
@@ -56,3 +56,7 @@ triggers" (or "list the skills") and `run.py --list` prints the grouped set.
 - 2026-07-07 - Registered the doc-sync category (the "check context is current" /
   "are the docs in sync" trigger, running the doc-sync guard) in triggers.yaml,
   taking the registry to twelve categories; doc-sync-guard build part 5.
+- 2026-11-20 - Registered the `cross-review` and `review-orchestration` categories
+  and moved `do the review` from the weekly review to cross-review, taking the
+  registry to fourteen categories, with three new registry tests;
+  review-orchestration A6.

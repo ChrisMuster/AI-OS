@@ -1,6 +1,6 @@
 # Triggers - Tests
 
-**Last modified:** 2026-08-04
+**Last modified:** 2026-11-20
 
 ## Purpose
 Hermetic unit tests for the trigger-registry loader and renderer, plus a
@@ -11,7 +11,9 @@ data-integrity guard for the shipped registry.
   then discovers and runs every `test_*.py`.
 - test_registry.py - loader tests (valid, missing, malformed, entries without a
   name), category filtering, rendering, and a check that the real triggers.yaml is
-  well-formed (every category has a summary, a runs value, and phrases).
+  well-formed (every category has a summary, a runs value, and phrases), that no
+  phrase is registered under two categories, and that the review-orchestration and
+  cross-review entries hold exactly their agreed phrases.
 
 ## Inputs
 None. Tests build temporary YAML fixtures; the integrity test reads the shipped
@@ -51,3 +53,6 @@ None.
   floor. Part of the pass clearing the last 50 sites project-wide; `encoding`
   became a close-out blocking label in the same change. Suite unchanged at 10;
   no assertion touched.
+- 2026-11-20 - Three shipped-registry tests added for review-orchestration A6: no
+  phrase in two categories, the four run phrases (none containing "review"), and
+  the three cross-review phrases with `do the review` gone from the weekly review.

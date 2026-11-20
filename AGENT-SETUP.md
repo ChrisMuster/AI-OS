@@ -28,6 +28,7 @@ The script checks:
 - `.env` exists (optional — extends web research functionality)
 - The canonical project `.venv` contains every package declared by root `requirements.txt`
 - Shared PDF extraction is installed in the project `.venv`
+- The review-orchestration workflow's two SDKs are installed in the project `.venv` (optional: a missing one is a warning naming `workflows/review-orchestration/requirements.txt`, never a failure)
 - AI-specific configuration files exist
 - The selected AI's native MCP configuration is present and contains biblio-tools
 - The `mcp` Python package is installed (MCP-capable AIs)

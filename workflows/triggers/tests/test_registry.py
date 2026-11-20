@@ -97,6 +97,34 @@ class TestShippedRegistry(unittest.TestCase):
             self.assertTrue(cat.get("runs"), f"{cat['name']} needs a runs value")
             self.assertTrue(cat.get("phrases"), f"{cat['name']} needs phrases")
 
+    def _phrases(self):
+        return {c["name"]: c.get("phrases", []) for c in run_mod.load_registry(_REGISTRY)}
+
+    def test_no_phrase_is_registered_twice(self):
+        seen = {}
+        for name, phrases in self._phrases().items():
+            for phrase in phrases:
+                key = phrase.casefold()
+                self.assertNotIn(key, seen, f"{phrase!r} is in {seen.get(key)} and {name}")
+                seen[key] = name
+
+    def test_review_orchestration_run_phrases(self):
+        phrases = self._phrases()
+        self.assertEqual(phrases["review-orchestration"],
+                         ["write a run brief", "start the build run",
+                          "approve the run's plan", "resume the build run"])
+        for phrase in phrases["review-orchestration"]:
+            self.assertNotIn("review", phrase, "a run phrase never says review")
+
+    def test_cross_review_phrases(self):
+        phrases = self._phrases()
+        self.assertEqual(phrases["cross-review"],
+                         ["do the review", "cross-review this",
+                          "get the other AI to review this"])
+        for phrase in phrases["cross-review"]:
+            self.assertIn("review", phrase)
+        self.assertEqual(phrases["weekly-review"], ["run the weekly review", "weekly review"])
+
 
 if __name__ == "__main__":
     unittest.main()

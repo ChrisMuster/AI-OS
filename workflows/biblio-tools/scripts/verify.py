@@ -916,6 +916,63 @@ def check_pdf_extraction() -> dict:
     }
 
 
+REVIEW_SDK_CHECK = "Review-orchestration SDKs"
+# Import names of the two SDKs in workflows/review-orchestration/requirements.txt.
+REVIEW_SDKS = ("claude_agent_sdk", "openai_codex")
+REVIEW_REQUIREMENTS = "workflows/review-orchestration/requirements.txt"
+# Run by the project interpreter. find_spec on a top-level name locates the
+# package without executing it, so a package that is installed but will not
+# load is left to the workflow's own preflight, which loads it for real.
+REVIEW_SDK_PROBE = (
+    "import importlib.util, sys\n"
+    "print(' '.join(n for n in sys.argv[1:] if importlib.util.find_spec(n) is None))\n"
+)
+
+
+def _missing_review_sdks(python: Path) -> list:
+    """Return the names in REVIEW_SDKS the given interpreter cannot find.
+
+    -I (isolated mode) ignores PYTHONPATH and the other PYTHON* variables and
+    the user site folder, so only what the interpreter itself has installed
+    can satisfy the check (cross-review R1-1)."""
+    result = subprocess.run(
+        [str(python), "-I", "-c", REVIEW_SDK_PROBE, *REVIEW_SDKS],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=45,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "package probe failed")
+    return result.stdout.split()
+
+
+def check_review_sdks() -> dict:
+    """Check that the review-orchestration SDKs are installed in the .venv.
+
+    Runs on every machine, since no test can tell where the optional workflow is
+    used. A missing SDK is a WARN, never a FAIL: a machine that does not use the
+    workflow loses nothing, and a round or run started without one is still
+    refused at its own preflight."""
+    python = _venv_python()
+    install = f"python -m pip install -r {REVIEW_REQUIREMENTS}, using the project .venv's python"
+    if python is None:
+        return {"check": REVIEW_SDK_CHECK, "status": "WARN",
+                "detail": f"No project .venv to check. Once it exists, install with: {install}"}
+    try:
+        missing = _missing_review_sdks(python)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        return {"check": REVIEW_SDK_CHECK, "status": "WARN",
+                "detail": f"Could not check the project .venv ({exc}). The SDKs are listed in {REVIEW_REQUIREMENTS}."}
+    if missing:
+        return {"check": REVIEW_SDK_CHECK, "status": "WARN",
+                "detail": (f"Not installed in the project .venv: {', '.join(missing)}. "
+                           f"The review-orchestration workflow needs them; install with: {install}")}
+    return {"check": REVIEW_SDK_CHECK, "status": "PASS",
+            "detail": f"{' and '.join(REVIEW_SDKS)} installed in the project .venv."}
+
+
 def check_project_runtime() -> dict:
     """Check the canonical .venv and all packages in root requirements.txt."""
     setup_script = SCRIPT_DIR / "setup.py"
@@ -1157,6 +1214,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
             "Project Python runtime",
             "Project runtime Python version",
             "PDF extraction",
+            REVIEW_SDK_CHECK,
             "Git pre-commit hook",
             CODEX_HOOK_CHECK,
             CODEX_HOOK_OUTPUT_CHECK,
@@ -1181,6 +1239,7 @@ def run_checks(ai_name: str, dry_run: bool = False) -> list:
     results.append(check_project_runtime())
     results.append(check_runtime_python_version())
     results.append(check_pdf_extraction())
+    results.append(check_review_sdks())
     results.append(check_git_precommit_hook())
     # Every AI runs this, not only Codex: an unhooked Codex has to be noticed by
     # whichever session starts next, and that is rarely a Codex one.

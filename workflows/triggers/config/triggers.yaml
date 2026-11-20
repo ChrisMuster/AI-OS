@@ -56,8 +56,24 @@ categories:
     runs: python workflows/weekly-review/scripts/run.py
     phrases:
       - run the weekly review
-      - do the review
       - weekly review
+
+  - name: cross-review
+    summary: Have the other AI review a plan or build finished in this conversation, one read-only round that writes its findings into the item's review packet. If nothing finished in the conversation is ready to review, say so and start nothing.
+    runs: python workflows/review-orchestration/scripts/start.py --review <review-brief> --reviewer claude|codex --git-dir <personal repository>, naming the other AI as reviewer (never the one running the command).
+    phrases:
+      - do the review
+      - cross-review this
+      - get the other AI to review this
+
+  - name: review-orchestration
+    summary: An orchestrated run, in which one AI builds an item from a run brief while the other reviews it in rounds. Before proposing or starting a run, show the user these four phrases and what each does.
+    runs: "write a run brief: copy workflows/review-orchestration/prompts/brief.md and fill it in with the user, then start.py --check-brief <brief>. start the build run: start.py --run <brief> --builder claude|codex --item <item> --git-dir <personal repository>. approve the run's plan: start.py --approve <run-id>. resume the build run: start.py --resume <run-id>. All are python workflows/review-orchestration/scripts/start.py; every start, approval and resume prints the run's report."
+    phrases:
+      - write a run brief
+      - start the build run
+      - approve the run's plan
+      - resume the build run
 
   - name: memory-diff
     summary: Show what changed in memory (added, updated, archived) since the last session.

@@ -1,9 +1,9 @@
 # Review Orchestration - Archived
 
-**Last modified:** 2026-10-29
+**Last modified:** 2026-11-20
 
 ## Purpose
-Holds the design-time documents of finished review-orchestration work: plans, their review briefs and the run briefs written for proof runs, archived once the work they specify is done. These are personal, design-time working artifacts that capture session- and setup-specific context, so they are gitignored and local-only (see the design-time-document rule in `AGENTS.md` [[AGENTS]]). The durable, generic decisions live in the tracked `CONTEXT.md` files of the workflow, not here. The live plan for the workflow's remaining stages stays at the project root until its own work is done.
+Holds the design-time documents of finished review-orchestration work: plans, their review briefs, the run briefs written for proof runs, and the retired Codex copy of the live plan, archived once the work they specify is done. These are personal, design-time working artifacts that capture session- and setup-specific context, so they are gitignored and local-only (see the design-time-document rule in `AGENTS.md` [[AGENTS]]). The durable, generic decisions live in the tracked `CONTEXT.md` files of the workflow, not here. All six of the workflow's stages are built; the live plan stays at the project root while its follow-on items remain, and comes here once they are done.
 
 ## Contents
 Plan documents and briefs, named `*-PLAN.md` and `*-BRIEF.md`. Individual files are not listed here: they are personal, gitignored, local-only content. The filesystem is the authoritative source of what exists in this directory.
@@ -29,3 +29,4 @@ N/A. This is an archive container, not a workflow.
 - 2026-10-15 - The pre-A3 plan review brief archived here, the A3 plan review having closed clean at round R25. The live plan and its review baseline stay at the project root until the workflow's remaining stages are built.
 - 2026-10-20 - The run brief of the usage guard and turn-limit settings archived here, its orchestrated run having been reviewed clean and committed. A3 chunk 1's brief stays at the project root until A3 is finished.
 - 2026-10-29 - A3's four run briefs archived here, A3 being complete: the three chunk briefs (approval plumbing, planning sessions, live wiring) and the proof run's brief, after the proof run's follow-ups were reviewed clean and committed. The live plan and its review baseline stay at the project root until the workflow's remaining stages are built.
+- 2026-11-20 - The live plan's Codex copy, `CODEX-REVIEW-ORCHESTRATION-PLAN.md`, archived here in A6 (plan 10.9): the cross-review mode reviewed the plan clean on 2026-11-19 (early-reset round R3), so its own gate replaced the copy and the copy is no longer a baseline. Archived rather than deleted, as 10.9 specifies. The live plan stays at the project root while its follow-on items remain. Then, from cross-review R1-3, Purpose says the same instead of naming remaining stages.
