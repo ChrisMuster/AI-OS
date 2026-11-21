@@ -1476,8 +1476,19 @@ class CloneRetryTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(slept, [0.5, 0.5])
 
+    def test_positive_git_refused_the_object_database_is_retried(self):
+        # Git's other wording for the same refusal (code review R1-1).
+        refused = done(128, err="error: insufficient permission for adding an object to "
+                                "repository database .git/objects\n"
+                                "fatal: failed to write object\n")
+        result, calls, slept = self.clone([refused, done(0)])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual((len(calls), slept), (2, [0.5]))
+
     def test_rejection_any_other_failure_fails_at_once(self):
-        for err in ("fatal: repository not found", "error: Permission denied"):
+        for err in ("fatal: repository not found", "error: Permission denied",
+                    "fatal: could not create work tree dir 'copy': Permission denied",
+                    "error: insufficient permission for something else"):
             with self.subTest(err=err):
                 result, calls, slept = self.clone([done(128, err=err), done(0)])
                 self.assertEqual(result.returncode, 128)

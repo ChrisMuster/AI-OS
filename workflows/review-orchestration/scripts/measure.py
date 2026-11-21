@@ -45,6 +45,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -313,15 +314,29 @@ class World:
         return done.returncode == 0
 
     # git in a copy's throwaway repositories (row 14's copy-only commands) ------
-    def copy_git(self, cwd, *args, git_dir=None, work_tree=None):
+    def copy_git(self, cwd, *args, git_dir=None, work_tree=None, run=subprocess.run,
+                 sleep=time.sleep):
+        """Run git in a copy's throwaway repository. Retried while git is refused
+        permission to write one of its own object files (decision 30, the pattern and
+        counts ``container._clone`` uses); every other failure stops at once. Each
+        retried command is safe to repeat: ``init`` re-initialises, and a failed ``add``
+        or ``commit`` leaves nothing a second attempt trips over."""
         extra = ([f"--git-dir={git_dir}"] if git_dir else []) + \
                 ([f"--work-tree={work_tree}"] if work_tree else [])
-        done = subprocess.run(pinned_git(*extra, *args), cwd=str(cwd), capture_output=True,
-                              timeout=600, env=checks_mod.host_env())
-        if done.returncode != 0:
-            raise MeasureStop("error", f"git {' '.join(args)} in a restored copy failed: "
-                              + done.stderr.decode("utf-8", "replace").strip())
-        return done.stdout.decode("utf-8", "replace")
+        command = pinned_git(*extra, *args)
+        for attempt in range(1, container.CLONE_ATTEMPTS + 1):
+            done = run(command, cwd=str(cwd), capture_output=True, timeout=600,
+                       env=checks_mod.host_env())
+            if done.returncode == 0:
+                return done.stdout.decode("utf-8", "replace")
+            stderr = done.stderr.decode("utf-8", "replace").strip()
+            if (attempt == container.CLONE_ATTEMPTS
+                    or not container.OBJECT_WRITE_REFUSED.search(stderr)):
+                break
+            sleep(container.CLONE_PAUSE)
+        tries = f" (after {attempt} attempts)" if attempt > 1 else ""
+        raise MeasureStop("error", f"git {' '.join(args)} in a restored copy failed"
+                          f"{tries}: " + stderr)
 
     # Docker (row 5) -----------------------------------------------------------
     def docker_up(self):

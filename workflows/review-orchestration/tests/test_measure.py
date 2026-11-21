@@ -1124,6 +1124,85 @@ class AnswerKeyTests(unittest.TestCase):
                          {"C1", "P1", *(f"R1-{n}" for n in range(1, 12))})
 
 
+# ---------------------------------------- git in a copy, antivirus retry (decision 30)
+
+
+REFUSED = (b"error: unable to write file .git/objects/ab/cdef: Permission denied\n"
+           b"fatal: unable to write new index file")
+
+
+class CopyGitRetryTests(unittest.TestCase):
+    """``World.copy_git`` retries only git's refusal to write one of its own object
+    files, with the counts ``container._clone`` uses, and fails at once on anything
+    else. No git runs: the runner and the pause are fakes."""
+
+    def drive(self, *outcomes):
+        calls, pauses = [], []
+        queue = list(outcomes)
+
+        def run(command, **kwargs):
+            calls.append(list(command))
+            code, stderr = queue.pop(0)
+            return SimpleNamespace(returncode=code, stdout=b"abc\n", stderr=stderr)
+
+        world = measure.World(Path(tempfile.gettempdir()))
+        try:
+            result = world.copy_git("copy", "commit", "-q", run=run, sleep=pauses.append)
+        except measure.MeasureStop as exc:
+            result = exc
+        return result, calls, pauses
+
+    def test_positive_two_refusals_then_success_is_retried(self):
+        result, calls, pauses = self.drive((1, REFUSED), (1, REFUSED), (0, b""))
+        self.assertEqual(result, "abc\n")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(pauses, [measure.container.CLONE_PAUSE] * 2)
+        # Every attempt runs the same pinned command.
+        self.assertEqual(calls, [measure.pinned_git("commit", "-q")] * 3)
+
+    def test_rejection_refused_every_time_stops_naming_the_attempts(self):
+        attempts = measure.container.CLONE_ATTEMPTS
+        result, calls, pauses = self.drive(*[(1, REFUSED)] * attempts)
+        self.assertIsInstance(result, measure.MeasureStop)
+        self.assertEqual(len(calls), attempts)
+        self.assertEqual(len(pauses), attempts - 1)
+        self.assertIn(f"after {attempts} attempts", str(result))
+        self.assertIn("Permission denied", str(result))
+
+    def test_rejection_any_other_failure_stops_at_once(self):
+        for stderr in (b"fatal: not a git repository",
+                       b"error: unable to write file x: Permission denied",
+                       b"fatal: Unable to create '.git/index.lock': Permission denied"):
+            with self.subTest(stderr):
+                result, calls, pauses = self.drive((1, stderr))
+                self.assertIsInstance(result, measure.MeasureStop)
+                self.assertEqual((len(calls), pauses), (1, []))
+                self.assertNotIn("attempts", str(result))
+                self.assertIn("in a restored copy failed: ", str(result))
+
+    def test_positive_git_add_and_commit_refused_the_object_database_are_retried(self):
+        # Git's own wording when it cannot add to the object folder (code review R1-1).
+        database = b"error: insufficient permission for adding an object to repository " \
+                   b"database .git/objects\n"
+        for stderr in (database + b"error: a.md: failed to insert into database\n"
+                       b"error: unable to index file 'a.md'\nfatal: adding files failed",
+                       database + b"error: Error building trees"):
+            with self.subTest(stderr):
+                result, calls, pauses = self.drive((1, stderr), (0, b""))
+                self.assertEqual((result, len(calls), len(pauses)), ("abc\n", 2, 1))
+
+    def test_negative_success_first_time_neither_retries_nor_pauses(self):
+        result, calls, pauses = self.drive((0, b""))
+        self.assertEqual((result, len(calls), pauses), ("abc\n", 1, []))
+
+    def test_negative_a_later_different_failure_ends_the_retries(self):
+        result, calls, pauses = self.drive((1, REFUSED), (1, b"fatal: bad object"))
+        self.assertIsInstance(result, measure.MeasureStop)
+        self.assertEqual((len(calls), len(pauses)), (2, 1))
+        self.assertIn("after 2 attempts", str(result))
+        self.assertIn("bad object", str(result))
+
+
 # ---------------------------------------------------------- restores (9)
 
 

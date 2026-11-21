@@ -783,8 +783,14 @@ def _refuse_link_in_copy(dest, rel):
 # Decision 30: on this machine git can be refused permission to write one of its own
 # object files in a new repository in the temp folder (most likely an antivirus scan
 # holding a just-written file). That one failure is retried; every other fails at once.
-OBJECT_WRITE_REFUSED = re.compile(r"unable to write file .*objects.*Permission denied",
-                                  re.IGNORECASE | re.DOTALL)
+# Git words it two ways: a file it could not write ("unable to write file
+# .git/objects/...: Permission denied", seen here) and, when it cannot add to the
+# object folder at all, "insufficient permission for adding an object to repository
+# database .git/objects" (code review R1-1, from `add` and `commit`).
+OBJECT_WRITE_REFUSED = re.compile(
+    r"unable to write file .*objects.*Permission denied"
+    r"|insufficient permission for adding an object to repository database",
+    re.IGNORECASE | re.DOTALL)
 CLONE_ATTEMPTS = 3
 CLONE_PAUSE = 0.5
 
