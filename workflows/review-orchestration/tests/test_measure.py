@@ -53,6 +53,7 @@ import worktree  # noqa: E402
 HAVE_GIT = shutil.which("git") is not None
 NEEDS_GIT = unittest.skipUnless(HAVE_GIT, "git is not installed")
 ID = "20261109-120000-ab12"
+ARROW = chr(0x2192)  # a character cp1252 cannot encode
 CREDITS = {"hasCredits": False, "unlimited": False, "balance": "0"}
 NOW = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc)
 
@@ -893,6 +894,52 @@ class EntryTests(Base):
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(done.stdout.strip(), "None")
             self.assertEqual(os.listdir(folder), [])
+
+    # The UTF-8 output item (2026-11-20): whatever measure.py prints reaches its caller
+    # as UTF-8 when its streams start as cp1252, as the starter's child's do on Windows.
+    # test_start.py's RunPyPrintsUtf8Tests holds the control that the forcing works.
+
+    @staticmethod
+    def cp1252_child(argv, cwd, *, marked=False):
+        environ = {k: v for k, v in os.environ.items() if k != measure.STARTER_MARKER}
+        environ.update({"PYTHONIOENCODING": "cp1252", "PYTHONDONTWRITEBYTECODE": "1"})
+        if marked:
+            environ[measure.STARTER_MARKER] = "1"
+        return subprocess.run([sys.executable, *argv], capture_output=True, timeout=120,
+                              cwd=str(cwd), env=environ)
+
+    def test_positive_the_starter_command_echoes_any_argument(self):
+        given = f"id{ARROW}"
+        done = self.cp1252_child([str(SCRIPTS / "measure.py"), "--measure", "--score",
+                                  given], SCRIPTS)
+        self.assertEqual(done.returncode, 2, done.stderr.decode("utf-8", "replace"))
+        self.assertIn(f"--measure --score {given}".encode("utf-8"), done.stdout)
+
+    def test_positive_a_trusted_copys_refusal_names_any_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            frozen = (Path(temp).resolve() / f"x{ARROW}" / "book-dragon-orchestration"
+                      / ID)
+            scripts = frozen / "trusted" / "workflows" / "review-orchestration" / "scripts"
+            scripts.mkdir(parents=True)
+            shutil.copyfile(SCRIPTS / "measure.py", scripts / "measure.py")
+            # The folder has no tripwire, so set_up_trusted refuses, naming its path.
+            done = self.cp1252_child([str(scripts / "measure.py"), measure.ADVANCE, ID],
+                                     temp)
+            self.assertEqual(done.returncode, measure.REFUSED,
+                             done.stderr.decode("utf-8", "replace"))
+            self.assertIn(b"REFUSED: the measurement's trusted copy cannot start",
+                          done.stderr)
+            self.assertIn(f"x{ARROW}".encode("utf-8"), done.stderr)
+
+    def test_positive_main_prints_utf8(self):
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import measure\n"
+                "measure.start = lambda *a, **k: (print('started \\u2192'), "
+                "('id', None))[1]\n"
+                "raise SystemExit(measure.main(['--measure'], world=object()))\n")
+        with tempfile.TemporaryDirectory() as folder:
+            done = self.cp1252_child(["-c", code, str(SCRIPTS)], folder, marked=True)
+        self.assertEqual(done.returncode, 0, done.stderr.decode("utf-8", "replace"))
+        self.assertIn(f"started {ARROW}".encode("utf-8"), done.stdout)
 
     def test_positive_the_layout_agrees_with_run_py(self):
         spec = importlib.util.spec_from_file_location("_run_layout", SCRIPTS / "run.py")

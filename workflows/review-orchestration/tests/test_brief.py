@@ -772,6 +772,21 @@ class SmokeTests(unittest.TestCase):
     def test_no_mode_is_a_usage_error(self):
         self.assertEqual(self.call("run.py").returncode, 2)
 
+    def test_a_stale_root_refusal_prints_as_utf8_whatever_the_child_encoding(self):
+        # Cross-review utf8_output R1-1: run as a script, brief.py refuses a stale
+        # BOOK_DRAGON_ROOT while it is imported, before main(); a cp1252 stream would
+        # write the e-acute as one byte and escape the arrow. test_start.py's
+        # RunPyPrintsUtf8Tests holds the control that the forcing works.
+        with tempfile.TemporaryDirectory() as temp:
+            missing = Path(temp) / f"moved-{chr(0xE9)}{chr(0x2192)}"
+            env = dict(os.environ, BOOK_DRAGON_ROOT=str(missing),
+                       PYTHONIOENCODING="cp1252", PYTHONDONTWRITEBYTECODE="1")
+            done = subprocess.run([sys.executable, str(SCRIPTS / "brief.py"), "--check",
+                                   TEMPLATE], cwd=PROJECT_ROOT, capture_output=True,
+                                  env=env, timeout=60)
+        self.assertEqual(done.returncode, 2, done.stderr.decode("utf-8", "replace"))
+        self.assertIn(f"moved-{chr(0xE9)}{chr(0x2192)}".encode("utf-8"), done.stderr)
+
 
 class ReexecTests(unittest.TestCase):
     """run.py re-runs itself under the project .venv interpreter, so the documented

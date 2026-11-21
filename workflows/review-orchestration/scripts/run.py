@@ -198,6 +198,20 @@ def needs_starter(argv, environ=None, frozen=None):
 
 
 _FROZEN = trusted_frozen_folder()
+if __name__ == "__main__":
+    # Run as a script, the first output can come before main(): the starter command
+    # below, which echoes the arguments, or a trusted copy's refusal to start, which
+    # names a path. As the starter's child on Windows the streams are cp1252, so a
+    # character outside it would raise UnicodeEncodeError; both streams are made UTF-8
+    # here, before anything prints, with nothing of the project imported.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
 # The gate comes before any project import (code review R18-2): run straight from the
 # project, this script loads nothing of it, so a builder's edit to a module it imports
 # never runs on the way to the redirect.

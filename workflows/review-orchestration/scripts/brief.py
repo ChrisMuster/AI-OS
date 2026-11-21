@@ -57,6 +57,20 @@ def project_root(workflow_dir=_WORKFLOW_DIR):
     return root.resolve()
 
 
+if __name__ == "__main__":
+    # Run as a script, project_root() below can refuse a stale BOOK_DRAGON_ROOT on
+    # stderr before main() reconfigures the streams (cross-review utf8_output R1-1); on
+    # a cp1252 stream the path it names would not reach the caller as UTF-8. Imported,
+    # the importing script has already made its streams UTF-8.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 PROJECT_ROOT = project_root()
 LOG_PATH = PROJECT_ROOT / "workflows" / "review-orchestration" / "LOG.md"
 

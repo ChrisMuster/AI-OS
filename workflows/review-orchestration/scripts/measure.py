@@ -154,6 +154,17 @@ def needs_starter(argv, environ=None, frozen=None):
 
 _FROZEN = trusted_frozen_folder()
 if __name__ == "__main__":
+    # As run.py's: the starter command below echoes the arguments, and a trusted copy's
+    # refusal to start names a path, both before main(). As the starter's child on
+    # Windows the streams are cp1252, so both are made UTF-8 before anything prints.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
     _message = needs_starter(sys.argv[1:], frozen=_FROZEN)
     if _message is not None:
         print(_message)

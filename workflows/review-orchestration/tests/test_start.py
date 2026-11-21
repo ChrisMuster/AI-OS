@@ -552,6 +552,59 @@ class RunPySendsToTheStarterTests(unittest.TestCase):
                       f"{RUN_ID}", done.stdout)
 
 
+ARROW = chr(0x2192)  # a character cp1252 cannot encode
+
+
+def cp1252_child(argv, cwd, *, marked=False):
+    """Run a Python child with its streams forced to cp1252, as the starter's child's
+    are on Windows, and return the completed process with its output as bytes."""
+    environ = {k: v for k, v in os.environ.items() if k != run_py.STARTER_MARKER}
+    environ.update({"PYTHONIOENCODING": "cp1252", "PYTHONDONTWRITEBYTECODE": "1"})
+    if marked:
+        environ[run_py.STARTER_MARKER] = "1"
+    return subprocess.run([sys.executable, *argv], capture_output=True, timeout=120,
+                          cwd=str(cwd), env=environ)
+
+
+class RunPyPrintsUtf8Tests(unittest.TestCase):
+    """The UTF-8 output item (2026-11-20): whatever run.py prints reaches its caller as
+    UTF-8 when its streams start as cp1252, before main() as well as from it."""
+
+    def test_control_the_child_streams_really_are_cp1252(self):
+        # Without this, the tests below could pass because the forcing did nothing.
+        done = cp1252_child(["-c", "print('\\u2192')"], PROJECT)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(b"UnicodeEncodeError", done.stderr)
+
+    def test_positive_the_starter_command_echoes_any_argument(self):
+        brief_arg = f"brief{ARROW}.md"
+        done = cp1252_child([str(SCRIPTS / "run.py"), "--check-brief", brief_arg], PROJECT)
+        self.assertEqual(done.returncode, 2, done.stderr.decode("utf-8", "replace"))
+        self.assertIn(f"start.py --check-brief {brief_arg}".encode("utf-8"), done.stdout)
+
+    def test_positive_a_trusted_copys_refusal_names_any_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            frozen = (Path(temp).resolve() / f"x{ARROW}" / "book-dragon-orchestration"
+                      / RUN_ID)
+            scripts = frozen / "trusted" / "workflows" / "review-orchestration" / "scripts"
+            scripts.mkdir(parents=True)
+            shutil.copyfile(SCRIPTS / "run.py", scripts / "run.py")
+            # The folder has no tripwire, so set_up_trusted refuses, naming its path.
+            done = cp1252_child([str(scripts / "run.py"), "--resume", RUN_ID], temp)
+            self.assertEqual(done.returncode, run_py.REFUSED,
+                             done.stderr.decode("utf-8", "replace"))
+            self.assertIn(b"REFUSED: the run's trusted copy cannot start", done.stderr)
+            self.assertIn(f"x{ARROW}".encode("utf-8"), done.stderr)
+
+    def test_positive_main_prints_utf8(self):
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import run, brief\n"
+                "brief.run_check = lambda *a, **k: (print('PASS: b \\u2192') or 0)\n"
+                "raise SystemExit(run.main(['--check-brief', 'b.md']))\n")
+        done = cp1252_child(["-c", code, str(SCRIPTS)], PROJECT, marked=True)
+        self.assertEqual(done.returncode, 0, done.stderr.decode("utf-8", "replace"))
+        self.assertIn(f"PASS: b {ARROW}".encode("utf-8"), done.stdout)
+
+
 STUB_BRIEF = """\
 import os
 from pathlib import Path
