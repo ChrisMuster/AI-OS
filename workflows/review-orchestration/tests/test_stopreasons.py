@@ -24,12 +24,11 @@ WORKFLOW = Path(__file__).resolve().parent.parent
 SCRIPTS = WORKFLOW / "scripts"
 
 
-def _load(name):
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import script_loader  # noqa: E402  (one copy of each script per process)
+
+_load = script_loader.load
 
 
 sr = _load("stopreasons")

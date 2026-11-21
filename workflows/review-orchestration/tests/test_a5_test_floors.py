@@ -55,10 +55,10 @@ def files_for(names):
 def count(path):
     """The number of test cases a suite file defines, loaded under a name of its own so
     its module code runs (as an import) but no test does."""
-    name = f"_a5_floors_{path.stem}"
-    spec = importlib.util.spec_from_file_location(name, path)
+    # The private name is written in the call, where test_script_loader.py can read it.
+    spec = importlib.util.spec_from_file_location(f"_a5_floors_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return unittest.defaultTestLoader.loadTestsFromModule(module).countTestCases()
 

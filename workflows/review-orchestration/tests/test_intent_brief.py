@@ -19,10 +19,11 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-spec = importlib.util.spec_from_file_location("brief", SCRIPTS / "brief.py")
-brief = importlib.util.module_from_spec(spec)
-sys.modules["brief"] = brief
-spec.loader.exec_module(brief)
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import script_loader  # noqa: E402  (one copy of each script per process)
+
+brief = script_loader.load("brief")
 
 TEXT = """\
 <!-- a comment that is not a line -->

@@ -37,19 +37,19 @@ PROJECT_ROOT = WORKFLOW.parent.parent
 TEMPLATE = "workflows/review-orchestration/prompts/brief.md"
 
 
-def _load(name):
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import script_loader  # noqa: E402  (one copy of each script per process)
+
+_load = script_loader.load
 
 
 brief = _load("brief")
 run = _load("run")
 # The modules the checker imports for the verification lists. The checker imports them
-# when called, so it gets whatever ``sys.modules`` holds then, and other suites load
-# their own copies after this one; ``BriefCase`` puts these copies back for every test.
+# when called, so it gets whatever ``sys.modules`` holds then. Since 2026-11-21 every
+# suite shares one copy through ``script_loader``; ``BriefCase`` still puts these back
+# for every test, in case a test elsewhere replaces one.
 # ``codex_rules`` is loaded second so that it binds this ``approver``, whose
 # ``ApproverError`` the checker catches.
 approver_mod = _load("approver")
