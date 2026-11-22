@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,19 +44,22 @@ def _refuse(where, reason, correction):
     raise Refused(f"{where}: {reason}; write {correction}")
 
 
-def command(argv, *, cwd=ROOT, check=True, binary=False, merge_stderr=True):
+def command(argv, *, cwd=ROOT, check=True, binary=False, merge_stderr=True, env=None,
+            input=None):
     """Run one host command, retaining the last 1,200 characters on a failure.
 
     With ``merge_stderr`` false, stderr is kept apart so ``stdout`` holds only the
     command's output: git prints warnings such as the line-ending one under
-    ``core.autocrlf`` to stderr, and merged they were read as file names."""
+    ``core.autocrlf`` to stderr, and merged they were read as file names. ``input``,
+    when given, is sent on stdin (bytes when ``binary``); otherwise stdin is empty."""
     try:
         result = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
                                 text=not binary,
                                 encoding=None if binary else "utf-8",
                                 errors=None if binary else "replace",
-                                stdin=subprocess.DEVNULL)
+                                env=env, input=input,
+                                stdin=subprocess.DEVNULL if input is None else None)
     except OSError as exc:
         raise RoundError(f"{' '.join(map(str, argv))}: {exc}") from exc
     if check and result.returncode:
@@ -364,10 +368,115 @@ def _cover(path, brief):
     return max(matches, default=None)
 
 
+def _names(root, *args):
+    """The paths a git listing names, read NUL-separated so a name is never quoted:
+    by default git writes ``café.py`` as ``"caf\\303\\251.py"`` (cross-review R1-3)."""
+    return [p for p in git(root, *args).stdout.split("\0") if p]
+
+
+def _untracked(root):
+    return _names(root, "ls-files", "-z", "--others", "--exclude-standard")
+
+
+# Index entries a restorable patch cannot hold as files (cross-review R1-1).
+LINK_MODES = {"120000": "a symlink", "160000": "a submodule"}
+
+
+def _diff_modes(root, base, paths):
+    """``{path: (mode at base, mode as reviewed)}`` for the tracked paths among
+    ``paths`` that differ from ``base``, read from ``git diff --raw``: the same
+    working-tree comparison the reviewer's diff is, made by git itself.
+
+    Git decides the reviewed mode from its index and settings together (with
+    ``core.filemode`` off the index's executable bit stands; with ``core.symlinks``
+    off the index's link mode does), so the patch asks git rather than copying
+    those rules (cross-review R2-1 and R2-2, the user's option A). A deleted path's
+    reviewed mode is ``000000``. Untracked paths are not listed."""
+    if not paths:
+        return {}
+    fields = git(root, "--literal-pathspecs", "diff", "--raw", "-z", "--no-renames",
+                 base, "--", *paths).stdout.split("\0")
+    # With -z each entry is two fields, ":<mode> <mode> <id> <id> <status>" then the
+    # path, so they are read in pairs: a path may itself start with ":".
+    modes = {}
+    for index in range(0, len(fields) - 1, 2):
+        head, path = fields[index], fields[index + 1]
+        if not head.startswith(":"):
+            raise RoundError(f"git diff --raw gave an unexpected entry: {head!r}")
+        before, after = head[1:].split()[:2]
+        modes[path] = (before, after)
+    return modes
+
+
+def _refuse_links(root, base, reviewed):
+    """Refuse a reviewed symlink or submodule: in git's comparison, at the base or
+    as reviewed, or on disk for a new file.
+
+    ``restorable_patch`` stores each reviewed path's bytes as a file, so a symlink
+    would be saved as its target's contents and a submodule as deleted. Neither
+    occurs in this project (none tracked, and ``core.symlinks`` is off here), so
+    the shape is refused rather than modelled (cross-review R1-1, the user's option
+    A); the refusal names each path so a real need shows up. With ``core.symlinks``
+    off a link is checked out as a regular file, so only git's own modes see it
+    (R2-1)."""
+    found = {}
+    for path, pair in _diff_modes(root, base, reviewed).items():
+        for side, mode in zip(("at the base", "as reviewed"), pair):
+            if mode in LINK_MODES:
+                found.setdefault(path, f"{LINK_MODES[mode]} {side}")
+    for path in reviewed:
+        file = Path(root) / path
+        if file.is_symlink():
+            found.setdefault(path, "a symlink")
+        elif file.is_dir():
+            found.setdefault(path, "a submodule or nested repository")
+    if found:
+        _refuse("## Under review",
+                "a restorable patch cannot hold "
+                + ", ".join(f"{path} ({kind})" for path, kind in sorted(found.items())),
+                "each under ## Not under review and record it by hand")
+
+
+# Attributes under which git changes a file's bytes as it writes it to disk, so the
+# documented restore (``git restore --source``) does not give the stored bytes the
+# patch was built against (cross-review R3-2). ``eol`` counts only as ``crlf``.
+CONVERSIONS = ("filter", "ident", "working-tree-encoding", "eol")
+
+
+def _refuse_conversions(root, base, reviewed):
+    """Refuse a reviewed file that git converts on checkout, by the attributes at
+    the base or now.
+
+    None does in this project (its one rule is ``* text=auto eol=lf``, which writes
+    the stored bytes), though Git for Windows configures the LFS filter driver
+    system-wide; so the shape is refused rather than modelled (R3-2, the user's
+    option A), naming each file and attribute."""
+    found = {}
+    for source in (base, None):
+        fields = git(root, "check-attr", "-z",
+                     *(["--source", source] if source else []), *CONVERSIONS,
+                     "--", *reviewed).stdout.split("\0")
+        for index in range(0, len(fields) - 2, 3):
+            path, name, value = fields[index:index + 3]
+            active = (value == "crlf" if name == "eol"
+                      else value not in ("unspecified", "unset"))
+            if active:
+                found.setdefault(path, set()).add(
+                    name if value == "set" else f"{name}={value}")
+    if found:
+        _refuse("## Under review",
+                "a restorable patch cannot hold a file git converts on checkout: "
+                + ", ".join(f"{path} ({', '.join(sorted(attrs))})"
+                            for path, attrs in sorted(found.items())),
+                "each under ## Not under review and record it by hand")
+
+
 def code_diff(root, brief, base, *, allow_empty=False):
     """Assign each changed file before diffing exactly the reviewed files."""
-    tracked = [p for p in git(root, "diff", "--name-only", base).stdout.splitlines() if p]
-    fresh = [p for p in git(root, "ls-files", "--others", "--exclude-standard").stdout.splitlines() if p]
+    # --no-renames: a rename is listed as its old path removed and its new path
+    # added, so both are assigned, reviewed and in the patch (R4-1).
+    tracked = _names(root, "diff", "--name-only", "-z", "--no-renames", base)
+    fresh = _untracked(root)
     changed = sorted(set(tracked + fresh))
     missing = [p for p in changed if _cover(p, brief) is None]
     if missing:
@@ -380,7 +489,10 @@ def code_diff(root, brief, base, *, allow_empty=False):
             return "", [], {}
         _refuse("## Under review", "there is no changed file to review",
                 "a path covering changed work")
-    diff = git(root, "diff", base, "--", *reviewed).stdout
+    _refuse_links(root, base, reviewed)
+    _refuse_conversions(root, base, reviewed)
+    diff = git(root, "--literal-pathspecs", "diff", "--no-renames", base, "--",
+               *reviewed).stdout
     for path in reviewed:
         if path not in fresh:
             continue
@@ -398,11 +510,80 @@ def code_diff(root, brief, base, *, allow_empty=False):
     return f"Diff against public commit {base}\n{diff}", reviewed, inventory
 
 
+def restorable_patch(root, base, reviewed):
+    """A patch ``git apply`` restores the reviewed files from, as bytes.
+
+    ``code_diff``'s text is written for the reviewer: a new file as plain text under
+    two header lines, a new binary file as its size alone, and a changed tracked
+    binary file as "Binary files differ", none of which ``git apply`` can use. This
+    builds the same change as a real patch: ``base`` is read into a throwaway index,
+    each reviewed file's bytes are stored exactly as they are on disk (``--no-filters``,
+    so the repository's line-ending rules do not rewrite them) or its removal is
+    recorded, and ``git diff --cached --binary --full-index`` against ``base`` is the
+    result. The real index is never touched. Restore it with ``git apply`` in a folder
+    holding ``git archive`` of ``base`` (``memory/review_process.md``).
+    """
+    with tempfile.TemporaryDirectory(prefix="book-dragon-patch-") as tmp:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp) / "index"))
+
+        def run(*args, binary=False, input=None):
+            return command(["git", "--literal-pathspecs", *map(str, args)], cwd=root,
+                           binary=binary, merge_stderr=False, env=env, input=input)
+
+        run("read-tree", base)
+        missing = "0" * len(run("rev-parse", f"{base}^{{commit}}").stdout.strip())
+        # A tracked path takes the mode git's own comparison gives it, the one the
+        # reviewer's diff shows (R2-1, R2-2). A new, untracked file takes git's rule
+        # for adding one (R1-2): 100755 when git tracks the executable bit
+        # (core.filemode, default true) and its owner may run it, otherwise 100644.
+        tracked = _diff_modes(root, base, reviewed)
+        filemode = run("config", "--type=bool", "--default=true", "--get",
+                       "core.filemode").stdout.strip() == "true"
+        at_base = {}
+        for entry in run("ls-files", "-s", "-z", "--", *reviewed).stdout.split("\0"):
+            if entry:
+                meta, path = entry.split("\t", 1)
+                at_base[path] = meta.split()[0]
+        untracked = set(_untracked(root))
+        records = []
+        for path in reviewed:
+            file = Path(root) / path
+            if path in tracked:
+                mode = tracked[path][1]
+                if mode == "000000" and path in untracked and file.is_file():
+                    # Removed from git (`git rm --cached`) but kept on disk and not
+                    # ignored: the reviewer was shown its text as a new file, so the
+                    # patch keeps it, by the new-file rule (cross-review R3-1).
+                    mode = "100755" if filemode and _executable(file) else "100644"
+            elif path in at_base:  # unchanged from the base: nothing to record
+                continue
+            elif file.is_file():
+                mode = "100755" if filemode and _executable(file) else "100644"
+            else:
+                mode = "000000"
+            if mode == "000000":
+                records.append(f"0 {missing}\t{path}")
+            else:
+                blob = run("hash-object", "-w", "--no-filters", "--", path).stdout.strip()
+                records.append(f"{mode} {blob}\t{path}")
+        run("update-index", "-z", "--index-info",
+            input="".join(record + "\0" for record in records))
+        return run("diff", "--cached", "--binary", "--full-index", "--no-renames",
+                   "--no-ext-diff", "--no-textconv", "--no-color",
+                   "--src-prefix=a/", "--dst-prefix=b/", base, "--", *reviewed,
+                   binary=True).stdout
+
+
+def _executable(path):
+    """Whether the owner may run ``path``, the bit git reads under core.filemode."""
+    return bool(Path(path).stat().st_mode & stat.S_IXUSR)
+
+
 def tree_state(root):
     """The three public-tree views around host checks."""
     status = git(root, "status", "--porcelain", "--untracked-files=all").stdout
     diff = command(["git", "diff", "HEAD"], cwd=root, binary=True).stdout
-    names = git(root, "ls-files", "--others", "--exclude-standard").stdout.splitlines()
+    names = _untracked(root)
     return status, hashlib.sha256(diff).hexdigest(), {
         name: sha(Path(root) / name) for name in names}
 
@@ -1006,6 +1187,10 @@ def run_round(args, *, root=ROOT, deps=None):
               f"{loop.probe_decides_note(saved) if reviewer == 'claude' else ''}; "
               "live Claude usage was not read")
         return 0
+    # The restorable copy of a code round's change, built before anything is written so
+    # a failure here leaves no started round behind. A dry run never builds it: storing
+    # the file contents writes objects into the public repository's object store.
+    patch = restorable_patch(root, base, reviewed) if brief["Kind"] == "code" else None
     # Step 7: the first capture. Nothing between this and the reviewer launch writes
     # reviewed source. A capture failure has no round record and no session.
     _log(root, "started", f"Cross-review R{round_no} of {brief['Item']} started.")
@@ -1016,6 +1201,8 @@ def run_round(args, *, root=ROOT, deps=None):
     if brief["Kind"] == "code":
         (root / "memory" / f"{brief['Item']}_review_R{round_no}.diff").write_text(
             diff, encoding="utf-8", newline="\n")
+        # The restorable copy of the same change, beside the reviewer's text.
+        (root / "memory" / f"{brief['Item']}_review_R{round_no}.patch").write_bytes(patch)
     try:
         captured = deps.capture(root, args.git_dir,
             f"Capture before {reviewer} review R{round_no} of {brief['Item']}")

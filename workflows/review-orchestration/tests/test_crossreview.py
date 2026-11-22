@@ -3,6 +3,7 @@
 
 import asyncio
 import importlib.util
+import io
 import json
 import os
 import re
@@ -603,6 +604,350 @@ class DiffTests(Fixture):
                 "print('a')\n", encoding="utf-8", newline="\n")
 
 
+class RestorablePatchTests(Fixture):
+    """The saved patch restores the reviewed state with the documented commands:
+    ``git restore --source`` of the base into an empty folder outside any repository,
+    then ``git apply`` of the patch there (memory/review_process.md)."""
+
+    def setUp(self):
+        super().setUp()
+        # The project's own line-ending rule, and Git for Windows' default, both on:
+        # a CRLF file must still come back byte for byte.
+        git(self.root, "config", "core.autocrlf", "true")
+        (self.root / ".gitattributes").write_text("* text=auto eol=lf\n",
+                                                  encoding="utf-8", newline="\n")
+        (self.root / "code/old.bin").write_bytes(b"\x00\x01old binary\xff")
+        git(self.root, "add", ".gitattributes", "code/old.bin")
+        git(self.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "-qm", "binary and attributes")
+
+    def change_everything(self):
+        (self.root / "code/a.py").write_bytes(b"print('changed')\r\nsecond line\r\n")
+        (self.root / "code/b.py").unlink()
+        (self.root / "code/new.py").write_text("print('new')\n", encoding="utf-8",
+                                               newline="\n")
+        (self.root / "code/new.bin").write_bytes(bytes(range(256)) + b"\x00tail")
+        (self.root / "code/old.bin").write_bytes(b"\x00\x02new binary\xfe\xff")
+
+    def restore(self, base, patch):
+        holder = Path(tempfile.mkdtemp(prefix="restore-"))
+        self.addCleanup(shutil.rmtree, holder, ignore_errors=True)
+        target = holder / "tree"
+        target.mkdir()
+        # The two commands memory/review_process.md gives, as written: both work in
+        # Git Bash and in PowerShell 5.1 (R2-3), and core.autocrlf=false on both,
+        # since Git for Windows sets it true system-wide and git apply outside a
+        # repository would then write a new LF file as CRLF.
+        unpacked = subprocess.run(["git", "-C", str(self.root), f"--work-tree={target}",
+                                   "-c", "core.autocrlf=false", "restore",
+                                   f"--source={base}", "--worktree", "--", "."],
+                                  capture_output=True)
+        self.assertEqual(unpacked.returncode, 0,
+                         unpacked.stderr.decode("utf-8", "replace"))
+        (holder / "change.patch").write_bytes(patch)
+        env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(holder))
+        result = subprocess.run(["git", "-C", str(target), "-c", "core.autocrlf=false",
+                                 "apply", "--binary", str(holder / "change.patch")],
+                                capture_output=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        return target
+
+    def files(self, folder):
+        return {path.relative_to(folder).as_posix(): path.read_bytes()
+                for path in folder.rglob("*") if path.is_file()}
+
+    def test_patch_restores_text_binary_new_changed_and_deleted_files(self):
+        self.change_everything()
+        base = git(self.root, "rev-parse", "HEAD")
+        index = (self.root / ".git/index").read_bytes()
+        status = git(self.root, "status", "--porcelain", "--untracked-files=all")
+        brief = crossreview.read_brief(self.root, self.brief())
+        _diff, reviewed, _ = crossreview.code_diff(self.root, brief, base)
+        self.assertEqual(sorted(reviewed), ["code/a.py", "code/b.py", "code/new.bin",
+                                            "code/new.py", "code/old.bin"])
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        restored = self.files(self.restore(base, patch))
+        for path in reviewed:
+            with self.subTest(path=path):
+                file = self.root / path
+                if file.exists():
+                    self.assertEqual(restored.get(path), file.read_bytes())
+                else:
+                    self.assertNotIn(path, restored)
+        self.assertEqual(restored[".gitattributes"],
+                         (self.root / ".gitattributes").read_bytes())
+        self.assertEqual(set(restored), {".gitattributes", ".gitignore", "code/a.py",
+                                         "code/new.bin", "code/new.py", "code/old.bin"})
+        # The real index and the working tree's status are exactly as they were.
+        self.assertEqual((self.root / ".git/index").read_bytes(), index)
+        self.assertEqual(git(self.root, "status", "--porcelain", "--untracked-files=all"),
+                         status)
+
+    def test_patch_holds_only_the_reviewed_files(self):
+        self.change_everything()
+        base = git(self.root, "rev-parse", "HEAD")
+        brief = crossreview.read_brief(self.root, self.brief(
+            under="code/a.py", excluded="code - not part of this round"))
+        _diff, reviewed, _ = crossreview.code_diff(self.root, brief, base)
+        self.assertEqual(reviewed, ["code/a.py"])
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        self.assertIn(b"b/code/a.py", patch)
+        for other in (b"code/b.py", b"code/new.py", b"code/new.bin", b"code/old.bin"):
+            self.assertNotIn(other, patch)
+        restored = self.files(self.restore(base, patch))
+        self.assertEqual(restored["code/a.py"], (self.root / "code/a.py").read_bytes())
+        self.assertEqual(restored["code/b.py"], b"print('b')\n")
+        self.assertEqual(restored["code/old.bin"], b"\x00\x01old binary\xff")
+
+    def test_patch_against_an_earlier_base_restores_committed_work(self):
+        # --base for work already committed: the patch runs from that commit.
+        base = git(self.root, "rev-parse", "HEAD")
+        self.change_everything()
+        git(self.root, "add", "--all", "code")
+        git(self.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "-qm", "the reviewed work")
+        brief = crossreview.read_brief(self.root, self.brief())
+        _diff, reviewed, _ = crossreview.code_diff(self.root, brief, base)
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        restored = self.files(self.restore(base, patch))
+        self.assertEqual(restored["code/new.bin"], bytes(range(256)) + b"\x00tail")
+        self.assertEqual(restored["code/old.bin"], b"\x00\x02new binary\xfe\xff")
+        self.assertEqual(restored["code/a.py"], b"print('changed')\r\nsecond line\r\n")
+        self.assertNotIn("code/b.py", restored)
+
+    def commit(self, message):
+        git(self.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "-qm", message)
+
+    def test_symlinks_and_submodules_are_refused(self):
+        # R1-1: a patch stores each path's bytes as a file, so a symlink would be
+        # saved as its target's contents and a submodule as deleted; both refused.
+        blob = git(self.root, "hash-object", "-w", "code/a.py")
+        git(self.root, "update-index", "--add", "--cacheinfo",
+            f"120000,{blob},code/link")
+        git(self.root, "update-index", "--add", "--cacheinfo",
+            f"160000,{git(self.root, 'rev-parse', 'HEAD')},code/sub")
+        self.commit("a symlink and a submodule")
+        base = git(self.root, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(crossreview.Refused,
+                r"code/link \(a symlink at the base\), "
+                r"code/sub \(a submodule at the base\)"):
+            crossreview._refuse_links(self.root, base, ["code/a.py", "code/link",
+                                                        "code/sub"])
+        # Through code_diff: the symlink, absent from the working tree, is a
+        # changed path, and the round is refused before anything is written.
+        brief = crossreview.read_brief(self.root, self.brief())
+        with self.assertRaisesRegex(crossreview.Refused, "code/link"):
+            crossreview.code_diff(self.root, brief, base)
+        # On disk: a link (shown with is_symlink answering, as links need
+        # privileges on Windows) and a nested repository's folder.
+        (self.root / "code/nested").mkdir()
+        real = Path.is_symlink
+        with mock.patch.object(Path, "is_symlink", autospec=True,
+                               side_effect=lambda p: p.name == "a.py" or real(p)), \
+                self.assertRaisesRegex(crossreview.Refused,
+                    r"code/a\.py \(a symlink\), code/nested \(a submodule or nested"):
+            crossreview._refuse_links(self.root, base, ["code/a.py", "code/nested"])
+        crossreview._refuse_links(self.root, base, ["code/a.py", "code/b.py"])
+
+    def mode_lines(self, text):
+        """Each path's mode lines in a diff, as ``{path: [line, ...]}``."""
+        found, path = {}, None
+        for line in text.splitlines():
+            if line.startswith("diff --git a/"):
+                path = line.split(" b/", 1)[1]
+                found[path] = []
+            elif path and line.startswith(("old mode", "new mode", "new file mode",
+                                           "deleted file mode")):
+                found[path].append(line)
+        return {key: value for key, value in found.items() if value}
+
+    def test_staged_executable_bit_reaches_the_patch_as_the_reviewer_saw_it(self):
+        # R2-2: with core.filemode off, as here, `update-index --chmod=+x` still
+        # sets the bit in git, and the reviewer's diff shows it; so must the patch.
+        git(self.root, "config", "core.filemode", "false")
+        base = git(self.root, "rev-parse", "HEAD")
+        (self.root / "code/a.py").write_text("print('changed')\n", encoding="utf-8",
+                                             newline="\n")
+        git(self.root, "update-index", "--chmod=+x", "code/a.py", "code/b.py")
+        brief = crossreview.read_brief(self.root, self.brief())
+        diff, reviewed, _ = crossreview.code_diff(self.root, brief, base)
+        self.assertEqual(reviewed, ["code/a.py", "code/b.py"])
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        expected = {"code/a.py": ["old mode 100644", "new mode 100755"],
+                    "code/b.py": ["old mode 100644", "new mode 100755"]}
+        self.assertEqual(self.mode_lines(diff), expected)
+        self.assertEqual(self.mode_lines(patch.decode("utf-8")), expected)
+
+    def test_new_file_executable_bit_follows_core_filemode(self):
+        # R1-2: a new file takes git's rule for adding one.
+        (self.root / "code/run.py").write_text("print('run')\n", encoding="utf-8",
+                                               newline="\n")
+        base = git(self.root, "rev-parse", "HEAD")
+        for setting, executable, mode in (("true", True, "100755"),
+                                          ("true", False, "100644"),
+                                          ("false", True, "100644")):
+            git(self.root, "config", "core.filemode", setting)
+            with self.subTest(filemode=setting, executable=executable), \
+                    mock.patch.object(crossreview, "_executable",
+                                      return_value=executable):
+                patch = crossreview.restorable_patch(self.root, base, ["code/run.py"])
+                self.assertEqual(self.mode_lines(patch.decode("utf-8")),
+                                 {"code/run.py": [f"new file mode {mode}"]})
+
+    def test_unchanged_tracked_path_is_left_out_of_the_patch(self):
+        (self.root / "code/a.py").write_text("print('changed')\n", encoding="utf-8",
+                                             newline="\n")
+        base = git(self.root, "rev-parse", "HEAD")
+        git(self.root, "config", "core.filemode", "true")
+        with mock.patch.object(crossreview, "_executable", return_value=True):
+            patch = crossreview.restorable_patch(self.root, base,
+                                                 ["code/a.py", "code/b.py"])
+        self.assertIn(b"b/code/a.py", patch)
+        self.assertNotIn(b"code/b.py", patch)
+
+    def test_committed_symlink_checked_out_as_a_file_is_refused(self):
+        # R2-1: with core.symlinks off a link is checked out as a regular file, so
+        # only git's own modes show it; reviewing from an earlier base must refuse.
+        git(self.root, "config", "core.symlinks", "false")
+        base = git(self.root, "rev-parse", "HEAD")
+        (self.root / "code/link").write_text("a.py", encoding="utf-8", newline="")
+        blob = git(self.root, "hash-object", "-w", "code/link")
+        git(self.root, "update-index", "--add", "--cacheinfo", f"120000,{blob},code/link")
+        self.commit("a symlink, checked out as a file")
+        self.assertTrue((self.root / "code/link").is_file())
+        self.assertFalse((self.root / "code/link").is_symlink())
+        brief = crossreview.read_brief(self.root, self.brief())
+        with self.assertRaisesRegex(crossreview.Refused,
+                                    r"code/link \(a symlink as reviewed\)"):
+            crossreview.code_diff(self.root, brief, base)
+        # Staged only, not committed, the same.
+        git(self.root, "reset", "-q", "--soft", base)
+        with self.assertRaisesRegex(crossreview.Refused,
+                                    r"code/link \(a symlink as reviewed\)"):
+            crossreview.code_diff(self.root, brief, base)
+
+    def test_non_ascii_names_reach_the_patch_and_restore(self):
+        # R1-3: git quotes such names by default; the listings are read with -z.
+        git(self.root, "config", "core.quotepath", "true")
+        (self.root / "code/café.py").write_text("old\n", encoding="utf-8",
+                                                     newline="\n")
+        git(self.root, "add", "code/café.py")
+        self.commit("a non-ASCII name")
+        base = git(self.root, "rev-parse", "HEAD")
+        (self.root / "code/café.py").write_text("new\n", encoding="utf-8",
+                                                     newline="\n")
+        (self.root / "code/naïve.bin").write_bytes(b"\x00\x01binary")
+        brief = crossreview.read_brief(self.root, self.brief())
+        diff, reviewed, inventory = crossreview.code_diff(self.root, brief, base)
+        self.assertEqual(reviewed, ["code/café.py", "code/naïve.bin"])
+        self.assertEqual(set(inventory), set(reviewed))
+        self.assertIn("Binary file code/naïve.bin", diff)
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        restored = self.files(self.restore(base, patch))
+        self.assertEqual(restored["code/café.py"], b"new\n")
+        self.assertEqual(restored["code/naïve.bin"], b"\x00\x01binary")
+        self.assertIn("code/naïve.bin", crossreview.tree_state(self.root)[2])
+
+    def test_file_removed_from_git_but_kept_on_disk_is_kept(self):
+        # R3-1: after `git rm --cached` the reviewer sees git's deletion and the
+        # file's text as new; the patch must restore the file as it is on disk.
+        base = git(self.root, "rev-parse", "HEAD")
+        (self.root / "code/a.py").write_text("print('kept')\n", encoding="utf-8",
+                                             newline="\n")
+        git(self.root, "rm", "-q", "--cached", "code/a.py")
+        self.assertTrue((self.root / "code/a.py").is_file())
+        brief = crossreview.read_brief(self.root, self.brief())
+        diff, reviewed, _ = crossreview.code_diff(self.root, brief, base)
+        self.assertEqual(reviewed, ["code/a.py"])
+        self.assertIn("+++ b/code/a.py\nprint('kept')", diff)
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        restored = self.files(self.restore(base, patch))
+        self.assertEqual(restored["code/a.py"], b"print('kept')\n")
+        # Once ignored, the reviewer is shown only the deletion, and so is the patch.
+        (self.root / ".git/info/exclude").write_text("code/a.py\n", encoding="utf-8",
+                                                    newline="\n")
+        diff, reviewed, _ = crossreview.code_diff(self.root, brief, base)
+        self.assertEqual(reviewed, ["code/a.py"])
+        self.assertNotIn("print('kept')", diff)
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        self.assertIn(b"deleted file mode 100644", patch)
+        self.assertNotIn("code/a.py", self.files(self.restore(base, patch)))
+
+    def test_staged_rename_restores_the_whole_reviewed_tree(self):
+        # R4-1: with rename detection on, git lists only a rename's new path; the
+        # old path must be reviewed and removed too, so the restored folder is
+        # exactly the reviewed working tree.
+        git(self.root, "config", "diff.renames", "true")
+        base = git(self.root, "rev-parse", "HEAD")
+        git(self.root, "mv", "code/b.py", "code/moved.py")
+        brief = crossreview.read_brief(self.root, self.brief())
+        diff, reviewed, _ = crossreview.code_diff(self.root, brief, base)
+        self.assertEqual(reviewed, ["code/b.py", "code/moved.py"])
+        self.assertIn("deleted file mode 100644", diff)
+        self.assertNotIn("rename from", diff)
+        patch = crossreview.restorable_patch(self.root, base, reviewed)
+        restored = self.files(self.restore(base, patch))
+        # Every file git does not ignore, tracked or not, as it is on disk.
+        listed = git(self.root, "ls-files", "-z", "--cached", "--others",
+                     "--exclude-standard").split("\0")
+        on_disk = {path: (self.root / path).read_bytes() for path in listed
+                   if path and (self.root / path).is_file()}
+        self.assertEqual(restored, on_disk)
+
+    def test_files_git_converts_on_checkout_are_refused(self):
+        # R3-2: the documented restore writes a converted file's checkout bytes,
+        # which the patch, built from stored bytes, does not match; so refused.
+        (self.root / "code/.gitattributes").write_text(
+            "b.py ident\nold.bin working-tree-encoding=UTF-16\n",
+            encoding="utf-8", newline="\n")
+        git(self.root, "add", "code/.gitattributes")
+        self.commit("attributes at the base")
+        base = git(self.root, "rev-parse", "HEAD")
+        # Now: the base's lines are gone, and two other files gain conversions.
+        (self.root / "code/.gitattributes").write_text(
+            "a.py filter=lfs\nnew.py eol=crlf\nother.py eol=lf\n",
+            encoding="utf-8", newline="\n")
+        self.change_everything()
+        reviewed = ["code/.gitattributes", "code/a.py", "code/b.py", "code/new.bin",
+                    "code/new.py", "code/old.bin"]
+        with self.assertRaises(crossreview.Refused) as caught:
+            crossreview._refuse_conversions(self.root, base, reviewed)
+        message = str(caught.exception)
+        for expected in ("code/a.py (filter=lfs)", "code/b.py (ident)",
+                         "code/new.py (eol=crlf)",
+                         "code/old.bin (working-tree-encoding=UTF-16)"):
+            self.assertIn(expected, message)
+        self.assertNotIn("code/new.bin", message)
+        self.assertNotIn("code/.gitattributes (", message)
+        brief = crossreview.read_brief(self.root, self.brief())
+        with self.assertRaisesRegex(crossreview.Refused, "converts on checkout"):
+            crossreview.code_diff(self.root, brief, base)
+        # The project's own rule writes the stored bytes, and is not refused.
+        crossreview._refuse_conversions(self.root, base, ["code/new.bin"])
+        (self.root / "code/.gitattributes").write_text("* text=auto eol=lf\n",
+                                                      encoding="utf-8", newline="\n")
+        git(self.root, "add", "code/.gitattributes")
+        self.commit("the project's rule only")
+        crossreview._refuse_conversions(self.root, git(self.root, "rev-parse", "HEAD"),
+                                        reviewed)
+
+    def test_reviewer_text_is_not_a_patch_git_can_apply(self):
+        # Why the patch exists: the reviewer's text for a new file is refused.
+        (self.root / "code/new.py").write_text("print('new')\n", encoding="utf-8",
+                                               newline="\n")
+        base = git(self.root, "rev-parse", "HEAD")
+        brief = crossreview.read_brief(self.root, self.brief())
+        diff, _, _ = crossreview.code_diff(self.root, brief, base)
+        holder = Path(tempfile.mkdtemp(prefix="restore-"))
+        self.addCleanup(shutil.rmtree, holder, ignore_errors=True)
+        (holder / "text.diff").write_text(diff, encoding="utf-8", newline="\n")
+        env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(holder))
+        result = subprocess.run(["git", "apply", "--check", str(holder / "text.diff")],
+                                cwd=holder, capture_output=True, env=env)
+        self.assertNotEqual(result.returncode, 0)
+
+
 class JudgeTests(Fixture):
     """Step 5 judges each guard and the audit by what it reports, as a run does."""
 
@@ -890,6 +1235,59 @@ class RoundFlowTests(Fixture):
                         "plan_reviewer" if kind == "plan" else "reviewer"))
                     self.assertEqual(Path(probe.load_settings(sent[-1][2])["record"]),
                                      record_dir / "probe-calls.jsonl")
+
+    def code_args(self, *, dry=False):
+        args = self.args(dry=dry)
+        args.review = self.brief(kind="code", under="code",
+                                 excluded="workflows - temporary fixture files")
+        (self.root / "code/a.py").write_text("print('changed')\n", encoding="utf-8",
+                                             newline="\n")
+        (self.root / "code/new.bin").write_bytes(b"\x00\xffnew")
+        return args
+
+    def test_code_round_saves_restorable_patch_before_first_capture(self):
+        args = self.code_args()
+        deps, calls = self.deps({"summary": "The change is sound.", "findings": [],
+                                 "files_reviewed": ["code/a.py", "code/new.bin"]})
+        patch = self.root / "memory/test_item_review_R1.patch"
+        text = self.root / "memory/test_item_review_R1.diff"
+        seen = []
+        capture = deps.capture
+        def watching(*arguments):
+            seen.append((patch.exists(), text.exists()))
+            return capture(*arguments)
+        deps.capture = watching
+        self.assertEqual(crossreview.run_round(args, root=self.root, deps=deps), 0)
+        self.assertEqual(seen[0], (True, True))
+        base = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(patch.read_bytes(), crossreview.restorable_patch(
+            self.root, base, ["code/a.py", "code/new.bin"]))
+        self.assertIn(b"GIT binary patch", patch.read_bytes())
+        # The reviewer's text is unchanged in form.
+        self.assertIn("Binary file code/new.bin (5 bytes)",
+                      text.read_text(encoding="utf-8"))
+
+    def test_code_dry_run_and_plan_round_write_no_patch(self):
+        deps, _ = self.deps()
+        with mock.patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(crossreview.run_round(self.code_args(dry=True),
+                                                   root=self.root, deps=deps), 0)
+        self.assertFalse(list((self.root / "memory").glob("*.patch")))
+        deps, _ = self.deps()
+        self.assertEqual(crossreview.run_round(self.args(), root=self.root, deps=deps), 0)
+        self.assertFalse(list((self.root / "memory").glob("*.patch")))
+
+    def test_patch_failure_stops_before_the_round_starts(self):
+        deps, calls = self.deps()
+        with mock.patch.object(crossreview, "restorable_patch",
+                               side_effect=crossreview.RoundError("patch failed")), \
+                self.assertRaisesRegex(crossreview.RoundError, "patch failed"):
+            crossreview.run_round(self.code_args(), root=self.root, deps=deps)
+        self.assertNotIn("capture", [name for name, _ in calls])
+        self.assertFalse((self.root / "memory/test_item_review_R1.diff").exists())
+        self.assertNotIn("started", (self.root / "workflows/review-orchestration/LOG.md")
+                         .read_text(encoding="utf-8"))
+        self.assertFalse(list((self.root / "workflows/review-orchestration/runs").iterdir()))
 
     def test_usage_preflight_refusal_exits_three_without_record(self):
         import limits

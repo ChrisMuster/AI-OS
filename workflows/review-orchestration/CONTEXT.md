@@ -1,6 +1,6 @@
 # Review Orchestration
 
-**Last modified:** 2026-11-21
+**Last modified:** 2026-11-22
 
 ## Purpose
 Replaces the manual relay between two AIs with a run the user starts from Book Dragon: both AIs plan a task independently from one brief, the plans are merged, then one AI builds while the other reviews, in rounds that repeat automatically until a stop reason is reached. The orchestrator is a script that hands out every task and moves results between the AIs; the user assigns every role and keeps every git decision.
@@ -32,7 +32,7 @@ The workflow was built in six sub-stages, A1 to A6, each shipped with tests and 
 - For a run: an item name for its review packet (`memory/<item>_review_packet.md`, which must not exist yet), and the personal repository's folder, captured before the run starts.
 
 ## Outputs
-- From a conversation review round (A6): a checked review packet with new findings, a round record and probe-call record under `runs/`, and a personal-repository capture before and after the reviewer session. The command makes no public-repository commit.
+- From a conversation review round (A6): a checked review packet with new findings, for a code round the reviewed change saved twice in `memory/` (`<item>_review_R<n>.diff` as the reviewer reads it, `<item>_review_R<n>.patch` as a binary git patch that restores it), a round record and probe-call record under `runs/`, and a personal-repository capture before and after the reviewer session. The command makes no public-repository commit.
 - The brief check result on stdout: `PASS: <path>`, or one `FAIL: <heading>: <reason>` line per problem, with exit code 0 or 1.
 - `started` and `completed` or `failed` entries in this directory's `LOG.md` for every command-line check, with a note that never includes the brief's path. `--dry-run` prints them to stderr instead.
 - From a run: a run record, which is all a run writes before its plan is approved (its plan report, its plan-review findings and their rendered packet included); then, from approval on, the builder's edits inside the brief's edit paths, the review packet `memory/<item>_review_packet.md` (first written at approval, holding both halves' findings), and `started` and `completed` or `failed` entries in this directory's `LOG.md`. Nothing is staged or committed.
@@ -98,8 +98,7 @@ Conversation cross-review (A6), through the starter's `--review` form, when the 
 - The measurement harness (A5) has run once, on 2026-11-14 (`runs/measure-20261114-033507-b149/`, see Purpose), through its starter forms, with its planted patches as validated by hand (`measurement/CONTEXT.md`). Its `.codex/rules/` entry has not been used from a live Codex session.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-11-21.
-- 2026-11-11 - By hand, the usage changes' part (c), segment records (plan 10.10 item 10, R67-2), in `scripts/` and `tests/`: one record and one transcript per segment of a Claude builder's build or fix step. Steps 7 updated. The size estimate (part (d)) is not built yet. The oldest Revision History entry was archived to LOG.md.
+Earlier history archived to LOG.md on 2026-11-22.
 - 2026-11-11 - By hand, the usage changes' part (d1), in `scripts/` and `tests/`: `estimate.py`, the size estimate's calculation from earlier runs' records, and `test_estimate.py`. Contents updated. Nothing calls the estimate until part (d2) puts it in `plan-report.md`. The oldest Revision History entry was archived to LOG.md.
 - 2026-11-11 - By hand, the usage changes' part (d2), in `scripts/`, `tests/` and `prompts/`: the "Size estimate" section in `plan-report.md`, the fit advice again on `--approve --dry-run`, and the brief template asking for work sized to one window. Steps 6 updated. Part (e), a Codex builder's estimate and in-step ceiling, follows at the user's ruling. The oldest Revision History entry was archived to LOG.md.
 - 2026-11-11 - By hand, the usage changes' part (e1), in `scripts/` and `tests/`: every Codex reading keeps its five-hour and weekly windows apart, the run keeps its latest five-hour Codex reading, and a Codex builder's build and fix steps keep segment records, from the reading before the step to one at the turn's end. Steps 7 updated. The watch during a Codex step (parts (e2a) and (e2b)) and the Codex estimate (part (e3)) are not built yet. The oldest Revision History entry was archived to LOG.md.
@@ -113,3 +112,4 @@ Earlier history archived to LOG.md on 2026-11-21.
 - 2026-11-19 - The two SDK pins raised in `requirements.txt`, at the user's option A: `claude-agent-sdk` 0.2.159 to 0.2.185 and `openai-codex` 0.157.0 to 0.170.0. Known Issues record the new versions and that the usage probe's `unrecognized_model` notice is gone. The oldest Revision History entry was archived to LOG.md. Then, from cross-review R3-1, Known Issues name both generated files that changed in the Codex SDK, where they had said only the protocol types did.
 - 2026-11-20 - A6 integration (plan 10.9): the workflow is finished. Purpose describes it whole, with the trigger phrases, the announce-then-go rule, the review-process rewrite, the archived Codex plan copy and the setup-verification SDK check; Steps open with the four run phrases and say when a cross-review round starts; Dependencies add the trigger registry, the review process and verify.py; the Known Issue saying the workflow was partial is gone. The oldest Revision History entry was archived to LOG.md.
 - 2026-11-21 - The tests clash, from cross-review R1-3 of that item: `tests/` gains `script_loader.py` and `test_script_loader.py`, so the suites run together share one copy of each script. Contents updated. The oldest Revision History entry was archived to LOG.md.
+- 2026-11-22 - The restorable saved diff, in `scripts/` and `tests/`: a code cross-review round also saves its change as `memory/<item>_review_R<n>.patch`, a binary git patch that `git apply` restores, beside the reviewer's unchanged text. Outputs updated. The oldest Revision History entry was archived to LOG.md.
