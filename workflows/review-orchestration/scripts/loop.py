@@ -19,6 +19,18 @@ creates its record, ``runs/<run-id>/``, and then takes steps in this order:
                clean round's acceptance exits against the current ``brief.md``; its
                model layer is one fresh read-only session on the provider that did not
                build. It ends the run ``clean``, or ``intent-failed`` naming each cause.
+  intent-info  the same check, as information only (plan 10.6), after a review round
+               whose stop reason is ``reopened`` or ``max-rounds``. The stop reason is
+               decided first and kept in ``state.json`` as ``intent.info_pending``; the
+               check then runs, and the run ends with that stop reason whatever it
+               found. A usage limit, an error or a refused reply at the step is
+               recorded as a note and never ends the run any other way.
+
+Both final-diff checks are also given the builder's last reply (plan 10.6, D5), the
+final text of the last completed build or fix step, kept whole in
+``transcripts/<step>-reply.json``, as a section of its own the checker may use only for
+a line about what that reply says. A reply too long for the prompt is never cut: it is
+saved whole under ``intent/`` beside the diff and the prompt points to it.
 
 After every step the stop-reason rules of ``stopreasons.py`` decide whether the run
 goes on. A review round with no findings at all goes on to ``intent-final``; a run
@@ -112,13 +124,29 @@ PROJECT_ROOT = brief_mod.PROJECT_ROOT
 LOG_PATH = brief_mod.LOG_PATH
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 ITEM = re.compile(r"^[a-z0-9][a-z0-9_]*$")
-STEP = re.compile(r"^(build|review-R[1-9][0-9]*|fix-R[1-9][0-9]*|intent-final)$")
-# The intent check's two steps (plan 10.6), each on the provider that did not build.
+STEP = re.compile(r"^(build|review-R[1-9][0-9]*|fix-R[1-9][0-9]*|intent-final|"
+                  r"intent-info)$")
+# The intent check's steps (plan 10.6), each on the provider that did not build:
+# the first check, the final one, and the final one run as information at a
+# ``reopened`` or ``max-rounds`` end (INFO_ENDS), which never changes the stop reason.
 INTENT_PLAN = "intent-plan"
 INTENT_FINAL = "intent-final"
-INTENT_STEPS = (INTENT_PLAN, INTENT_FINAL)
+INTENT_INFO = "intent-info"
+INTENT_STEPS = (INTENT_PLAN, INTENT_FINAL, INTENT_INFO)
+INFO_ENDS = (sr.REOPENED, sr.MAX_ROUNDS)
 SDK_PACKAGES = ("claude-agent-sdk", "openai-codex")
 DIFF_LIMIT = 300_000
+# The builder's last reply in a final-diff intent prompt (plan 10.6, D5): whole up to
+# REPLY_LIMIT characters, otherwise saved whole beside the diff and pointed to, never
+# cut. A step record's ``summary`` keeps SUMMARY_LIMIT characters.
+REPLY_LIMIT = 20_000
+SUMMARY_LIMIT = 4_000
+# What the final-diff intent prompt tells the checker about where the change stands.
+FINAL_STANDING = ("The change has been reviewed with no finding left open, and your "
+                  "result decides how the run ends.")
+INFO_STANDING = ("The review ended with findings still open, so the change may yet "
+                 "change; your result is recorded for the user as information and does "
+                 "not change how the run ends.")
 WAIT_MARGIN_SECONDS = 60
 
 # Resume and stop are entered through the starter, never the live run.py (orchestrator
@@ -1761,6 +1789,63 @@ def shown_diff(diff, saved):
             "files_reviewed list.)")
 
 
+def builder_reply(state, run_dir):
+    """The builder's last reply for the final-diff intent checks (plan 10.6, D5): the
+    final text of the last completed build or fix step in ``state["steps"]``, read from
+    ``transcripts/<step>-reply.json``. A run recorded before that file was kept has the
+    step record's ``summary`` instead, the reply's last ``SUMMARY_LIMIT`` characters.
+    The text is never cut here: one too long for the prompt is saved whole and pointed
+    to (``shown_reply``). Returns ``(record, text)``: ``record`` names the step, where
+    the text came from (``file``, ``summary`` or ``none``), its length, whether it is
+    cut (only a summary at its limit can be) and ``saved``, the file holding it when it
+    is too long for the prompt, set by the caller. A reply file that cannot be read
+    raises."""
+    steps = [s for s in state.get("steps", []) if s.get("role") == "builder"]
+    if not steps:
+        return {"step": None, "source": "none", "chars": 0, "cut": False,
+                "saved": None}, ""
+    step = steps[-1].get("step")
+    path = Path(run_dir) / "transcripts" / f"{step}-reply.json"
+    if path.is_file():
+        text = json.loads(path.read_text(encoding="utf-8"))["text"]
+        if not isinstance(text, str):
+            raise ValueError(f"{path.name}: the reply text is not a string")
+        source, cut = "file", False
+    else:
+        text = steps[-1].get("summary") or ""
+        source, cut = "summary", len(text) >= SUMMARY_LIMIT
+    return {"step": step, "source": source, "chars": len(text), "cut": cut,
+            "saved": None}, text
+
+
+def shown_reply(text, saved):
+    """The builder's reply for the intent prompt, as the diff is shown (``shown_diff``):
+    whole up to ``REPLY_LIMIT``, otherwise a pointer to ``saved``, where it is kept
+    whole, with the instruction to read all of it. Never a cut-down reply, which could
+    drop the very text a Constraint line is about (intent_reply R1-1)."""
+    if not text:
+        return "(empty)"
+    if len(text) <= REPLY_LIMIT:
+        return text
+    return (f"(The reply is {len(text):,} characters, too large for this prompt. It is "
+            f"saved whole at `{saved}`: read all of it there, in parts, before you judge "
+            "any line about what the reply says.)")
+
+
+def reply_note(record):
+    """What the intent prompt's reply heading, and the report, say about the reply
+    given: its step, and whether it is whole."""
+    if record.get("source") == "none":
+        return "none: no build or fix step had completed"
+    if record.get("source") == "summary" and record.get("cut"):
+        return (f"step {record['step']}, its last {record['chars']:,} characters only; "
+                "this run did not keep the whole reply")
+    if record.get("saved"):
+        return (f"step {record['step']}, in full, {record['chars']:,} characters, saved "
+                "to a file")
+    return f"step {record['step']}, in full"
+
+
 def _write_json(path, data):
     """A JSON file of the run record, with every non-ASCII character escaped: a tool's
     output kept verbatim can hold garbled text, which the encoding guard (and so the
@@ -1872,6 +1957,11 @@ class Run:
             # Labels run on across both halves (plan 10.3 step 4): the build's first
             # review round takes the next label after the planning half's last.
             return f"review-R{self.label_offset() + 1}"
+        # A review round that decided a ``reopened`` or ``max-rounds`` stop goes on to
+        # the information check before the run ends (plan 10.6). The round stays the
+        # last completed step, so a resumed ``max-rounds`` run carries on from it.
+        if (self.state.get("intent") or {}).get("info_pending"):
+            return INTENT_INFO
         # A clean review round goes on to the final intent check (plan 10.6), and a stop
         # there resumes there, with no further review round: the round stays the last
         # completed step until the check ends the run. Recognised before any round
@@ -1966,12 +2056,19 @@ class Run:
                 await self.build()
             elif step == INTENT_FINAL:
                 await asyncio.to_thread(self.intent_final)
+            elif step == INTENT_INFO:
+                await asyncio.to_thread(self.intent_info)
             elif step.startswith("review"):
                 await asyncio.to_thread(self.review, int(step.split("-R")[1]))
             else:
                 await self.fix(int(step.split("-R")[1]))
 
         def finish(reason, evidence, interrupted=False):
+            if step == INTENT_INFO:
+                # Never a new end (plan 10.6): what stopped the check is a note, and
+                # the run ends below with the stop reason already decided.
+                self._info_not_run(reason, evidence)
+                return
             if interrupted and step != INTENT_FINAL:
                 self._interrupted(step)
             self.end(reason, evidence)
@@ -1981,6 +2078,9 @@ class Run:
                              before_step=self.before_step, body=body, finish=finish,
                              read_codex=self.deps.read_codex,
                              note_codex=self.note_codex, root=self.root, save=self.save)
+        if step == INTENT_INFO:
+            pending = self.state["intent"].pop("info_pending")
+            self.end(pending["reason"], pending["evidence"])
 
     def _interrupted(self, step):
         """Record what a step left behind when it did not complete.
@@ -2427,12 +2527,16 @@ class Run:
              "model": turn.model, **tokens,
              **({"usage_probe": self._probe_for_step} if self._probe_for_step else {}),
              "usage": turn.usage, "cost_usd_equivalent": turn.cost_usd_equivalent,
-             "wall_seconds": turn.wall_seconds, "summary": (turn.final_text or "")[-4000:]})
+             "wall_seconds": turn.wall_seconds,
+             "summary": (turn.final_text or "")[-SUMMARY_LIMIT:]})
         segments = (self.state.get("segments") or {}).get(step)
         if segments:
             # The completed step's record carries its segments too (plan 10.10 item 10).
             self.state["steps"][-1]["segments"] = json.loads(json.dumps(segments))
         _write_json(self.run_dir / "transcripts" / f"{step}.json", turn.messages)
+        # The reply whole, for the final-diff intent checks (plan 10.6, D5).
+        _write_json(self.run_dir / "transcripts" / f"{step}-reply.json",
+                    {"step": step, "text": turn.final_text or ""})
         self._take_refusals(step, turn.refusals)
 
     def _tool_rules(self, builder):
@@ -2617,17 +2721,21 @@ class Run:
             self.state.setdefault("intent", {}).update(
                 final_round=round_no,
                 diff=_record_path(self, f"rounds/R{round_no}/diff.patch"))
-        self.complete(step)
-        if clean_round:
-            return
-        if stop is None:
+        if not clean_round and stop is None:
             # The cap counts the build's own rounds, not the label number, which carries
             # on from the planning half (plan 10.3 step 4, section 11 item 5).
             cap = self.state["round_cap"]
             stop = sr.after_review(round_no - self.label_offset(), cap, new)
             if stop is not None and self.label_offset():
                 stop[1]["label"] = f"R{round_no}"
-        if stop is not None:
+        if stop is not None and stop[0] in INFO_ENDS:
+            # Plan 10.6: the stop reason is decided here and kept, the information
+            # check runs as the next step, and the run then ends with this reason. It
+            # is saved with the round, so the decision is never held only in memory.
+            self.state.setdefault("intent", {})["info_pending"] = {
+                "round": round_no, "reason": stop[0], "evidence": stop[1]}
+        self.complete(step)
+        if stop is not None and stop[0] not in INFO_ENDS:
             self.end(*stop)
 
     def _shown_diff(self, diff, folder):
@@ -2693,6 +2801,73 @@ class Run:
         imported from the live tree and no acceptance check is run."""
         step = INTENT_FINAL
         intent = self.state.setdefault("intent", {})
+        round_no = intent.get("final_round")
+        mechanical, result, causes, reply = self._intent_check(
+            step, round_no, diff_name="intent/final-diff.patch",
+            reply_name="intent/final-reply.txt", transcript=step,
+            standing=FINAL_STANDING, mechanical_key="final_mechanical")
+        intent["final"] = {"at": _now_text(), "mechanical": mechanical, "model": result,
+                           "cannot_tell": [entry["line"] for entry in result["lines"]
+                                           if entry["status"] == sr.CANNOT_TELL],
+                           "causes": causes, "reply": reply}
+        self.complete(step)
+        if causes:
+            self.end(sr.INTENT_FAILED, {"step": step, "causes": causes})
+        else:
+            self.end(sr.CLEAN, {"step": step, "round": round_no,
+                                "cannot_tell": len(intent["final"]["cannot_tell"])})
+
+    def intent_info(self):
+        """The final intent check run as information at a ``reopened`` or
+        ``max-rounds`` end (plan 10.6): the same two layers and session as
+        ``intent_final``, after the stop reason was decided and kept as
+        ``intent.info_pending``. The acceptance results are the last review round's,
+        which had findings. Its result is added to ``intent.info``, one entry per such
+        end, kept apart from ``intent.final``; it never ends the run, which ``take``
+        ends with the kept stop reason. The step is not recorded as completed, so a
+        resumed ``max-rounds`` run carries on from its last review round. Anything that
+        stops the check is noted by ``_info_not_run`` instead."""
+        intent = self.state.setdefault("intent", {})
+        pending = intent["info_pending"]
+        round_no = pending["round"]
+        mechanical, result, causes, reply = self._intent_check(
+            INTENT_INFO, round_no, diff_name=f"intent/info-R{round_no}-diff.patch",
+            reply_name=f"intent/info-R{round_no}-reply.txt", transcript=f"{INTENT_INFO}-R{round_no}", standing=INFO_STANDING)
+        intent.setdefault("info", []).append(
+            {"at": _now_text(), "round": round_no, "stop_reason": pending["reason"],
+             "acceptance_round": f"R{round_no}", "mechanical": mechanical,
+             "model": result,
+             "cannot_tell": [entry["line"] for entry in result["lines"]
+                             if entry["status"] == sr.CANNOT_TELL],
+             "causes": causes, "reply": reply})
+        self.save()
+
+    def _info_not_run(self, reason, evidence):
+        """Record why the information check gave no result (a usage limit, an error, a
+        refused reply), as an ``intent.info`` entry with ``not_run``. The stop reason
+        already decided is not touched."""
+        intent = self.state.setdefault("intent", {})
+        pending = intent.get("info_pending") or {}
+        intent.setdefault("info", []).append(
+            {"at": _now_text(), "round": pending.get("round"),
+             "stop_reason": pending.get("reason"), "not_run": reason,
+             "detail": evidence})
+
+    def _intent_check(self, step, round_no, *, diff_name, reply_name, transcript,
+                      standing, mechanical_key=None):
+        """The two layers both final-diff checks share (plan 10.6): the mechanical
+        check against the run's current brief, the diff saved at ``diff_name`` in the
+        run record, the fresh checker session, its transcript kept as
+        ``transcripts/<transcript>.json`` whatever the reply holds, and the reply
+        parsed. ``round_no`` names the review round whose acceptance exits are used;
+        ``standing`` is the prompt's sentence on where the change stands. The prompt
+        also carries the builder's last reply (D5, ``builder_reply``), saved whole at
+        ``reply_name`` and pointed to when too long for the prompt. Returns
+        ``(mechanical, result, causes, reply)``, ``reply`` saying which reply was given;
+        a snapshot, a session or a reply that cannot be used raises.
+        ``mechanical_key``, when given, keeps the mechanical result in
+        ``state["intent"]`` before the session starts."""
+        intent = self.state.setdefault("intent", {})
         snapshot = runrecord.read_start_snapshot(self.run_dir)
         text = self.brief_text()
         edit_paths = brief_mod.brief_edit_paths(text)
@@ -2707,11 +2882,10 @@ class Run:
                                                 self._start_trees())
         changed = [entry["path"] for entry in changes["changed"]]
         problems = path_problems(changed, edit_paths, checked)
-        round_no = intent.get("final_round")
         results = (self.state.get("acceptance_exits") or {}).get(f"R{round_no}")
         failed_checks = acceptance_failures(acceptance, results)
         diff = self.diff(category_a)
-        saved = self.run_dir / "intent" / "final-diff.patch"
+        saved = self.run_dir / diff_name
         saved.parent.mkdir(parents=True, exist_ok=True)
         saved.write_text(diff, encoding="utf-8", newline="\n")
         mechanical = {"changed": changes["changed"], "information": changes["information"],
@@ -2719,14 +2893,22 @@ class Run:
                                              if "outside the edit paths" in p["reasons"]],
                       "path_problems": problems, "acceptance": failed_checks,
                       "out_of_scope_checked": checked, "not_checked": unchecked}
-        intent["final_mechanical"] = mechanical
+        if mechanical_key:
+            intent[mechanical_key] = mechanical
+        reply, reply_text = builder_reply(self.state, self.run_dir)
+        if len(reply_text) > REPLY_LIMIT:
+            (self.run_dir / reply_name).write_text(reply_text, encoding="utf-8",
+                                                   newline="\n")
+            reply["saved"] = _record_path(self, reply_name)
         checker = self.deps.make_intent_checker(self.settings, self.root, self.claude_usage,
                                                 self.state["frozen_dir"])
         prompt = render("intent-final", brief=text, lines=numbered_lines(lines),
                         changed_files="\n".join(f"- {path}" for path in changed)
                         or "None.",
-                        diff=shown_diff(diff, _record_path(self, "intent/final-diff.patch")),
-                        checker_tools=reviewer_tools(checker.provider))
+                        diff=shown_diff(diff, _record_path(self, diff_name)),
+                        checker_tools=reviewer_tools(checker.provider),
+                        standing=standing, reply_note=reply_note(reply),
+                        builder_reply=shown_reply(reply_text, reply["saved"]))
         self._inject(step, checker.provider)
         try:
             record = checker.review(prompt, sr.intent_schema(final=True))
@@ -2737,7 +2919,7 @@ class Run:
             raise
         # The transcript is kept whatever the reply holds, a refused one included (the
         # builder's choice), before the reply is parsed.
-        _write_json(self.run_dir / "transcripts" / f"{step}.json",
+        _write_json(self.run_dir / "transcripts" / f"{transcript}.json",
                     {"reply": record.reply, "raw": record.raw})
         self._take_refusals(step, record.refusals)
         self._record_review_callbacks(step, getattr(record, "callbacks", None),
@@ -2757,17 +2939,7 @@ class Run:
              "thread_id": record.thread_id})
         result = sr.parse_intent_reply(record.reply, [line["text"] for line in lines],
                                        changed_files=changed)
-        causes = intent_causes(mechanical, result, lines)
-        intent["final"] = {"at": _now_text(), "mechanical": mechanical, "model": result,
-                           "cannot_tell": [entry["line"] for entry in result["lines"]
-                                           if entry["status"] == sr.CANNOT_TELL],
-                           "causes": causes}
-        self.complete(step)
-        if causes:
-            self.end(sr.INTENT_FAILED, {"step": step, "causes": causes})
-        else:
-            self.end(sr.CLEAN, {"step": step, "round": round_no,
-                                "cannot_tell": len(intent["final"]["cannot_tell"])})
+        return mechanical, result, intent_causes(mechanical, result, lines), reply
 
     # ---------------------------------------------------------------- ending
 
@@ -3016,16 +3188,52 @@ def _one_line(text, limit=600):
     return packet_mod.clean(text, limit)
 
 
-def intent_report_lines(result, final=True):
+def not_checked_line(reason, run_id):
+    """The opening line of a report whose run ended without the final intent check
+    (plan 10.6, "A run that ends without the final check"), with the next step: the
+    check by hand before the work is committed, or a resume or a new run that reaches
+    the check. None at ``clean`` and ``intent-failed``, where the check ran."""
+    if reason in (sr.CLEAN, sr.INTENT_FAILED):
+        return None
+    again = (f"resume the run ({STARTER} --resume {run_id}) or start a new run"
+             if reason in sr.RESUMABLE else "start a new run")
+    return (f"Not checked for intent: the run ended `{reason}` before the final intent "
+            "check. Before the work is committed, check it against the brief by hand, "
+            f"as \"Finishing by hand\" (plan 10.5) gives it, or {again} that reaches "
+            "the check.")
+
+
+def info_report_lines(entry):
+    """One information check's section in ``report.md`` (plan 10.6): headed with the
+    stop reason it ran at, saying the stop reason stands and whose acceptance results
+    it used, then both layers as the final check's section gives them; or, when it gave
+    no result, what stopped it."""
+    reason = entry.get("stop_reason")
+    lines = [f"## Intent check at a `{reason}` end (information; the stop reason "
+             "stands)", "", f"After review round R{entry.get('round')}."]
+    if entry.get("not_run"):
+        detail = json.dumps(entry.get("detail"), ensure_ascii=False)[:800]
+        return lines + ["", f"**Not run:** `{entry['not_run']}` at the step: "
+                        f"{_one_line(detail)}. The stop reason stands.", ""]
+    causes = entry.get("causes") or []
+    lines += ["", (f"**Result (information only):** {len(causes)} cause(s) found."
+                   if causes else "**Result (information only):** no cause found."),
+              "", f"Acceptance results: those of review round {entry.get('acceptance_round')}, "
+              "the last round, which had findings; they were not run again.", ""]
+    return lines + intent_report_lines(entry, final=True, heading=False) + [""]
+
+
+def intent_report_lines(result, final=True, heading=True):
     """An intent check's section in ``report.md`` (``final``) or ``plan-report.md``:
     both layers, every failure, every ``cannot tell``, every changed path outside the
     edit paths and every append-only LOG.md line as information (the final check), and
     every Out of scope item not checked by the script. Text from a session goes through
-    the packet's ``clean``."""
+    the packet's ``clean``. ``heading`` False leaves out the heading and the result
+    line, for the information check, whose section gives its own."""
     mechanical, model = result.get("mechanical") or {}, result.get("model") or {}
-    lines = ["## Intent check" + (" (final)" if final else ""), ""]
+    lines = ["## Intent check" + (" (final)" if final else ""), ""] if heading else []
     causes = result.get("causes") or []
-    if final:
+    if final and heading:
         lines += [("**Result:** failed, " + str(len(causes)) + " cause(s).") if causes
                   else "**Result:** passed.", ""]
     lines += ["Mechanical layer:", ""]
@@ -3056,6 +3264,8 @@ def intent_report_lines(result, final=True):
     cannot = result.get("cannot_tell") or []
     lines += ["", "Cannot tell (not a failure): "
               + (str(len(cannot)) + " line(s), each listed above." if cannot else "none.")]
+    if final and result.get("reply"):
+        lines += ["", f"Builder's reply given to the checker: {reply_note(result['reply'])}."]
     if final and causes:
         lines += ["", "Causes:", ""] + [f"- {_one_line(c)}" for c in causes]
     return lines
@@ -3121,7 +3331,12 @@ def write_report(run):
         "cleanup": state.get("cleanup", []),
         # The final intent check (plan 10.6), kept apart from the reviewer findings.
         "intent": (state.get("intent") or {}).get("final"),
+        # The information checks at a reopened or max-rounds end, one per such end.
+        "intent_info": (state.get("intent") or {}).get("info") or [],
     }
+    unchecked = None if paused else not_checked_line(last["reason"], state["run_id"])
+    report["intent_not_checked"] = (None if unchecked is None else
+                                    {"stop_reason": last["reason"], "line": unchecked})
     if state.get("identity_refusal"):
         # Plan 10.3 step 3: a planner's plan refused for naming its provider.
         report["identity_refusal"] = state["identity_refusal"]
@@ -3152,6 +3367,8 @@ def write_report(run):
     else:
         lines += [f"**Stop reason:** `{last['reason']}`", "",
                   f"**Recommended:** {report['recommendation']}", ""]
+        if unchecked:
+            lines += [unchecked, ""]
         if last["reason"] == sr.USAGE_LIMIT:
             resets = evidence.get("resets_at")
             lines += [f"**Provider:** {evidence.get('provider')}. "
@@ -3170,6 +3387,8 @@ def write_report(run):
                   f"`{given['command']}` at {given['at']}.", ""]
     if report["intent"]:
         lines += intent_report_lines(report["intent"]) + [""]
+    for entry in report["intent_info"]:
+        lines += info_report_lines(entry)
     lines += ["## Steps", ""]
     for step in report["steps"]:
         lines.append(f"- {step['step']} ({step['role']}, {step['provider']}, "
@@ -3389,7 +3608,7 @@ def start(brief_arg, item, git_dir, *, root=PROJECT_ROOT, deps=None, log_path=LO
     deps = deps or Deps()
     if inject is not None and not STEP.match(inject):
         raise RunRefused([f"--inject-limit {inject!r} is not a step name (build, "
-                          "review-R<n>, fix-R<n>, intent-final)"])
+                          "review-R<n>, fix-R<n>, intent-final, intent-info)"])
     if allow_paid and wait:
         raise RunRefused(["--allow-paid cannot be used with --wait"])
     ready = preflight(brief_arg, item, git_dir, root=root, deps=deps, settings=settings,

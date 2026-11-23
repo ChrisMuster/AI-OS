@@ -20,8 +20,9 @@ Modes:
                          checks is captured. --wait sleeps through a usage limit that
                          reported its reset time and resumes by itself.
                          --inject-limit <step> is test-only: that step (build,
-                         review-R<n>, fix-R<n> or intent-final) raises a usage limit at
-                         its provider boundary, once, to prove a clean stop and resume.
+                         review-R<n>, fix-R<n>, intent-final or intent-info) raises a
+                         usage limit at its provider boundary, once, to prove a clean
+                         stop and resume.
   --resume <run-id>      Continue an ended run whose stop reason allows it
                          (max-rounds, usage-limit, error) from its last completed
                          step. --rounds N allows N more review rounds. The run keeps

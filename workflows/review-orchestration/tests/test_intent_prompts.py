@@ -2,7 +2,8 @@
 """Tests for A4's intent prompts (plan 10.6 item 2 and 10.2): ``prompts/intent-first.md``
 and ``prompts/intent-final.md`` carry only the brief and the merged plan or the final
 diff, never the individual plans, the synthesis, reviewer reasoning, findings or
-transcripts; both say the required CONTEXT.md, LOG.md and test updates are not unasked
+transcripts, the one exception being the builder's last reply in the final prompt's
+own section (D5, tested in ``test_intent_builder_reply.py``); both say the required CONTEXT.md, LOG.md and test updates are not unasked
 changes; a final diff too large for the prompt is shown as the reviewer's is, saved
 whole with the read-in-parts instruction; and the brief template's Out of scope comment
 says what 10.2 says about backticked paths, the template still being refused.
@@ -74,7 +75,7 @@ class TemplateTests(unittest.TestCase):
 
 class PayloadTests(LoopCase):
 
-    def test_positive_the_final_payload_holds_the_brief_and_the_diff_only(self):
+    def test_positive_the_final_payload_holds_the_brief_the_diff_and_the_last_reply(self):
         self.h.builder_script = [edit(self.root, "PLANTED-CHANGE\n"),
                                  reply(actions(("R1-1", "fixed")))]
         self.h.reviews = [[finding(title="PLANTED-FINDING-TITLE")], []]
@@ -85,9 +86,11 @@ class PayloadTests(LoopCase):
         self.assertIn("+PLANTED-CHANGE", prompt)
         self.assertIn("1. (Goal) work/a.txt says done.", prompt)
         self.assertIn("- work/a.txt", prompt)
+        # The one exception (D5): the last builder reply, fix-R1's, in its own section.
+        self.assertIn("THE BUILDER'S LAST REPLY (step fix-R1, in full)\nDone.", prompt)
         for excluded in ("PLANTED-FINDING-TITLE", "seen", "fix it",  # the finding
                          "The merged plan.", "Both change work/a.txt.",  # plan, synthesis
-                         "Changed work/a.txt.", "builder action"):  # transcripts, prior
+                         "Changed work/a.txt.", "builder action"):  # earlier reply, prior
             self.assertNotIn(excluded, prompt)
 
     def test_positive_a_large_final_diff_is_saved_and_every_changed_file_listed(self):

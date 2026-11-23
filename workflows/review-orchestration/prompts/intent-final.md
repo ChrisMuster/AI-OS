@@ -1,8 +1,7 @@
 You are the INTENT CHECKER in an automated build-and-review run the user started. You
 are read-only: do not edit or create anything. Another AI built the change below from
-the brief, and the change has been reviewed with no finding left open; judge whether
-it delivers what the brief asks and nothing it did not ask for. Your result decides
-how the run ends. $checker_tools
+the brief. $standing Judge whether it delivers what the brief asks and nothing it did
+not ask for. $checker_tools
 
 Judge each line under THE LINES TO JUDGE, one reply entry per line, in the order given:
 put the line's number in `number` and its first eight words in `opening`, copied as
@@ -12,6 +11,11 @@ Set `status` to "met", "not met" or "cannot tell", and give the evidence for tha
 status in `evidence`, naming the file or the part of the diff it rests on. Use
 "cannot tell" only where the change and the brief do not let you decide; say why in
 the evidence.
+
+THE BUILDER'S LAST REPLY, at the end, is what the builder said when its last step
+ended. Use it only to judge a line about what that reply says or must say. For every
+other line it is not evidence: only the diff and the changed files show what the
+change does.
 
 Then give two lists, each item with its evidence: `unasked_changes`, every change the
 brief did not ask for, and `undelivered`, every item the brief asks for that the change
@@ -32,6 +36,9 @@ $changed_files
 THE DIFF (the run's changes under its edit paths, against the state before the run;
 new files in full)
 $diff
+
+THE BUILDER'S LAST REPLY ($reply_note)
+$builder_reply
 
 Return JSON only, matching the schema. A reply that leaves a line out, adds one,
 changes its order, gives one with no evidence, or gives an `opening` that does not

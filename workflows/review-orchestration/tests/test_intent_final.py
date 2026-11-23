@@ -128,9 +128,14 @@ class EndingTests(FinalCase):
         self.h.reviews = [[finding()]]
         run = self.start()
         self.assertEqual(self.reason(run), sr.OUT_OF_SCOPE)
+        self.assertEqual(self.h.intent_calls, [])
         cap = self.run_capped()
         self.assertEqual(self.reason(cap), sr.MAX_ROUNDS)
-        self.assertEqual(self.h.intent_calls, [])
+        # Since 2026-11-22 a max-rounds end runs the check as information
+        # (test_intent_info.py), never as the final check that decides the end.
+        self.assertNotIn("final", cap.state["intent"])
+        self.assertEqual([s["step"] for s in cap.state["steps"]
+                          if s["step"].startswith("intent")], ["intent-info"])
 
     def run_capped(self):
         self.reset_work()
