@@ -1,2 +1,4 @@
 # PDF text extraction for wiki source ingestion
 pypdf>=6.0.0
+# Oversized or image-only PDFs: page rendering, text extraction, and Markdown to PDF
+pymupdf>=2.1

@@ -21,7 +21,7 @@ The setup script installs the root `requirements.txt`, which includes every work
 | Workflow | Packages required | Install command |
 |---|---|---|
 | audit | None — standard library only | — |
-| create-wiki | pypdf >= 6.0.0 | Included by root `requirements.txt` |
+| create-wiki | pypdf >= 6.0.0, pymupdf >= 2.1 | Included by root `requirements.txt` |
 | link-check | None — standard library only | — |
 | weather | None — standard library only | — |
 | journal | None — standard library only | — |
