@@ -1,6 +1,6 @@
 # Biblio Tools - Archived
 
-**Last modified:** 2026-07-10
+**Last modified:** 2026-11-25
 
 ## Purpose
 Holds design-time investigation and plan documents from the biblio-tools workflow's development. These are personal, design-time working artifacts: they capture session- and setup-specific context, so they are gitignored and local-only (see the design-time-document rule in `AGENTS.md` [[AGENTS]]). The durable, generic conclusions live in the tracked `CONTEXT.md` files and `AGENT-SETUP.md` [[AGENT-SETUP]], not here.
@@ -25,3 +25,4 @@ N/A. This is an archive container, not a workflow.
 
 ## Revision History
 - 2026-07-10 - Created during the Task 3 hygiene sweep. Archived CODEX-MCP-AVAILABILITY-PLAN.md from `workflows/biblio-tools/` [[workflows/biblio-tools/CONTEXT]] after the Codex Desktop local-MCP investigation was concluded (resolved by the agreed CLI/IDE-extension route; see [[backlog-completed-2026]]), per the "archive plans on completion" rule.
+- 2026-11-25 - Archived the `mcp` 2 migration plan from the project root after the backlog item was completed (see [[backlog-completed-2026]]), per the "archive plans on completion" rule.

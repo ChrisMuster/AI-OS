@@ -26,7 +26,7 @@ The setup script installs the root `requirements.txt`, which includes every work
 | weather | None — standard library only | — |
 | journal | None — standard library only | — |
 | web-research | See workflow requirements | Included by root `requirements.txt` |
-| biblio-tools | mcp >= 1.0.0 | Included by root `requirements.txt` |
+| biblio-tools | mcp >= 2, < 3 | Included by root `requirements.txt` |
 | check-for-updates | PyYAML (config) | Included by root `requirements.txt` |
 
 The Create Wiki dependency provides shared PDF extraction for every supported AI.

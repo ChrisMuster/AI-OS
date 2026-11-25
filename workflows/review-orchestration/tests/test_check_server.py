@@ -513,8 +513,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(changed(before, folder_bytes(self.folder)), {"check-calls.jsonl"})
         by_name = {tool.name: tool for tool in tools.tools}
         self.assertEqual(set(by_name), {"run_check", "get_timestamp"})
-        self.assertEqual(by_name["run_check"].inputSchema["required"], ["command"])
-        self.assertEqual(by_name["get_timestamp"].inputSchema.get("properties", {}), {})
+        self.assertEqual(by_name["run_check"].input_schema["required"], ["command"])
+        self.assertEqual(by_name["get_timestamp"].input_schema.get("properties", {}), {})
         self.assertRegex(stamp.content[0].text, TIMESTAMP)
         self.assertIn("Refused by the orchestrator:", refused.content[0].text)
         line, = [json.loads(raw) for raw in (self.folder / "check-calls.jsonl")
@@ -523,9 +523,10 @@ class ServerTests(unittest.TestCase):
 
     # The stand-in steps for decision 37's test, appended to the frozen folder's copy of
     # the real container.py: no git and no Docker, but the "check" starts, through the
-    # module's own process start, a program that reads its stdin to the end. With an
-    # inherited stdin that program would be reading the MCP pipe, and the call would
-    # not answer until the client closed it (proof run 1, 2026-10-12).
+    # module's own process start, a program that reads its stdin to the end. Under
+    # `mcp` 1.x an inherited stdin was the MCP pipe, and the call did not answer until
+    # the client closed it (proof run 1, 2026-10-12); the rejection test below checks
+    # the fix directly, since `mcp` 2 no longer shows the hazard.
     STAND_IN = (
         "\n\n# --- test stand-ins (test_check_server.py, decision 37) ---\n"
         "import sys as _sys\n"
@@ -535,19 +536,19 @@ class ServerTests(unittest.TestCase):
         "    Path(dest).mkdir(parents=True)\n"
         "    return dest\n"
         "def run_in_container(copy, argv, image, timeout=RUN_TIMEOUT):\n"
-        "    child = STARTER([_sys.executable, '-c', 'import sys; sys.stdin.read(); "
+        "    child = _start([_sys.executable, '-c', 'import sys; sys.stdin.read(); "
         "print(\"stdin read to the end\")'], capture_output=True, encoding='utf-8',\n"
         "        timeout=600)\n"
         "    return child.returncode, child.stdout, child.stderr\n")
 
-    def call_helper_with_reading_child(self, starter="_start"):
+    def call_helper_with_reading_child(self):
         """The real helper over a real stdio pipe, its container steps replaced by the
         stand-ins. Returns ``{"reply": text}``, or ``{"timed_out": True}`` when no reply
         came within 30 s; only in that case is an error while the client shuts the
         held server down ignored (it is recorded as ``shutdown_error``)."""
         source = (SCRIPTS / "container.py").read_text(encoding="utf-8")
         (self.folder / "container.py").write_text(
-            source + self.STAND_IN.replace("STARTER", starter), encoding="utf-8",
+            source + self.STAND_IN, encoding="utf-8",
             newline="\n")
         (self.folder / "start-ignored.txt").write_text(".env\n", encoding="utf-8",
                                                        newline="\n")
@@ -584,13 +585,36 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(outcome["reply"].startswith("exit 0"), outcome["reply"])
         self.assertIn("stdin read to the end", outcome["reply"])
 
-    def test_rejection_an_inherited_stdin_holds_the_reply(self):
-        # The same program started with the helper's own stdin, as every start was
-        # before decision 37: no reply comes within the 30 s limit. This is what the
-        # positive test above would see if `_start` lost its empty stdin.
-        outcome = self.call_helper_with_reading_child(starter="subprocess.run")
-        self.assertEqual(outcome.get("timed_out"), True, outcome)
-        self.assertNotIn("reply", outcome)
+    def test_rejection_start_withholds_an_inherited_stdin(self):
+        # Decision 37's fix, tested directly. Under `mcp` 2 a stdio server's own stdin
+        # is the null device, so an inherited stdin no longer holds the reply (measured
+        # 2026-11-24: the old rejection test answered in seconds) and the positive test
+        # above passes with or without the fix. Here the process that calls `_start`
+        # has a stdin that is a pipe held open with a line in it. With the fix the
+        # program reads nothing and ends; without it the program would read the line
+        # and wait on the open pipe until `_start`'s own time limit, and print nothing.
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import container; "
+                "done = container._start([sys.executable, '-c', "
+                "'import sys; print(repr(sys.stdin.read()))'], capture_output=True, "
+                "encoding='utf-8', timeout=20); print(done.stdout.strip())")
+        holder = subprocess.Popen([sys.executable, "-B", "-c", code, str(SCRIPTS)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, encoding="utf-8",
+                                  cwd=str(self.cwd))
+        try:
+            holder.stdin.write("held open\n")
+            holder.stdin.flush()
+            out = holder.stdout.read()
+            err = holder.stderr.read()
+            holder.wait(30)
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait()
+            for stream in (holder.stdin, holder.stdout, holder.stderr):
+                stream.close()
+        self.assertEqual(holder.returncode, 0, err)
+        self.assertEqual(out.strip(), "''", err)
 
 
 if __name__ == "__main__":

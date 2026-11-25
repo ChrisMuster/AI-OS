@@ -3,7 +3,7 @@
 check_server.py - the check helper: a builder's one way to run a check, and its clock
 (orchestrator isolation, plan section 6, stage S5).
 
-A stdio MCP server (the ``mcp`` 1.x ``FastMCP`` API) with two tools:
+A stdio MCP server (the ``mcp`` 2 ``MCPServer`` API) with two tools:
 
   run_check(command)  Refuses a command that fails ``approver.shell_checks`` or does
                       not fully match a line of the builder's verification list. Any
@@ -156,9 +156,9 @@ def run_check(command, folder=FOLDER, clock=time.monotonic):
 
 def build_server(folder=FOLDER):
     """The MCP server, with the two tools bound to ``folder``."""
-    from mcp.server.fastmcp import FastMCP  # runtime-guard: launched via the orchestrator's builder session config, under the run's .venv interpreter
+    from mcp.server.mcpserver import MCPServer  # runtime-guard: launched via the orchestrator's builder session config, under the run's .venv interpreter
 
-    server = FastMCP(SERVER_NAME)
+    server = MCPServer(SERVER_NAME)
 
     @server.tool(name="run_check")
     def run_check_tool(command: str) -> str:

@@ -1,14 +1,14 @@
 # Biblio Tools
 
-**Last modified:** 2026-11-20
+**Last modified:** 2026-11-24
 
 ## Purpose
 Provides Book Dragon's canonical Python runtime, setup verification, cross-platform workflow launcher, and MCP (Model Context Protocol) server. The same project commands work for every AI; MCP-capable clients additionally receive typed tools, while other clients run the underlying scripts directly.
 
 ## Contents
 - scripts/ - `workflows/biblio-tools/scripts/` [[workflows/biblio-tools/scripts/CONTEXT]] - Shared runtime setup and hand-off helpers, MCP server, per-AI verification, launcher, protocol smoke tests, and lifecycle checks.
-- tests/ - `workflows/biblio-tools/tests/` [[workflows/biblio-tools/tests/CONTEXT]] - Unit tests for the server's pure helpers (the knowledge-graph query dispatcher's argv assembly and the `_run_json_script` failure paths) and for the Python floor checks, the Codex hook output and trust checks and the review-orchestration SDK check in verify.py and setup.py.
-- requirements.txt - `workflows/biblio-tools/requirements.txt` - MCP dependency included by the root project manifest, pinned below version 2.
+- tests/ - `workflows/biblio-tools/tests/` [[workflows/biblio-tools/tests/CONTEXT]] - Unit tests for the server's pure helpers (the knowledge-graph query dispatcher's argv assembly and the `_run_json_script` failure paths) and for the Python floor checks, the Codex hook output, trust and MCP registry checks and the review-orchestration SDK check in verify.py and setup.py.
+- requirements.txt - `workflows/biblio-tools/requirements.txt` - MCP dependency included by the root project manifest, held to version 2 (`mcp>=2,<3`).
 - archived/ - `workflows/biblio-tools/archived/` [[workflows/biblio-tools/archived/CONTEXT]] - Holds the gitignored CODEX-MCP-AVAILABILITY-PLAN.md investigation notes; local-only.
 
 ## Inputs
@@ -35,7 +35,7 @@ Each tool returns structured output: success status, stdout, stderr, and return 
 - `workflows/knowledge-graph/scripts/run.py` [[workflows/knowledge-graph/scripts/CONTEXT]] - Called by the `build_knowledge_graph` and `query_knowledge_graph` tools.
 - `AGENT-SETUP.md` [[AGENT-SETUP]] (root) - Human-readable setup documentation; verify.py points users to it for remediation.
 - `.codex/plugins/plugins/biblio-tools/CONTEXT.md` [[.codex/plugins/plugins/biblio-tools/CONTEXT]] - Codex plugin wrapper used to expose Biblio Tools through Codex's plugin-backed MCP path.
-- Python `mcp` package (>= 1.0.0, < 2) - The MCP SDK providing FastMCP; a required project dependency. Held below 2 because a fresh install otherwise gets 2.x, which the server and its tests do not run on. verify.py itself is standard-library only, so it runs before the project environment exists.
+- Python `mcp` package (>= 2, < 3) - The MCP SDK providing `MCPServer` (`mcp.server.mcpserver`); a required project dependency. Held below 3 so a future major version is a deliberate migration, as the move from 1.x was. verify.py itself is standard-library only, so it runs before the project environment exists.
 - `workflows/create-wiki/scripts/extract_pdf.py` [[workflows/create-wiki/scripts/CONTEXT]] - verify.py confirms that shared PDF ingestion is installed for every AI.
 - `workflows/review-orchestration/requirements.txt` [[workflows/review-orchestration/CONTEXT]] - verify.py warns, for every AI, when either SDK it pins is missing from the `.venv`.
 - Codex (optional, external) - verify.py starts the installed Codex's app-server to ask whether it will run the project's Codex hooks defined for `workflows/rule-hooks/` [[workflows/rule-hooks/CONTEXT]]. Absent Codex, that one check is skipped with a quiet WARN.
@@ -49,8 +49,7 @@ Each tool returns structured output: success status, stdout, stderr, and return 
 - Codex raw `mcp_servers` registration can appear in `codex mcp list` while failing to expose tools to agents. Codex now uses the project-local `biblio_tools` plugin-backed MCP server; existing sessions must be restarted before that tool palette is available.
 
 ## Revision History
-Earlier history archived to LOG.md on 2026-11-20.
-- 2026-06-21 - Knowledge-graph Phase 4: added tests/test_run_json_script.py covering the `_run_json_script` helper's failure paths (no change to server.py).
+Earlier history archived to LOG.md on 2026-11-24.
 - 2026-06-24 - Hardened setup verification: mcp_smoke.py now uses the saved knowledge-graph index for fast stats when available and falls back to a lightweight argument-validation check when no index exists; verify.py's smoke timeout increased to 90 seconds as a safety margin.
 - 2026-06-24 - Investigated Codex Desktop MCP availability (config and protocol checks pass, but the session does not inject project-local tools into the callable palette). The working investigation notes are kept local-only (gitignored) and are not listed in Contents; the open issue is tracked in the backlog.
 - 2026-06-24 - Corrected the Codex Desktop setup verifier so its MCP handshake timeout now matches the documented 90-second smoke-test allowance.
@@ -64,3 +63,4 @@ Earlier history archived to LOG.md on 2026-11-20.
 - 2026-10-05 - verify.py gained the "Codex hook output" check: the Codex SessionStart and Stop hooks must print the JSON Codex accepts, which they did not until this date, while the trust check passed. Tests entry updated.
 - 2026-10-07 - `requirements.txt` pins `mcp` below 2 (orchestrator isolation build, stage S1). A fresh install was getting `mcp` 2.x, which failed this workflow's tests in a clean Linux container; the project `.venv` already holds 1.27.2, so nothing changes on an existing machine. Contents and Dependencies updated.
 - 2026-11-20 - Setup verification gained a check, for every AI, that the review-orchestration workflow's two SDKs are installed in the `.venv`, a WARN and never a FAIL when one is missing (review-orchestration A6). Added `tests/test_verify_review_sdks.py`. Tests entry and Dependencies updated; the oldest Revision History entry was archived to LOG.md.
+- 2026-11-24 - Migrated to `mcp` 2 (2.3.0): `requirements.txt` now reads `mcp>=2,<3` and the server uses `MCPServer`. Under v2 a stdio server's stdin is the null device, so server.py's stdin watchdog could no longer see a closed client; it now exits when launch.py dies, which launch.py names to it by process ID (the user's decision D1). Contents and Dependencies updated; the oldest Revision History entry was archived to LOG.md. In the same task, verify.py's Codex MCP registry check was fixed to run Codex by its resolved path, so a `codex.cmd` shim is found; the tests entry names the new test file.

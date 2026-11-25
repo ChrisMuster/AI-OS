@@ -365,7 +365,11 @@ def _codex_cli_env() -> tuple[dict[str, str], str]:
 
 def check_codex_mcp_registry() -> dict:
     """Ask the Codex CLI registry whether the plugin-backed Biblio server is enabled."""
-    if shutil.which("codex") is None:
+    # Run the path which() resolved, not the bare name: which() honours PATHEXT, so
+    # on Windows it finds a `codex.cmd` shim (as Volta installs), while subprocess
+    # given the bare name looks only for `codex.exe` and fails with WinError 2.
+    codex = shutil.which("codex")
+    if codex is None:
         return {
             "check": "Codex MCP registry",
             "status": "WARN",
@@ -375,7 +379,7 @@ def check_codex_mcp_registry() -> dict:
     env, codex_home = _codex_cli_env()
     try:
         result = subprocess.run(
-            ["codex", "mcp", "get", "biblio_tools"],
+            [codex, "mcp", "get", "biblio_tools"],
             cwd=PROJECT_ROOT,
             env=env,
             capture_output=True,

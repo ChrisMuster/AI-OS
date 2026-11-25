@@ -43,7 +43,7 @@ async def run_smoke(command: str, args: list[str], cwd: Path) -> dict:
             unexpected = sorted(tool_names - EXPECTED_TOOLS)
 
             timestamp_result = await session.call_tool("get_timestamp", {})
-            if timestamp_result.isError:
+            if timestamp_result.is_error:
                 raise RuntimeError("get_timestamp returned an MCP tool error")
 
             invalid_month = await session.call_tool(
@@ -94,7 +94,7 @@ async def run_smoke(command: str, args: list[str], cwd: Path) -> dict:
 
             return {
                 "success": not missing,
-                "protocol_version": initialised.protocolVersion,
+                "protocol_version": initialised.protocol_version,
                 "tools": sorted(tool_names),
                 "missing_tools": missing,
                 "unexpected_tools": unexpected,

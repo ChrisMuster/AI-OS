@@ -9,6 +9,10 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
+# launch.py's own process ID, set for the script it starts, so that script can exit
+# when launch.py dies (server.py's watchdog reads it).
+LAUNCHER_PID_ENV = "BOOK_DRAGON_LAUNCHER_PID"
+
 
 def venv_python() -> Path:
     """Return the platform-appropriate project virtual-environment Python."""
@@ -53,9 +57,43 @@ def process_is_alive(pid: int) -> bool:
 
     try:
         os.kill(pid, 0)
-        return True
     except OSError:
         return False
+    return not _is_zombie(pid)
+
+
+# Where Linux publishes process state; a module name so a test can point it elsewhere.
+_PROC = Path("/proc")
+
+
+def _is_zombie(pid: int) -> bool:
+    """Whether *pid* has exited but not been reaped (POSIX only).
+
+    ``os.kill(pid, 0)`` succeeds for such a zombie, so without this a launcher that
+    was killed, and that its own parent has not yet waited for, reads as alive, and
+    server.py's watchdog keeps the server running (cross-review R1-1, 2026-11-24).
+    Linux is read from ``/proc/<pid>/stat``; where there is no ``/proc`` (macOS),
+    ``ps`` is asked. If neither can answer, the process is taken as not a zombie,
+    which is what the ``os.kill`` probe alone reported before."""
+    if _PROC.is_dir():
+        try:
+            text = (_PROC / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return True  # gone between the two probes
+        except OSError:
+            return False
+        # The state follows the command name, which is in parentheses and may itself
+        # contain spaces or parentheses, so read from the last ")".
+        return text[text.rfind(")") + 2:][:1] in ("Z", "X")
+    try:
+        result = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                capture_output=True, text=True, encoding="utf-8",
+                                timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return True  # ps lists no such process
+    return result.stdout.strip().startswith("Z")
 
 
 def ensure_project_runtime() -> None:

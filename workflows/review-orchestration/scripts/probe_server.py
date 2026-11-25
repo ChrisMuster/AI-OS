@@ -54,8 +54,8 @@ def run_probe(code, settings, *, clock=time.monotonic, run=container.run_in_cont
 
 
 def build_server(settings):
-    from mcp.server.fastmcp import FastMCP  # runtime-guard: launched via the cross-review round's reviewer session config, under the round's .venv interpreter
-    server = FastMCP("probes")
+    from mcp.server.mcpserver import MCPServer  # runtime-guard: launched via the cross-review round's reviewer session config, under the round's .venv interpreter
+    server = MCPServer("probes")
 
     @server.tool(name="run_probe")
     def run_probe_tool(code: str) -> str:

@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from runtime import process_is_alive, venv_python
+from runtime import LAUNCHER_PID_ENV, process_is_alive, venv_python
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -60,6 +60,7 @@ def main() -> None:
     child = subprocess.Popen(
         [str(python), str(script), *sys.argv[2:]],
         cwd=PROJECT_ROOT,
+        env={**os.environ, LAUNCHER_PID_ENV: str(os.getpid())},
     )
     threading.Thread(target=_parent_watchdog, args=(child,), daemon=True).start()
     raise SystemExit(child.wait())

@@ -23,7 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from mcp.server.fastmcp import FastMCP  # runtime-guard: launched via launch.py
+from mcp.server.mcpserver import MCPServer  # runtime-guard: launched via launch.py
+from runtime import LAUNCHER_PID_ENV, process_is_alive
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -43,27 +44,36 @@ def _touch_activity():
     _last_activity = time.monotonic()
 
 
-def _stdin_watchdog():
-    """Exit if stdin closes or no tool calls arrive before the idle timeout."""
+def _watched_pid() -> int:
+    """The process whose death ends the server: launch.py, which names itself in
+    ``LAUNCHER_PID_ENV``, or else the server's own parent. On Windows the direct
+    parent is the venv's launcher stub, which outlives a killed launch.py, so the
+    variable is what makes the check see launch.py. The variable is removed so the
+    scripts the tools run do not inherit it."""
+    raw = os.environ.pop(LAUNCHER_PID_ENV, "")
+    try:
+        pid = int(raw)
+    except ValueError:
+        return os.getppid()
+    return pid if pid > 0 else os.getppid()
+
+
+def _lifecycle_watchdog(watched_pid: int):
+    """Exit when the watched process dies or no tool calls arrive before the idle
+    timeout. ``mcp`` 2 points a stdio server's stdin at the null device, so a closed
+    client cannot be seen on stdin; the launcher's death is the signal instead."""
     while True:
         time.sleep(10)
-        try:
-            if sys.stdin.closed:
-                os._exit(0)
-            if hasattr(sys.stdin, "buffer") and sys.stdin.buffer.closed:
-                os._exit(0)
-        except Exception:
+        if not process_is_alive(watched_pid):
             os._exit(0)
         if time.monotonic() - _last_activity > _IDLE_TIMEOUT_SECS:
             os._exit(0)
 
 
-threading.Thread(target=_stdin_watchdog, daemon=True).start()
-
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
-mcp = FastMCP(
+mcp = MCPServer(
     "biblio-tools",
 )
 
@@ -584,4 +594,6 @@ async def append_log(
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    threading.Thread(target=_lifecycle_watchdog, args=(_watched_pid(),),
+                     daemon=True).start()
     mcp.run()
